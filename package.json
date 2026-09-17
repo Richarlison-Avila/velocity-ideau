@@ -4,20 +4,31 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "concurrently -k -n SERVIDOR,JOGO -c yellow,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:web": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "build": "tsc -b && tsc --noEmit -p tsconfig.server.json && vite build",
+    "start": "tsx server/index.ts",
     "preview": "vite preview",
     "test": "vitest run"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "vite": "latest",
+    "express": "latest",
+    "qrcode.react": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "socket.io": "latest",
+    "socket.io-client": "latest"
   },
   "devDependencies": {
+    "@types/express": "latest",
+    "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "concurrently": "latest",
+    "tsx": "latest",
     "typescript": "latest",
     "vitest": "latest"
   }
