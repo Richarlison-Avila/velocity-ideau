@@ -1,6 +1,10 @@
 // A extensão .js é exigida pelo Node, que roda este módulo no servidor durante
 // os testes de aceitação. O Vite resolve para o arquivo .ts normalmente.
-import { obstacles, speedForState, TRACK_LENGTH } from './track.js'
+import { LATERAL_LIMIT, obstacles, OFF_ROAD_LIMIT, speedForState, TRACK_LENGTH } from './track.js'
+
+// Os limites laterais são geometria da pista, e ficam definidos junto dela para
+// o desenho, a simulação e o servidor nunca divergirem.
+export { LATERAL_LIMIT, OFF_ROAD_LIMIT } from './track.js'
 
 export type RaceInput = { left: boolean; right: boolean; boost: boolean }
 
@@ -24,10 +28,6 @@ export type RaceState = {
 
 export type RaceEvent = { type: 'collision'; obstacleId: number } | { type: 'finish' }
 
-/** Limite lateral a partir do qual o carro está fora da pista. */
-export const OFF_ROAD_LIMIT = 0.88
-/** Limite físico do movimento lateral: o carro nunca sai da área simulada. */
-export const LATERAL_LIMIT = 1.28
 /** Duração fixa da penalidade após um impacto, em segundos. */
 export const PENALTY_SECONDS = 1.65
 /** Maior passo de simulação aceito, protege contra abas em segundo plano. */

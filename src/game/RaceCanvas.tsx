@@ -12,7 +12,7 @@ import {
 import { createRaceState, MAX_STEP_SECONDS, stepRace, type RaceInput } from './simulation'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
 import {
-  CAR_SCREEN_RATIO,
+  CAR_SPRITE_REFERENCE_WIDTH,
   CAR_VIEW_DISTANCE,
   formatTime,
   lateralOffset,
@@ -675,8 +675,14 @@ function RaceCanvas({
         if (item.particle.kind !== 'skid') drawParticle(item.particle, item.ahead)
       }
 
-      const playerX = width / 2 + race.lateral * width * 0.32
-      if (!doneRef.current) drawCar(ctx, playerX, height * CAR_SCREEN_RATIO, Math.max(0.76, width / 620))
+      // O carro usa a mesma projeção da pista, dos obstáculos e do fantasma.
+      // Assim ele acompanha a curva e a borda do asfalto significa a mesma
+      // coisa para o desenho e para a regra de sair da pista.
+      const ondeEstaOCarro = roadGeometry(CAR_VIEW_DISTANCE)
+      const playerX = ondeEstaOCarro.center + lateralOffset(race.lateral, ondeEstaOCarro.roadWidth)
+      if (!doneRef.current) {
+        drawCar(ctx, playerX, ondeEstaOCarro.y, Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH))
+      }
 
       if (race.offRoad && startedRef.current && !doneRef.current) {
         ctx.fillStyle = 'rgba(255, 87, 48, .09)'

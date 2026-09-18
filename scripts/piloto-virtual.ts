@@ -9,6 +9,8 @@
  *   npm run piloto -- ABC12 --nome Rival --velocidade 260
  */
 import { io, type Socket } from 'socket.io-client'
+// A pista vem do jogo: uma cópia aqui divergiria em silêncio.
+import { TRACK_LENGTH } from '../src/game/track.js'
 
 type Room = {
   code: string
@@ -21,7 +23,6 @@ type Room = {
 type RoomAck = { ok: boolean; room?: Room; error?: string }
 type Scheduled = { code: string; startAt: number; countdownMs: number; serverTime: number }
 
-const TRACK_LENGTH = 4_800
 const TELEMETRY_INTERVAL_MS = 100
 const STEP_MS = 16
 

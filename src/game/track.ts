@@ -21,6 +21,11 @@ export const CAR_VIEW_DISTANCE =
       1 / PERSPECTIVE_POWER,
     ))
 
+/** Meia-largura do desenho do carro, na escala base do sprite. */
+export const CAR_SPRITE_HALF_WIDTH = 31
+/** Largura de tela em que o sprite do carro é desenhado na escala 1. */
+export const CAR_SPRITE_REFERENCE_WIDTH = 620
+
 export type Obstacle = {
   id: number
   distance: number
@@ -59,10 +64,40 @@ export function roadProjection(distanceAhead: number, width: number, height: num
   }
 }
 
+/** Fração da largura da pista usada para converter posição lateral em pixels. */
+export const LATERAL_SCALE = 0.36
+
 /** Converte a posição na pista em deslocamento horizontal na tela. */
 export function lateralOffset(lateral: number, roadWidth: number) {
-  return roadWidth * lateral * 0.36
+  return roadWidth * lateral * LATERAL_SCALE
 }
+
+/**
+ * Posição lateral da borda do asfalto.
+ *
+ * Sai direto da projeção: a meia-largura da pista dividida pelo fator de
+ * conversão. Como os dois escalam com a largura da tela, o valor é o mesmo em
+ * qualquer aparelho e em qualquer profundidade.
+ */
+export const ROAD_EDGE = 0.5 / LATERAL_SCALE
+
+/** Meia-largura do carro desenhado, em unidades de posição lateral. */
+export const CAR_HALF_LATERAL =
+  CAR_SPRITE_HALF_WIDTH /
+  CAR_SPRITE_REFERENCE_WIDTH /
+  (roadProjection(CAR_VIEW_DISTANCE, 1, 1).roadWidth * LATERAL_SCALE)
+
+/**
+ * O carro sai da pista quando as rodas cruzam a borda do asfalto.
+ *
+ * Antes este limite era um número solto, e a punição disparava com o carro
+ * ainda visivelmente sobre o asfalto. Agora ele é derivado da mesma geometria
+ * que desenha a pista, então o que o jogador vê é o que o jogo cobra.
+ */
+export const OFF_ROAD_LIMIT = ROAD_EDGE - CAR_HALF_LATERAL
+
+/** Até onde o carro chega na grama antes de o limite físico segurá-lo. */
+export const LATERAL_LIMIT = ROAD_EDGE + 0.16
 
 export function trackCurve(distance: number) {
   return (

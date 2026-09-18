@@ -1,6 +1,6 @@
 // A validação da chegada precisa da mesma pista que o jogo desenha, então a
 // definição vem do módulo do jogo em vez de ser copiada para cá.
-import { speedForState, TRACK_LENGTH } from '../src/game/track.js'
+import { LATERAL_LIMIT, speedForState, TRACK_LENGTH } from '../src/game/track.js'
 
 export type RoomStatus = 'waiting' | 'ready' | 'countdown' | 'racing' | 'finished'
 
@@ -84,8 +84,9 @@ export const RECONNECT_GRACE_MS = 12_000
 export const MAX_PLAUSIBLE_SPEED_MS = 120
 /** Folga em metros para não punir variação normal de rede. */
 export const PROGRESS_TOLERANCE_M = 8
-/** Limite lateral da pista, usado para descartar valores fora da faixa. */
-export const LATERAL_LIMIT = 1.28
+// O limite lateral é geometria da pista: vem do mesmo lugar que o jogo desenha,
+// para o servidor não recortar uma faixa diferente da que o piloto enxerga.
+export { LATERAL_LIMIT } from '../src/game/track.js'
 /** Diferença máxima aceita entre o horário da medição e o do servidor. */
 export const CLOCK_TOLERANCE_MS = 5_000
 

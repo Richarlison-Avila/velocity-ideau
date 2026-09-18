@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RoomError, RoomStore, type Telemetry } from './rooms.js'
+import { LATERAL_LIMIT, RoomError, RoomStore, type Telemetry } from './rooms.js'
 
 /** Relógio controlado para testar agendamento e janela de reconexão. */
 function createClock(start = 1_000_000) {
@@ -292,8 +292,12 @@ describe('telemetria do adversário', () => {
   it('mantém a faixa dentro dos limites da pista', () => {
     const clock = createClock()
     const { rooms, code } = salaCorrendo(clock)
+    // O recorte usa o mesmo limite que o jogo desenha, e não um número à parte.
     const aceita = rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 10, { lateral: 9 }))
-    expect(aceita?.lateral).toBe(1.28)
+    expect(aceita?.lateral).toBe(LATERAL_LIMIT)
+    expect(rooms.acceptTelemetry(code, 'a', medicao(clock.now() + 100, 12, { lateral: -9 }))?.lateral).toBe(
+      -LATERAL_LIMIT,
+    )
   })
 
   it('corrige um horário incoerente usando o relógio do servidor', () => {
