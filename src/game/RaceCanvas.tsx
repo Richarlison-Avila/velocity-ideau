@@ -9,8 +9,19 @@ import {
   TELEMETRY_INTERVAL_MS,
   type GhostSnapshot,
 } from './ghost'
-import { createRaceState, stepRace, type RaceInput } from './simulation'
-import { formatTime, obstacles, TRACK_LENGTH, trackCurve, VIEW_DISTANCE } from './track'
+import { createRaceState, MAX_STEP_SECONDS, stepRace, type RaceInput } from './simulation'
+import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
+import {
+  CAR_SCREEN_RATIO,
+  CAR_VIEW_DISTANCE,
+  formatTime,
+  lateralOffset,
+  obstacles,
+  roadProjection,
+  TRACK_LENGTH,
+  trackCurve,
+  VIEW_DISTANCE,
+} from './track'
 
 type RacePhase = 'countdown' | 'racing' | 'finished'
 
@@ -50,6 +61,8 @@ type RivalHud = {
   offScreen: string | null
   stale: boolean
   finished: boolean
+  /** Com o fantasma à vista, o painel encolhe para não tapar a pista. */
+  onScreen: boolean
 }
 
 type Telemetry = {
@@ -335,10 +348,14 @@ function RaceCanvas({
     let height = 0
     let previous = performance.now()
     let lastHudUpdate = 0
-    let lastTelemetrySent = 0
     let lastRivalHud = 0
     let animationFrame = 0
     const flashTimers: number[] = []
+
+    const effects = new ParticleField()
+    const dustRate = new EmissionRate(34)
+    const boostRate = new EmissionRate(26)
+    const skidRate = new EmissionRate(22)
 
     // Voltar do segundo plano não pode gerar um passo gigante de simulação.
     const resumeClock = () => {
@@ -371,14 +388,9 @@ function RaceCanvas({
     }
 
     const roadGeometry = (distanceAhead: number) => {
-      const closeness = 1 - distanceAhead / VIEW_DISTANCE
-      const perspective = Math.pow(Math.max(0, closeness), 1.72)
-      const horizon = height * 0.29
-      const bottom = height * 0.92
-      const y = horizon + perspective * (bottom - horizon)
-      const roadWidth = width * (0.09 + perspective * 0.8)
+      const { y, roadWidth, perspective } = roadProjection(distanceAhead, width, height)
       const bend = (trackCurve(race.progress + distanceAhead) - trackCurve(race.progress)) * width * 0.31
-      return { y, roadWidth, center: width / 2 + bend * (1 - perspective * 0.25) }
+      return { y, roadWidth, perspective, center: width / 2 + bend * (1 - perspective * 0.25) }
     }
 
     const drawBackdrop = () => {
@@ -454,15 +466,46 @@ function RaceCanvas({
      */
     const drawGhost = (distanceAhead: number, lateral: number, faded: boolean) => {
       const projected = roadGeometry(distanceAhead)
-      const closeness = Math.max(0, 1 - distanceAhead / VIEW_DISTANCE)
-      const perspective = Math.pow(closeness, 1.72)
-      const x = projected.center + projected.roadWidth * lateral * 0.36
-      const scale = Math.max(0.76, width / 620) * Math.max(0.06, perspective)
+      const x = projected.center + lateralOffset(lateral, projected.roadWidth)
+      const scale = Math.max(0.76, width / 620) * Math.max(0.06, projected.perspective)
 
       drawCar(ctx, x, projected.y, scale, {
         ...GHOST_PALETTE,
         alpha: GHOST_PALETTE.alpha * (faded ? 0.5 : 1),
       })
+    }
+
+    /** Poeira, faíscas, rastro de boost e marcas de pneu, na projeção da pista. */
+    const drawParticle = (particle: Particle, distanceAhead: number) => {
+      const projected = roadGeometry(distanceAhead)
+      const fade = Math.max(0, particle.life / particle.maxLife)
+      const x = projected.center + lateralOffset(particle.lateral, projected.roadWidth)
+      const scale = Math.max(0.2, projected.perspective)
+      const size = particle.size * scale
+      const y = projected.y - particle.lift * (1 - fade) * scale
+
+      ctx.save()
+      if (particle.kind === 'skid') {
+        // A marca escurece o asfalto e vai sumindo, como borracha queimada.
+        ctx.globalAlpha = 0.55 * fade
+        ctx.fillStyle = '#0d0f12'
+        ctx.fillRect(x - size / 2, projected.y, Math.max(1.5, size), Math.max(1.5, size * 0.8))
+      } else if (particle.kind === 'spark') {
+        ctx.globalAlpha = fade
+        ctx.fillStyle = fade > 0.5 ? '#fff3c4' : '#ff8a00'
+        ctx.fillRect(x - size / 2, y - size / 2, size, size)
+      } else if (particle.kind === 'boost') {
+        ctx.globalAlpha = 0.55 * fade
+        ctx.fillStyle = '#43e7ff'
+        ctx.fillRect(x - size / 2, y, size, Math.max(1, size * 1.6))
+      } else {
+        ctx.globalAlpha = 0.42 * fade
+        ctx.fillStyle = '#c6b489'
+        ctx.beginPath()
+        ctx.arc(x, y, Math.max(1, size * (1.4 - fade * 0.6)), 0, Math.PI * 2)
+        ctx.fill()
+      }
+      ctx.restore()
     }
 
     const drawObstacle = (distanceAhead: number, lane: number, kind: 'barrier' | 'debris') => {
@@ -506,6 +549,8 @@ function RaceCanvas({
           if (event.type === 'collision') {
             announce('IMPACTO — VELOCIDADE REDUZIDA')
             beep(105, 0.24)
+            // As faíscas saltam à frente do bico, onde a batida aconteceu.
+            effects.burst('spark', 12, race.progress + CAR_VIEW_DISTANCE + 5, race.lateral, { drift: 1.8 })
           }
           if (event.type === 'finish') {
             doneRef.current = true
@@ -529,15 +574,28 @@ function RaceCanvas({
           }
         }
 
-        if (!doneRef.current && frame - lastTelemetrySent > TELEMETRY_INTERVAL_MS) {
-          lastTelemetrySent = frame
-          sendTelemetryRef.current?.({
-            t: serverNow,
-            progress: race.progress,
-            lateral: race.lateral,
-            speed: race.speed,
-            state: 'racing',
+        // Efeitos nascem onde o carro aparece na tela e descem junto com a pista.
+        // A cadência segue o passo que a simulação aplicou, e não o tempo do
+        // quadro: um quadro longo não pode virar uma rajada de poeira.
+        const passo = Math.min(Math.max(0, dt), MAX_STEP_SECONDS)
+        // Os efeitos saem de trás das rodas, e não do centro: nascendo sob o
+        // carro, o próprio sprite os esconderia por toda a vida útil.
+        const rastro = race.progress + CAR_VIEW_DISTANCE - TRAIL_SETBACK
+        const derrapando = Math.abs(race.lateral) > 0.6 && race.speed > 120
+
+        for (let i = dustRate.take(passo, race.offRoad); i > 0; i -= 1) {
+          const roda = Math.random() < 0.5 ? -1 : 1
+          effects.spawn('dust', rastro, race.lateral + roda * (WHEEL_OFFSET + Math.random() * 0.08), {
+            drift: roda * (0.2 + Math.random() * 0.5),
+            size: 7 + Math.random() * 6,
           })
+        }
+        for (let i = boostRate.take(passo, race.boosting); i > 0; i -= 1) {
+          const roda = Math.random() < 0.5 ? -1 : 1
+          effects.spawn('boost', rastro, race.lateral + roda * WHEEL_OFFSET)
+        }
+        for (let i = skidRate.take(passo, race.offRoad || derrapando || race.penalty > 0); i > 0; i -= 1) {
+          for (const roda of [-1, 1]) effects.spawn('skid', rastro, race.lateral + roda * WHEEL_OFFSET)
         }
 
         if (frame - lastHudUpdate > 80) {
@@ -557,6 +615,13 @@ function RaceCanvas({
 
       drawBackdrop()
       drawRoad()
+
+      // As marcas de pneu ficam no asfalto, abaixo de tudo o que corre na pista.
+      effects.update(Math.min(Math.max(0, dt), MAX_STEP_SECONDS), race.progress)
+      const efeitos = effects.visible(race.progress)
+      for (const item of efeitos) {
+        if (item.particle.kind === 'skid') drawParticle(item.particle, item.ahead)
+      }
 
       // Posição do fantasma neste quadro, já interpolada.
       const rivalSample = ghostRef.current?.sample(serverNow) ?? null
@@ -588,6 +653,7 @@ function RaceCanvas({
           offScreen: rivalVisible ? null : offScreenNotice(gap, rivalSide(race.lateral, rivalSample.lateral)),
           stale: rivalSample.stale,
           finished: rivalSample.state === 'finished',
+          onScreen: rivalVisible,
         })
       }
 
@@ -601,8 +667,13 @@ function RaceCanvas({
         }
       }
 
+      // Poeira, faíscas e rastro de boost passam por cima da pista e dos carros.
+      for (const item of efeitos) {
+        if (item.particle.kind !== 'skid') drawParticle(item.particle, item.ahead)
+      }
+
       const playerX = width / 2 + race.lateral * width * 0.32
-      if (!doneRef.current) drawCar(ctx, playerX, height * 0.82, Math.max(0.76, width / 620))
+      if (!doneRef.current) drawCar(ctx, playerX, height * CAR_SCREEN_RATIO, Math.max(0.76, width / 620))
 
       if (race.offRoad && startedRef.current && !doneRef.current) {
         ctx.fillStyle = 'rgba(255, 87, 48, .09)'
@@ -620,6 +691,30 @@ function RaceCanvas({
       for (const timer of flashTimers) window.clearTimeout(timer)
     }
   }, [beep, countdownMs, startAt])
+
+  /**
+   * Envio da telemetria.
+   *
+   * Fica em um temporizador, e não no ciclo de animação, por dois motivos: a
+   * frequência não pode depender da taxa de quadros do aparelho, e uma aba em
+   * segundo plano precisa continuar dizendo ao rival onde o carro parou — o
+   * fantasma congelado é a informação correta, melhor do que sumir do mapa.
+   */
+  useEffect(() => {
+    if (!onTelemetry) return
+    const timer = window.setInterval(() => {
+      if (!startedRef.current || doneRef.current) return
+      const race = raceRef.current
+      sendTelemetryRef.current?.({
+        t: clockRef.current(),
+        progress: race.progress,
+        lateral: race.lateral,
+        speed: race.speed,
+        state: 'racing',
+      })
+    }, TELEMETRY_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [onTelemetry, startAt])
 
   useEffect(() => () => { void audioRef.current?.close() }, [])
 
@@ -663,7 +758,10 @@ function RaceCanvas({
       </div>
 
       {mode === 'online' && phase !== 'countdown' && (
-        <div className={`rival-panel ${rival?.stale || !rivalConnected ? 'stale' : ''}`} aria-live="polite">
+        <div
+          className={`rival-panel ${rival?.stale || !rivalConnected ? 'stale' : ''} ${rival?.onScreen && rivalConnected ? 'compact' : ''}`}
+          aria-live="polite"
+        >
           <span>{rivalName}</span>
           {!rivalConnected ? (
             <strong>SEM SINAL — AGUARDANDO O RETORNO</strong>

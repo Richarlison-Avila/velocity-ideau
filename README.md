@@ -61,6 +61,7 @@ O fantasma é apenas desenhado: a simulação da corrida (`stepRace`) não receb
 - [x] Boost com consumo, recarga e bloqueio ao esgotar
 - [x] Cronômetro, velocidade e progresso
 - [x] Cinco luzes de largada e áudio procedural básico
+- [x] Poeira, faíscas, rastro de boost e marcas de pneu, com teto de partículas
 - [x] Salas para dois jogadores com código, link e QR code
 - [x] Lobby em tempo real, confirmação e tratamento de sala cheia/inexistente
 - [x] Relógio sincronizado entre cliente e servidor
@@ -74,6 +75,5 @@ O fantasma é apenas desenhado: a simulação da corrida (`stepRace`) não receb
 
 ## Limitações conhecidas
 
-- Em uma aba fora de primeiro plano o navegador pausa a animação: o relógio da corrida continua correto, mas o carro não anda e a telemetria deixa de ser enviada enquanto a aba estiver escondida. O rival vê o fantasma parado e marcado como sem sinal.
-- Partículas e marcas de pneu previstas na Fase 2 ainda não foram implementadas.
+- Em uma aba fora de primeiro plano o navegador pausa a animação: o relógio da corrida continua correto, mas o carro não anda enquanto a aba estiver escondida. A telemetria continua sendo enviada por temporizador, então o rival vê o fantasma parado na posição real, em vez de perdê-lo de vista.
 - O resultado ainda é calculado em cada cliente; a comparação oficial entre os dois pilotos entra na Fase 6.

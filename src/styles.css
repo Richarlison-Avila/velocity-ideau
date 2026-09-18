@@ -126,6 +126,10 @@ button { cursor: pointer; }
 .rival-panel em { display: block; margin-top: 4px; color: #93a0ab; font: 600 10px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .1em; }
 .rival-panel.stale { border-color: rgba(255,174,0,.4); }
 .rival-panel.stale strong { color: var(--amber); }
+/* Com o rival à vista na pista, o painel sai da frente. */
+.rival-panel.compact { min-width: 0; padding: 4px 12px; border-color: rgba(67,231,255,.16); background: rgba(6,14,19,.42); }
+.rival-panel.compact span { display: none; }
+.rival-panel.compact strong { margin-top: 0; font-size: 12px; opacity: .8; }
 .late-notice { top: 20%; background: rgba(6,10,15,.88); border: 1px solid rgba(255,174,0,.5); color: var(--amber); }
 .lights { display: flex; gap: clamp(9px, 2vw, 18px); padding: 16px 20px; border: 1px solid #333c43; border-radius: 5px; background: rgba(5,8,11,.92); box-shadow: 0 20px 60px rgba(0,0,0,.4); }
 .lights i { width: clamp(32px, 6vw, 56px); aspect-ratio: 1; border-radius: 50%; background: #191e22; border: 5px solid #0c0f12; box-shadow: inset 0 0 12px #000; }
