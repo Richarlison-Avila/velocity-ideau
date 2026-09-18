@@ -48,14 +48,36 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
     onLeave()
   }
 
+  /**
+   * Em rede local o endereço é http, e fora de contexto seguro o navegador não
+   * oferece a área de transferência moderna. O caminho antigo ainda funciona e
+   * é justamente o cenário do workshop.
+   */
   const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(shareUrl)
+    const marcarCopiado = () => {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1_800)
-    } catch {
-      onError('Não foi possível copiar. Use o código da sala.')
     }
+
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      return marcarCopiado()
+    } catch {
+      // Segue para o caminho antigo.
+    }
+
+    const campo = document.createElement('textarea')
+    campo.value = shareUrl
+    campo.setAttribute('readonly', '')
+    campo.style.position = 'fixed'
+    campo.style.opacity = '0'
+    document.body.appendChild(campo)
+    campo.select()
+    const copiou = document.execCommand('copy')
+    document.body.removeChild(campo)
+
+    if (copiou) marcarCopiado()
+    else onError('Não foi possível copiar. Use o código da sala ou o QR code.')
   }
 
   const headline = () => {

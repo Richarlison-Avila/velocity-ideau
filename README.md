@@ -13,6 +13,37 @@ O comando inicia o site (porta 5173) e o servidor Socket.IO (porta 3001). Abra o
 
 Para apontar o jogo a outro servidor da partida, use `GAME_SERVER_URL` no desenvolvimento ou `VITE_SERVER_URL` na build.
 
+## Publicar
+
+Em produção é **um processo só**: o mesmo servidor entrega o site e aceita as conexões WebSocket.
+
+```bash
+npm ci && npm run build && npm start
+```
+
+O servidor escuta em `0.0.0.0` e imprime os endereços da máquina na rede local, para acessar pelo celular. Há um `Dockerfile` pronto para hospedagens que aceitem contêiner.
+
+O estado das salas vive na memória, então precisa ser **uma instância só** — duas separariam os dois pilotos em salas diferentes.
+
+| Variável | Para quê | Padrão |
+| --- | --- | --- |
+| `PORT` | Porta do servidor | `3001` |
+| `DEMO_ROOMS` | Salas que existem sempre, separadas por vírgula | `DEMO1` |
+
+O passo a passo do evento, com conferência de véspera, rede de reserva e roteiro da apresentação, está em [WORKSHOP.md](WORKSHOP.md).
+
+### QR code da apresentação
+
+```bash
+npm run qrcode -- https://seu-endereco --sala DEMO1
+```
+
+Gera SVG para o slide, PNG para imprimir e o endereço em texto, na pasta `qrcode/`.
+
+### Fontes
+
+A tipografia fica dentro do projeto, em `public/fontes`, para o jogo funcionar em rede sem internet. Para atualizá-la: `npm run fontes`.
+
 ## Testes
 
 ```bash
@@ -83,6 +114,10 @@ A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resu
 - [x] Mesmo vencedor, tempos e diferença nas duas telas
 - [x] Vitória por abandono quando o rival não volta
 - [x] Revanche na mesma sala, sem recarregar a página
+- [x] Publicação em processo único, com Dockerfile e endereços da rede local
+- [x] Sala de demonstração que se cria sozinha
+- [x] Fontes servidas pelo projeto, sem depender de internet
+- [x] QR code definitivo e roteiro do workshop
 
 ## Limitações conhecidas
 

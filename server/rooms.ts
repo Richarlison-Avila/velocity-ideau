@@ -131,16 +131,30 @@ export type FinishReport = {
 export type RoomStoreOptions = {
   now?: () => number
   countdownMs?: number
+  /**
+   * Códigos que se criam sozinhos quando alguém entra.
+   *
+   * No workshop a sala de demonstração precisa existir antes de o
+   * apresentador abrir o jogo, para o QR code do slide sempre funcionar.
+   */
+  openRooms?: string[]
 }
 
 export class RoomStore {
   private rooms = new Map<string, Room>()
   private now: () => number
   private countdownMs: number
+  private openRooms: Set<string>
 
   constructor(options: RoomStoreOptions = {}) {
     this.now = options.now ?? (() => Date.now())
     this.countdownMs = options.countdownMs ?? COUNTDOWN_MS
+    this.openRooms = new Set((options.openRooms ?? []).map((code) => code.trim().toUpperCase()).filter(Boolean))
+  }
+
+  /** Códigos que sempre aceitam entrada, mesmo sem ninguém dentro. */
+  get demoRooms(): readonly string[] {
+    return [...this.openRooms]
   }
 
   create(socketId: string, playerId: string, rawName: string) {
@@ -157,7 +171,7 @@ export class RoomStore {
   }
 
   join(codeInput: string, socketId: string, playerId: string, rawName: string) {
-    const room = this.requireRoom(codeInput)
+    const room = this.ensureOpenRoom(codeInput) ?? this.requireRoom(codeInput)
 
     const returning = room.players.find((player) => player.id === playerId)
     if (returning) {
@@ -457,6 +471,22 @@ export class RoomStore {
       room.players.length === 2 &&
       room.players.every((player) => player.ready && player.disconnectedAt === null)
     )
+  }
+
+  /** Abre na hora uma sala de demonstração que ainda não existe. */
+  private ensureOpenRoom(codeInput: string) {
+    const code = this.normalize(codeInput)
+    if (!this.openRooms.has(code) || this.rooms.has(code)) return null
+    const room: Room = {
+      code,
+      createdAt: this.now(),
+      state: 'idle',
+      startAt: null,
+      outcome: null,
+      players: [],
+    }
+    this.rooms.set(code, room)
+    return room
   }
 
   private requireRoom(codeInput: string) {

@@ -56,6 +56,50 @@ describe('salas multiplayer', () => {
   })
 })
 
+describe('sala de demonstração', () => {
+  it('se cria sozinha quando o primeiro piloto entra', () => {
+    const rooms = new RoomStore({ openRooms: ['demo1'] })
+    expect(rooms.get('DEMO1')).toBeNull()
+
+    const sala = rooms.join('DEMO1', 'socket-a', 'a', 'Ana')
+    expect(sala.code).toBe('DEMO1')
+    expect(sala.players.map((player) => player.name)).toEqual(['Ana'])
+  })
+
+  it('aceita o código em minúsculas e com espaços', () => {
+    const rooms = new RoomStore({ openRooms: ['DEMO1'] })
+    expect(rooms.join(' demo1 ', 'socket-a', 'a', 'Ana').code).toBe('DEMO1')
+  })
+
+  it('continua limitada a dois pilotos', () => {
+    const rooms = new RoomStore({ openRooms: ['DEMO1'] })
+    rooms.join('DEMO1', 'socket-a', 'a', 'Ana')
+    rooms.join('DEMO1', 'socket-b', 'b', 'Beto')
+    expect(() => rooms.join('DEMO1', 'socket-c', 'c', 'Caio')).toThrow(RoomError)
+  })
+
+  it('reabre depois que todos saem', () => {
+    const rooms = new RoomStore({ openRooms: ['DEMO1'] })
+    rooms.join('DEMO1', 'socket-a', 'a', 'Ana')
+    rooms.leaveBySocket('socket-a')
+    expect(rooms.get('DEMO1')).toBeNull()
+
+    // O QR code do slide continua funcionando na próxima demonstração.
+    expect(rooms.join('DEMO1', 'socket-b', 'b', 'Beto').code).toBe('DEMO1')
+  })
+
+  it('não inventa salas fora da lista', () => {
+    const rooms = new RoomStore({ openRooms: ['DEMO1'] })
+    expect(() => rooms.join('OUTRA', 'socket-a', 'a', 'Ana')).toThrow(RoomError)
+  })
+
+  it('sem configuração nenhuma sala é aberta automaticamente', () => {
+    const rooms = new RoomStore()
+    expect(rooms.demoRooms).toEqual([])
+    expect(() => rooms.join('DEMO1', 'socket-a', 'a', 'Ana')).toThrow(RoomError)
+  })
+})
+
 describe('largada sincronizada', () => {
   it('agenda a largada no futuro apenas com os dois pilotos prontos', () => {
     const clock = createClock()

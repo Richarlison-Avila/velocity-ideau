@@ -4,6 +4,7 @@ import { GhostTracker, type GhostSnapshot } from './game/ghost'
 import RaceCanvas, { type RaceResult } from './game/RaceCanvas'
 import { formatTime } from './game/track'
 import { serverClock, type ClockState } from './multiplayer/clock'
+import { identificadorDoPiloto } from './multiplayer/identity'
 import Lobby from './multiplayer/Lobby'
 import { socket } from './multiplayer/socket'
 import type {
@@ -19,14 +20,39 @@ type Screen = 'menu' | 'lobby' | 'race' | 'result'
 type RaceSetup = { startAt: number; countdownMs: number; mode: 'solo' | 'online' }
 type Connection = 'connected' | 'reconnecting'
 
-const storedPlayerId = sessionStorage.getItem('ghost-racer-id') ?? crypto.randomUUID()
-sessionStorage.setItem('ghost-racer-id', storedPlayerId)
+const storedPlayerId = identificadorDoPiloto(sessionStorage, globalThis.crypto)
 
 // Uma atualização acidental da página não pode custar a vaga na sala.
 const ROOM_KEY = 'ghost-racer-room'
 const NAME_KEY = 'ghost-racer-name'
-const storedRoom = sessionStorage.getItem(ROOM_KEY)
-const storedName = sessionStorage.getItem(NAME_KEY) ?? 'Piloto'
+
+/** A navegação privada pode recusar o armazenamento; o jogo segue sem ele. */
+function lerGuardado(chave: string) {
+  try {
+    return sessionStorage.getItem(chave)
+  } catch {
+    return null
+  }
+}
+
+function guardar(chave: string, valor: string) {
+  try {
+    sessionStorage.setItem(chave, valor)
+  } catch {
+    // Sem armazenamento, só se perde a recuperação após recarregar a página.
+  }
+}
+
+function esquecer(chave: string) {
+  try {
+    sessionStorage.removeItem(chave)
+  } catch {
+    // Nada a fazer.
+  }
+}
+
+const storedRoom = lerGuardado(ROOM_KEY)
+const storedName = lerGuardado(NAME_KEY) ?? 'Piloto'
 
 function App() {
   const [screen, setScreen] = useState<Screen>('menu')
@@ -69,7 +95,7 @@ function App() {
           return
         }
         roomCodeRef.current = null
-        sessionStorage.removeItem(ROOM_KEY)
+        esquecer(ROOM_KEY)
         setRoom(null)
         setRaceSetup(null)
         setScreen('menu')
@@ -140,13 +166,13 @@ function App() {
     const name = draftName.trim().slice(0, 16) || pilotName
     setPilotName(name)
     pilotNameRef.current = name
-    sessionStorage.setItem(NAME_KEY, name)
+    guardar(NAME_KEY, name)
     return name
   }
 
   const openRoom = (nextRoom: LobbyRoom) => {
     roomCodeRef.current = nextRoom.code
-    sessionStorage.setItem(ROOM_KEY, nextRoom.code)
+    guardar(ROOM_KEY, nextRoom.code)
     setRoom(nextRoom)
     setLobbyError('')
     setLobbyNotice('')
@@ -180,7 +206,7 @@ function App() {
 
   const leaveLobby = () => {
     roomCodeRef.current = null
-    sessionStorage.removeItem(ROOM_KEY)
+    esquecer(ROOM_KEY)
     setRoom(null)
     setRaceSetup(null)
     setLobbyNotice('')

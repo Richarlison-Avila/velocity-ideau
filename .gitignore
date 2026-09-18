@@ -12,3 +12,4 @@ vite.config.d.ts
 Thumbs.db
 .idea/
 .vscode/
+qrcode/

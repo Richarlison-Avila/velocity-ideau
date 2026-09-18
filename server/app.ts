@@ -18,6 +18,8 @@ export type GameServerOptions = {
   graceMs?: number
   /** Serve o site construído quando a pasta dist existe. */
   serveStatic?: boolean
+  /** Códigos de sala que se criam sozinhos, para a demonstração do workshop. */
+  openRooms?: string[]
 }
 
 export type GameServer = {
@@ -36,14 +38,16 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
   const app = express()
   const http = createServer(app)
   const io = new Server(http, { cors: { origin: true, credentials: true } })
-  const rooms = new RoomStore({ countdownMs })
+  const rooms = new RoomStore({ countdownMs, openRooms: options.openRooms })
 
   /** Timers que disparam a largada no instante agendado, por sala. */
   const startTimers = new Map<string, NodeJS.Timeout>()
   /** Timers que removem quem não voltou depois da queda de conexão. */
   const graceTimers = new Map<string, NodeJS.Timeout>()
 
-  app.get('/health', (_request, response) => response.json({ ok: true, now: Date.now() }))
+  app.get('/health', (_request, response) =>
+    response.json({ ok: true, now: Date.now(), salasDemo: rooms.demoRooms }),
+  )
 
   const graceKey = (code: string, playerId: string) => `${code}:${playerId}`
 

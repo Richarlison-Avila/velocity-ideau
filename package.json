@@ -11,7 +11,9 @@
     "start": "tsx server/index.ts",
     "preview": "vite preview",
     "test": "vitest run",
-    "piloto": "tsx scripts/piloto-virtual.ts"
+    "piloto": "tsx scripts/piloto-virtual.ts",
+    "fontes": "tsx scripts/baixar-fontes.ts",
+    "qrcode": "tsx scripts/qrcode.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
@@ -21,16 +23,18 @@
     "react-dom": "latest",
     "socket.io": "latest",
     "socket.io-client": "latest",
+    "tsx": "latest",
     "vite": "latest"
   },
   "devDependencies": {
     "@types/express": "latest",
     "@types/node": "latest",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "concurrently": "latest",
     "cross-env": "^10.1.0",
-    "tsx": "latest",
+    "qrcode": "^1.5.4",
     "typescript": "latest",
     "vitest": "latest"
   }
