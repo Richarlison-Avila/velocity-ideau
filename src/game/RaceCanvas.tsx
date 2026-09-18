@@ -139,17 +139,29 @@ const GHOST_PALETTE: CarPalette = {
   alpha: 0.46,
 }
 
+/** Deformações de apresentação do carro. Nada disso afeta a corrida. */
+type CarPose = {
+  /** Inclinação da carroceria, em radianos. */
+  tilt: number
+  /** Compressão vertical: negativo estica, positivo achata. */
+  squash: number
+}
+
+const POSE_NEUTRA: CarPose = { tilt: 0, squash: 0 }
+
 function drawCar(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   scale: number,
   palette: CarPalette = PLAYER_PALETTE,
+  pose: CarPose = POSE_NEUTRA,
 ) {
   ctx.save()
   ctx.globalAlpha = palette.alpha
   ctx.translate(x, y)
-  ctx.scale(scale, scale)
+  if (pose.tilt !== 0) ctx.rotate(pose.tilt)
+  ctx.scale(scale * (1 + pose.squash * 0.5), scale * (1 - pose.squash))
 
   ctx.fillStyle = palette.shadow
   ctx.beginPath()
@@ -363,6 +375,10 @@ function RaceCanvas({
 
     // Intensidades contínuas para a apresentação, derivadas da corrida.
     const feel = createFeel()
+
+    // Quem pede menos movimento no sistema recebe a cena sem tremor.
+    const semTremor = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    const forcaDoMovimento = semTremor ? 0.25 : 1
     const effects = new ParticleField()
     const dustRate = new EmissionRate(34)
     const boostRate = new EmissionRate(26)
@@ -398,10 +414,26 @@ function RaceCanvas({
       flashTimers.push(window.setTimeout(() => setFlash(null), 1_200))
     }
 
+    /**
+     * Deslocamentos de câmera do quadro. Não existe câmera 3D aqui: o efeito é
+     * obtido movendo a projeção inteira. Como pista, marcadores, obstáculos,
+     * partículas, fantasma, linha de chegada e carro passam todos por
+     * `roadGeometry`, nada consegue descolar do resto — por construção.
+     *
+     * Tudo é multiplicado pela perspectiva, então o que está perto se move
+     * mais do que o horizonte, como em um deslocamento real de câmera.
+     */
+    const camera = { lift: 0, shake: 0, roll: 0 }
+
     const roadGeometry = (distanceAhead: number) => {
       const { y, roadWidth, perspective } = roadProjection(distanceAhead, width, height)
       const bend = (trackCurve(race.progress + distanceAhead) - trackCurve(race.progress)) * width * 0.31
-      return { y, roadWidth, perspective, center: width / 2 + bend * (1 - perspective * 0.25) }
+      return {
+        y: y + (camera.lift + camera.shake) * perspective,
+        roadWidth,
+        perspective,
+        center: width / 2 + bend * (1 - perspective * 0.25) + camera.roll * perspective,
+      }
     }
 
     const drawBackdrop = () => {
@@ -620,6 +652,16 @@ function RaceCanvas({
         // quadro: um quadro longo não pode virar uma rajada de poeira.
         const passo = Math.min(Math.max(0, dt), MAX_STEP_SECONDS)
         updateFeel(feel, race, inputRef.current, passo)
+
+        // A câmera baixa um pouco com a velocidade, inclina no esterço e leva
+        // um tranco curto no impacto. Tudo contínuo, limitado e proporcional
+        // à tela, para não atrapalhar a leitura nem os controles de toque.
+        const segundos = frame / 1000
+        const vibracao = Math.pow(feel.speed, 4) * Math.sin(segundos * 37) * height * 0.0022
+        const tranco = feel.impact * Math.sin(segundos * 46) * height * 0.022
+        camera.lift = feel.speed * height * 0.016 * forcaDoMovimento
+        camera.shake = (vibracao + tranco) * forcaDoMovimento
+        camera.roll = -feel.steer * width * 0.014 * forcaDoMovimento
         // Os efeitos saem de trás das rodas, e não do centro: nascendo sob o
         // carro, o próprio sprite os esconderia por toda a vida útil.
         const rastro = race.progress + CAR_VIEW_DISTANCE - TRAIL_SETBACK
@@ -721,7 +763,12 @@ function RaceCanvas({
       const ondeEstaOCarro = roadGeometry(CAR_VIEW_DISTANCE)
       const playerX = ondeEstaOCarro.center + lateralOffset(race.lateral, ondeEstaOCarro.roadWidth)
       if (!doneRef.current) {
-        drawCar(ctx, playerX, ondeEstaOCarro.y, Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH))
+        // O corpo inclina no esterço e comprime na arrancada e no impacto.
+        const pose = {
+          tilt: feel.steer * 0.075 * forcaDoMovimento,
+          squash: (feel.accel * 0.05 - feel.impact * 0.1) * forcaDoMovimento,
+        }
+        drawCar(ctx, playerX, ondeEstaOCarro.y, Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH), PLAYER_PALETTE, pose)
       }
 
       // O aviso de fora da pista cresce conforme o carro se afasta da borda,
