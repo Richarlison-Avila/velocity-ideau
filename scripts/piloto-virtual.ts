@@ -21,7 +21,14 @@ type Room = {
 }
 
 type RoomAck = { ok: boolean; room?: Room; error?: string }
-type Scheduled = { code: string; startAt: number; countdownMs: number; serverTime: number }
+type Scheduled = {
+  code: string
+  startAt: number
+  countdownMs: number
+  /** Semente oficial do traçado, a mesma que o navegador recebe. */
+  trackSeed: number
+  serverTime: number
+}
 
 const TELEMETRY_INTERVAL_MS = 100
 const STEP_MS = 16
@@ -165,6 +172,8 @@ socket.on('race:result', (resultado: { winnerId: string | null; reason: string; 
 socket.on('race:scheduled', (payload: Scheduled) => {
   const faltando = payload.startAt - serverNow()
   console.log(`Largada agendada para daqui a ${Math.round(faltando)} ms.`)
+  // Impresso para conferir a olho que os dois lados receberam a mesma pista.
+  console.log(`Traçado desta corrida: semente ${payload.trackSeed}.`)
   race(payload.startAt)
 })
 

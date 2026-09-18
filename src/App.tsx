@@ -17,7 +17,7 @@ import type {
 } from './multiplayer/types'
 
 type Screen = 'menu' | 'lobby' | 'race' | 'result'
-type RaceSetup = { startAt: number; countdownMs: number; mode: 'solo' | 'online' }
+type RaceSetup = { startAt: number; countdownMs: number; trackSeed: number; mode: 'solo' | 'online' }
 type Connection = 'connected' | 'reconnecting'
 
 const storedPlayerId = identificadorDoPiloto(sessionStorage, globalThis.crypto)
@@ -154,7 +154,14 @@ function App() {
       if (current?.startAt === room.startAt && current.mode === 'online') return current
       // Cada largada começa com o fantasma zerado.
       ghostRef.current.reset()
-      return { startAt: room.startAt!, countdownMs: room.countdownMs, mode: 'online' }
+      // O traçado vem da sala: é o servidor que decide, e o mesmo número chega
+      // aos dois pilotos antes da contagem começar.
+      return {
+        startAt: room.startAt!,
+        countdownMs: room.countdownMs,
+        trackSeed: room.trackSeed,
+        mode: 'online',
+      }
     })
     setLobbyNotice('')
     setResult(null)
@@ -199,7 +206,13 @@ function App() {
   const startSoloRace = () => {
     selectedName()
     setResult(null)
-    setRaceSetup({ startAt: Date.now() + DEFAULT_COUNTDOWN_MS, countdownMs: DEFAULT_COUNTDOWN_MS, mode: 'solo' })
+    // No treino não há com quem sincronizar: cada volta estreia um traçado.
+    setRaceSetup({
+      startAt: Date.now() + DEFAULT_COUNTDOWN_MS,
+      countdownMs: DEFAULT_COUNTDOWN_MS,
+      trackSeed: Math.floor(Math.random() * 0xffffffff),
+      mode: 'solo',
+    })
     setRaceKey((value) => value + 1)
     setScreen('race')
   }
@@ -280,6 +293,7 @@ function App() {
         pilotName={pilotName}
         startAt={raceSetup.startAt}
         countdownMs={raceSetup.countdownMs}
+        trackSeed={raceSetup.trackSeed}
         now={online ? serverClock.now : undefined}
         mode={raceSetup.mode}
         connectionNotice={online ? connectionNotice : null}

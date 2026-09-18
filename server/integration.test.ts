@@ -8,7 +8,13 @@ const COUNTDOWN_MS = 400
 const GRACE_MS = 600
 
 type RoomAck = { ok: boolean; room?: PublicRoom; error?: string }
-type Scheduled = { code: string; startAt: number; countdownMs: number; serverTime: number }
+type Scheduled = {
+  code: string
+  startAt: number
+  countdownMs: number
+  trackSeed: number
+  serverTime: number
+}
 
 let server: GameServer
 let port = 0
@@ -121,6 +127,9 @@ describe('largada sincronizada pelo socket', () => {
     expect(paraAna.startAt).toBe(paraBeto.startAt)
     expect(paraAna.countdownMs).toBe(paraBeto.countdownMs)
     expect(paraAna.startAt).toBeGreaterThan(Date.now())
+    // A pista também é uma só: a mesma semente chega aos dois aparelhos.
+    expect(paraAna.trackSeed).toBe(paraBeto.trackSeed)
+    expect(paraAna.trackSeed).toBe(server.rooms.get(code)?.trackSeed)
   })
 
   it('só agenda depois que os dois confirmam', async () => {
@@ -466,7 +475,7 @@ describe('perda momentânea de conexão pelo socket', () => {
     const agendada = waitFor<Scheduled>(ana, 'race:scheduled')
     ana.emit('room:set-ready', { code, playerId: 'ana', ready: true })
     beto.emit('room:set-ready', { code, playerId: 'beto', ready: true })
-    const { startAt } = await agendada
+    const { startAt, trackSeed } = await agendada
 
     await waitForRoom(ana, (room) => room.status === 'racing')
     beto.disconnect()
@@ -476,6 +485,10 @@ describe('perda momentânea de conexão pelo socket', () => {
     const resposta = await ask<RoomAck>(betoDeVolta, 'room:join', { code, name: 'Beto', playerId: 'beto' })
 
     expect(resposta.room?.status).toBe('racing')
-    expect((await reagendada).startAt).toBe(startAt)
+    const voltou = await reagendada
+    expect(voltou.startAt).toBe(startAt)
+    // E volta para a mesma pista: a semente não é sorteada de novo.
+    expect(voltou.trackSeed).toBe(trackSeed)
+    expect(resposta.room?.trackSeed).toBe(trackSeed)
   })
 })

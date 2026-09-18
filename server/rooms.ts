@@ -23,6 +23,14 @@ export type PublicRoom = {
   startAt: number | null
   /** Duração total da sequência de luzes, usada pelos clientes. */
   countdownMs: number
+  /**
+   * Semente oficial do traçado desta corrida.
+   *
+   * A curva e o cenário são gerados a partir dela, então os dois pilotos
+   * precisam receber exatamente o mesmo número — senão cada um correria em uma
+   * pista diferente. Quem manda é o servidor: o cliente nunca sorteia.
+   */
+  trackSeed: number
 }
 
 export type RivalState = 'racing' | 'finished'
@@ -55,6 +63,8 @@ type Room = {
   createdAt: number
   state: RaceState
   startAt: number | null
+  /** Semente do traçado desta corrida, renovada a cada nova largada. */
+  trackSeed: number
   /** Resultado oficial da última corrida, idêntico para os dois pilotos. */
   outcome: RaceOutcome | null
 }
@@ -139,6 +149,8 @@ export type RoomStoreOptions = {
    * apresentador abrir o jogo, para o QR code do slide sempre funcionar.
    */
   openRooms?: string[]
+  /** Sorteio da semente do traçado. Os testes injetam uma sequência previsível. */
+  nextSeed?: () => number
 }
 
 export class RoomStore {
@@ -146,11 +158,13 @@ export class RoomStore {
   private now: () => number
   private countdownMs: number
   private openRooms: Set<string>
+  private nextSeed: () => number
 
   constructor(options: RoomStoreOptions = {}) {
     this.now = options.now ?? (() => Date.now())
     this.countdownMs = options.countdownMs ?? COUNTDOWN_MS
     this.openRooms = new Set((options.openRooms ?? []).map((code) => code.trim().toUpperCase()).filter(Boolean))
+    this.nextSeed = options.nextSeed ?? (() => Math.floor(Math.random() * 0xffffffff))
   }
 
   /** Códigos que sempre aceitam entrada, mesmo sem ninguém dentro. */
@@ -165,6 +179,7 @@ export class RoomStore {
       createdAt: this.now(),
       state: 'idle',
       startAt: null,
+      trackSeed: this.nextSeed(),
       outcome: null,
       players: [this.createPlayer(playerId, socketId, rawName)],
     })
@@ -206,6 +221,11 @@ export class RoomStore {
     if (room.state !== 'idle' || !this.everyoneReady(room)) return null
     room.state = 'countdown'
     room.startAt = this.now() + this.countdownMs
+    // Cada largada estreia um traçado. Como a semente é renovada aqui, e só
+    // aqui, ela fica congelada durante a contagem, a corrida e qualquer
+    // reconexão no meio da prova — e a revanche, que passa por este mesmo
+    // caminho, ganha uma pista nova para os dois ao mesmo tempo.
+    room.trackSeed = this.nextSeed()
     return this.toPublic(room)
   }
 
@@ -483,6 +503,7 @@ export class RoomStore {
       createdAt: this.now(),
       state: 'idle',
       startAt: null,
+      trackSeed: this.nextSeed(),
       outcome: null,
       players: [],
     }
@@ -547,6 +568,13 @@ export class RoomStore {
             : this.everyoneReady(room)
               ? 'ready'
               : 'waiting'
-    return { code: room.code, players, status, startAt: room.startAt, countdownMs: this.countdownMs }
+    return {
+      code: room.code,
+      players,
+      status,
+      startAt: room.startAt,
+      countdownMs: this.countdownMs,
+      trackSeed: room.trackSeed,
+    }
   }
 }

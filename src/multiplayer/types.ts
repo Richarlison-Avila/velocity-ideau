@@ -19,6 +19,8 @@ export type LobbyRoom = {
   startAt: number | null
   /** Duração total da sequência de luzes definida pelo servidor. */
   countdownMs: number
+  /** Semente oficial do traçado, igual para os dois pilotos. */
+  trackSeed: number
 }
 
 export type RoomResponse = {
@@ -31,6 +33,8 @@ export type ScheduledRace = {
   code: string
   startAt: number
   countdownMs: number
+  /** Semente do traçado desta corrida. */
+  trackSeed: number
   serverTime: number
 }
 

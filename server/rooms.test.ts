@@ -557,3 +557,94 @@ describe('perda momentânea de conexão', () => {
     expect(back.startAt).toBe(scheduled?.startAt)
   })
 })
+
+describe('semente oficial do traçado', () => {
+  /** Sementes previsíveis: 1, 2, 3… para o teste poder afirmar qual é qual. */
+  function storeComSementes() {
+    let proxima = 0
+    return new RoomStore({ nextSeed: () => (proxima += 1) })
+  }
+
+  it('a sala nasce com uma semente e ela vale para os dois pilotos', () => {
+    const rooms = storeComSementes()
+    const criada = rooms.create('socket-a', 'a', 'Ana')
+    const entrou = rooms.join(criada.code, 'socket-b', 'b', 'Beto')
+
+    expect(criada.trackSeed).toBe(1)
+    // O segundo piloto recebe exatamente o mesmo número, não um novo sorteio.
+    expect(entrou.trackSeed).toBe(criada.trackSeed)
+  })
+
+  it('cada largada estreia um traçado, e os dois pilotos recebem o mesmo', () => {
+    const rooms = storeComSementes()
+    const code = roomWithTwoPilots(rooms)
+    const noLobby = rooms.get(code)!.trackSeed
+
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    const agendada = rooms.scheduleStart(code)!
+
+    expect(agendada.trackSeed).not.toBe(noLobby)
+    // A sala publicada é a mesma para quem quer que a leia.
+    expect(rooms.get(code)?.trackSeed).toBe(agendada.trackSeed)
+  })
+
+  it('a semente não muda durante a contagem nem durante a corrida', () => {
+    const rooms = storeComSementes()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    const daLargada = rooms.scheduleStart(code)!.trackSeed
+
+    expect(rooms.beginRace(code)?.trackSeed).toBe(daLargada)
+    rooms.acceptTelemetry(code, 'a', { t: Date.now(), progress: 10, lateral: 0, speed: 100, state: 'racing' })
+    expect(rooms.get(code)?.trackSeed).toBe(daLargada)
+  })
+
+  it('quem cai e volta no meio da prova recupera a mesma pista', () => {
+    const rooms = storeComSementes()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    const daLargada = rooms.scheduleStart(code)!.trackSeed
+    rooms.beginRace(code)
+
+    rooms.markDisconnected('socket-b')
+    // Volta com outro socket, mas o mesmo identificador de piloto.
+    const devolta = rooms.join(code, 'socket-b2', 'b', 'Beto')
+    expect(devolta.trackSeed).toBe(daLargada)
+  })
+
+  it('a revanche sorteia uma pista nova, igual para os dois', () => {
+    const clock = createClock()
+    let proxima = 0
+    const rooms = new RoomStore({ now: clock.now, nextSeed: () => (proxima += 1) })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    const primeira = rooms.scheduleStart(code)!.trackSeed
+    rooms.beginRace(code)
+    // A prova precisa durar o mínimo plausível para a chegada ser aceita.
+    clock.advance(80_000)
+
+    const relatorio = { time: 70, topSpeed: 252, collisions: 1 }
+    rooms.recordFinish(code, 'a', relatorio)
+    rooms.recordFinish(code, 'b', { ...relatorio, time: 72 })
+
+    rooms.requestRematch(code, 'a')
+    // Com os dois pedidos a sala volta a ficar pronta e a largada é reagendada.
+    rooms.requestRematch(code, 'b')
+    const segunda = rooms.scheduleStart(code)!
+
+    expect(segunda.trackSeed).not.toBe(primeira)
+    expect(rooms.get(code)?.trackSeed).toBe(segunda.trackSeed)
+  })
+
+  it('a sala de demonstração também nasce com traçado próprio', () => {
+    let proxima = 0
+    const rooms = new RoomStore({ openRooms: ['DEMO1'], nextSeed: () => (proxima += 1) })
+    const room = rooms.join('DEMO1', 'socket-a', 'a', 'Ana')
+    expect(Number.isFinite(room.trackSeed)).toBe(true)
+    expect(room.trackSeed).toBe(1)
+  })
+})

@@ -45,6 +45,11 @@ type RaceCanvasProps = {
   startAt: number
   /** Duração total da sequência de luzes enviada pelo servidor. */
   countdownMs?: number
+  /**
+   * Semente oficial do traçado. Vem do servidor no duelo e é sorteada
+   * localmente no treino: a curva e o cenário saem inteiramente dela.
+   */
+  trackSeed: number
   /** Relógio sincronizado. No modo treino é o relógio local. */
   now?: () => number
   mode?: 'solo' | 'online'

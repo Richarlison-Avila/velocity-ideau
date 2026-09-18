@@ -74,6 +74,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       code,
       startAt: scheduled.startAt,
       countdownMs: scheduled.countdownMs,
+      trackSeed: scheduled.trackSeed,
       serverTime: Date.now(),
     })
 
@@ -123,10 +124,13 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
 
         // Quem volta durante a contagem ou a corrida recebe o instante oficial.
         if (room.startAt && (room.status === 'countdown' || room.status === 'racing')) {
+          // A semente vai junto: quem volta precisa reconstruir exatamente a
+          // mesma pista em que o rival continua correndo.
           socket.emit('race:scheduled', {
             code: room.code,
             startAt: room.startAt,
             countdownMs: room.countdownMs,
+            trackSeed: room.trackSeed,
             serverTime: Date.now(),
           })
           // E também a última posição conhecida do rival, para o fantasma voltar na hora.
