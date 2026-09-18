@@ -58,8 +58,15 @@ describe('efeitos da pista', () => {
 
     const visiveis = campo.visible(400)
     expect(visiveis).toHaveLength(2)
-    expect(visiveis[0].ahead).toBe(100)
-    expect(visiveis[1].ahead).toBe(50)
+    expect(visiveis[0].distance - 400).toBe(100)
+    expect(visiveis[1].distance - 400).toBe(50)
+  })
+
+  it('a listagem reaproveita o mesmo vetor entre quadros', () => {
+    const campo = new ParticleField()
+    campo.spawn('dust', 500, 0)
+    // O mesmo vetor volta a cada chamada: nada é alocado no laço de render.
+    expect(campo.visible(400)).toBe(campo.visible(400))
   })
 
   it('a partícula nasce onde o carro aparece na tela', () => {

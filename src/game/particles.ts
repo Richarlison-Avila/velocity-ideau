@@ -62,6 +62,8 @@ const DEFAULTS: Record<ParticleKind, Required<SpawnOptions>> = {
 
 export class ParticleField {
   private items: Particle[] = []
+  /** Vetor reaproveitado pela listagem, para não alocar a cada quadro. */
+  private buffer: Particle[] = []
 
   get count() {
     return this.items.length
@@ -111,16 +113,26 @@ export class ParticleField {
     this.items = alive
   }
 
-  /** Efeitos dentro do campo de visão, do mais distante para o mais próximo. */
-  visible(progress: number) {
-    return this.items
-      .map((particle) => ({ particle, ahead: particle.distance - progress }))
-      .filter((item) => item.ahead > 0 && item.ahead < VIEW_DISTANCE)
-      .sort((a, b) => b.ahead - a.ahead)
+  /**
+   * Efeitos dentro do campo de visão, do mais distante para o mais próximo.
+   *
+   * Reaproveita sempre o mesmo vetor e não cria objeto nenhum: isso roda a
+   * cada quadro, com até uma centena de partículas, em celular.
+   */
+  visible(progress: number): readonly Particle[] {
+    this.buffer.length = 0
+    for (const particle of this.items) {
+      const ahead = particle.distance - progress
+      if (ahead > 0 && ahead < VIEW_DISTANCE) this.buffer.push(particle)
+    }
+    // Mesmo progresso para todos, então ordenar por distância ordena por `ahead`.
+    this.buffer.sort((a, b) => b.distance - a.distance)
+    return this.buffer
   }
 
   clear() {
     this.items = []
+    this.buffer.length = 0
   }
 }
 

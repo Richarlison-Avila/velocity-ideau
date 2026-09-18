@@ -425,9 +425,13 @@ function RaceCanvas({
      */
     const camera = { lift: 0, shake: 0, roll: 0 }
 
+    // A curva no ponto do carro é a mesma para todas as profundidades do
+    // quadro, então é calculada uma vez em vez de a cada chamada.
+    let curvaAqui = 0
+
     const roadGeometry = (distanceAhead: number) => {
       const { y, roadWidth, perspective } = roadProjection(distanceAhead, width, height)
-      const bend = (trackCurve(race.progress + distanceAhead) - trackCurve(race.progress)) * width * 0.31
+      const bend = (trackCurve(race.progress + distanceAhead) - curvaAqui) * width * 0.31
       return {
         y: y + (camera.lift + camera.shake) * perspective,
         roadWidth,
@@ -436,12 +440,21 @@ function RaceCanvas({
       }
     }
 
+    // O gradiente do céu só muda quando a tela muda de tamanho.
+    let ceu: CanvasGradient | null = null
+    let ceuAltura = -1
+    const gradienteDoCeu = () => {
+      if (ceu && ceuAltura === height) return ceu
+      ceu = ctx.createLinearGradient(0, 0, 0, height * 0.5)
+      ceu.addColorStop(0, '#06101b')
+      ceu.addColorStop(0.58, '#173d4b')
+      ceu.addColorStop(1, '#ff875f')
+      ceuAltura = height
+      return ceu
+    }
+
     const drawBackdrop = () => {
-      const sky = ctx.createLinearGradient(0, 0, 0, height * 0.5)
-      sky.addColorStop(0, '#06101b')
-      sky.addColorStop(0.58, '#173d4b')
-      sky.addColorStop(1, '#ff875f')
-      ctx.fillStyle = sky
+      ctx.fillStyle = gradienteDoCeu()
       ctx.fillRect(0, 0, width, height * 0.44)
 
       ctx.fillStyle = '#14222b'
@@ -462,10 +475,12 @@ function RaceCanvas({
 
     const drawRoad = () => {
       const slices = 84
+      // A borda próxima de uma fatia é a borda distante da seguinte, então a
+      // geometria é calculada uma vez e reaproveitada: metade das contas de
+      // seno da pista desaparece.
+      let far = roadGeometry(VIEW_DISTANCE)
       for (let i = 0; i < slices; i += 1) {
-        const farDistance = VIEW_DISTANCE * (1 - i / slices)
         const nearDistance = VIEW_DISTANCE * (1 - (i + 1) / slices)
-        const far = roadGeometry(farDistance)
         const near = roadGeometry(nearDistance)
         const stripe = Math.floor((race.progress + nearDistance) / 18) % 2 === 0
 
@@ -500,6 +515,8 @@ function RaceCanvas({
             ctx.stroke()
           }
         }
+
+        far = near
       }
     }
 
@@ -716,6 +733,10 @@ function RaceCanvas({
         }
       }
 
+      // A simulação já avançou: a partir daqui o quadro inteiro usa o mesmo
+      // progresso, e portanto a mesma curva de referência.
+      curvaAqui = trackCurve(race.progress)
+
       drawBackdrop()
       drawRoad()
       drawRoadside()
@@ -723,8 +744,8 @@ function RaceCanvas({
       // As marcas de pneu ficam no asfalto, abaixo de tudo o que corre na pista.
       effects.update(Math.min(Math.max(0, dt), MAX_STEP_SECONDS), race.progress)
       const efeitos = effects.visible(race.progress)
-      for (const item of efeitos) {
-        if (item.particle.kind === 'skid') drawParticle(item.particle, item.ahead)
+      for (const particula of efeitos) {
+        if (particula.kind === 'skid') drawParticle(particula, particula.distance - race.progress)
       }
 
       // Posição do fantasma neste quadro, já interpolada.
@@ -732,19 +753,20 @@ function RaceCanvas({
       const rivalAhead = rivalSample ? rivalSample.progress - race.progress : 0
       const rivalVisible = Boolean(rivalSample) && rivalAhead > 0 && rivalAhead < VIEW_DISTANCE
 
-      const visibleObstacles = obstacles
-        .map((obstacle) => ({ ...obstacle, ahead: obstacle.distance - race.progress }))
-        .filter((obstacle) => obstacle.ahead > 0 && obstacle.ahead < VIEW_DISTANCE)
-        .sort((a, b) => b.ahead - a.ahead)
-
-      // O fantasma entra na ordem de profundidade dos obstáculos.
+      // Os obstáculos já estão em ordem de distância, então basta percorrer do
+      // fim para o começo — do mais distante para o mais próximo — sem montar
+      // lista nova a cada quadro. O fantasma entra na ordem de profundidade.
       let ghostDrawn = !rivalVisible
-      for (const obstacle of visibleObstacles) {
-        if (!ghostDrawn && rivalAhead > obstacle.ahead) {
+      for (let indice = obstacles.length - 1; indice >= 0; indice -= 1) {
+        const obstaculo = obstacles[indice]
+        const ahead = obstaculo.distance - race.progress
+        if (ahead <= 0 || ahead >= VIEW_DISTANCE) continue
+
+        if (!ghostDrawn && rivalAhead > ahead) {
           drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale)
           ghostDrawn = true
         }
-        drawObstacle(obstacle.ahead, obstacle.lane, obstacle.kind)
+        drawObstacle(ahead, obstaculo.lane, obstaculo.kind)
       }
       if (!ghostDrawn) drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale)
 
@@ -772,8 +794,8 @@ function RaceCanvas({
       }
 
       // Poeira, faíscas e rastro de boost passam por cima da pista e dos carros.
-      for (const item of efeitos) {
-        if (item.particle.kind !== 'skid') drawParticle(item.particle, item.ahead)
+      for (const particula of efeitos) {
+        if (particula.kind !== 'skid') drawParticle(particula, particula.distance - race.progress)
       }
 
       // O carro usa a mesma projeção da pista, dos obstáculos e do fantasma.
