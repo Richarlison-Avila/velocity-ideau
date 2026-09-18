@@ -12,8 +12,8 @@ import { io, type Socket } from 'socket.io-client'
 
 type Room = {
   code: string
-  players: Array<{ id: string; name: string; ready: boolean; connected: boolean }>
-  status: 'waiting' | 'ready' | 'countdown' | 'racing'
+  players: Array<{ id: string; name: string; ready: boolean; connected: boolean; finished: boolean; rematch: boolean }>
+  status: 'waiting' | 'ready' | 'countdown' | 'racing' | 'finished'
   startAt: number | null
   countdownMs: number
 }
@@ -112,8 +112,8 @@ function race(startAt: number) {
       racing = false
       send('finished', lateral)
       console.log(`Chegada em ${elapsed.toFixed(3)} s.`)
-      // Libera a sala para uma nova largada.
-      setTimeout(() => socket.emit('room:set-ready', { code, playerId, ready: false }), 400)
+      // O servidor é quem decide o vencedor: avisamos a chegada e esperamos.
+      socket.emit('race:finish', { code, playerId, time: elapsed, topSpeed: targetSpeed, collisions: 0 })
       return
     }
 
@@ -142,13 +142,23 @@ socket.on('connect', async () => {
 socket.on('room:update', (room: Room) => {
   const rivais = room.players.map((player) => `${player.name}${player.ready ? ' (pronto)' : ''}`).join(', ')
   console.log(`Sala ${room.status}: ${rivais}`)
-  // Depois de uma corrida, confirma de novo para a revanche.
-  if (room.status === 'waiting' && !racing) {
-    const me = room.players.find((player) => player.id === playerId)
-    if (me && !me.ready && room.players.length === 2) {
-      setTimeout(() => socket.emit('room:set-ready', { code, playerId, ready: true }), 800)
-    }
+  const me = room.players.find((player) => player.id === playerId)
+
+  // Depois de uma corrida, confirma de novo para a próxima largada.
+  if (room.status === 'waiting' && !racing && me && !me.ready && room.players.length === 2) {
+    setTimeout(() => socket.emit('room:set-ready', { code, playerId, ready: true }), 800)
   }
+
+  // Com o resultado fechado, aceita a revanche.
+  if (room.status === 'finished' && me && !me.rematch) {
+    setTimeout(() => socket.emit('race:rematch', { code, playerId }), 900)
+  }
+})
+
+socket.on('race:result', (resultado: { winnerId: string | null; reason: string; gap: number | null }) => {
+  const quem = resultado.winnerId === playerId ? 'eu' : resultado.winnerId ? 'o rival' : 'ninguém'
+  const diferenca = resultado.gap === null ? 'sem diferença medida' : `${resultado.gap.toFixed(3)} s`
+  console.log(`Resultado oficial: venceu ${quem} (${resultado.reason}), ${diferenca}.`)
 })
 
 socket.on('race:scheduled', (payload: Scheduled) => {

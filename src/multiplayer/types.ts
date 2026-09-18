@@ -3,9 +3,13 @@ export type LobbyPlayer = {
   name: string
   ready: boolean
   connected: boolean
+  /** Já cruzou a linha de chegada nesta corrida. */
+  finished: boolean
+  /** Já pediu revanche. */
+  rematch: boolean
 }
 
-export type LobbyStatus = 'waiting' | 'ready' | 'countdown' | 'racing'
+export type LobbyStatus = 'waiting' | 'ready' | 'countdown' | 'racing' | 'finished'
 
 export type LobbyRoom = {
   code: string
@@ -33,6 +37,27 @@ export type ScheduledRace = {
 export type RaceCancelled = {
   code: string
   reason: string
+}
+
+/** Resultado oficial, calculado pelo servidor e idêntico nas duas telas. */
+export type FinishEntry = {
+  playerId: string
+  name: string
+  /** Tempo de prova em segundos, ou null para quem não completou. */
+  time: number | null
+  topSpeed: number
+  collisions: number
+  outcome: 'finished' | 'abandoned' | 'unfinished'
+}
+
+export type RaceOutcome = {
+  code: string
+  winnerId: string | null
+  reason: 'time' | 'abandon'
+  /** Diferença entre primeiro e segundo, quando os dois completaram. */
+  gap: number | null
+  /** Ordenado: vencedor primeiro. */
+  entries: FinishEntry[]
 }
 
 /** Telemetria trocada entre os dois pilotos durante a corrida. */

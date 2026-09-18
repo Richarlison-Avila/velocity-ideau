@@ -284,6 +284,165 @@ describe('telemetria do adversário', () => {
   })
 })
 
+describe('resultado da corrida', () => {
+  /** Sala correndo, já passado o tempo mínimo em que a prova pode terminar. */
+  function provaCompletavel(clock: ReturnType<typeof createClock>, segundos = 70) {
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+    clock.advance(segundos * 1_000)
+    return { rooms, code }
+  }
+
+  const chegada = (time: number) => ({ time, topSpeed: 252, collisions: 2 })
+
+  it('só fecha o resultado quando os dois cruzam a linha', () => {
+    const clock = createClock()
+    const { rooms, code } = provaCompletavel(clock)
+
+    const primeira = rooms.recordFinish(code, 'a', chegada(69))
+    expect(primeira?.outcome).toBeNull()
+    expect(primeira?.room.status).toBe('racing')
+
+    const segunda = rooms.recordFinish(code, 'b', chegada(70))
+    expect(segunda?.outcome).not.toBeNull()
+    expect(segunda?.room.status).toBe('finished')
+  })
+
+  it('entrega o mesmo vencedor e a mesma diferença para os dois', () => {
+    const clock = createClock()
+    // Cada piloto avisa a própria chegada no instante em que cruza a linha.
+    const { rooms, code } = provaCompletavel(clock, 69.25)
+    rooms.recordFinish(code, 'b', chegada(69.25))
+    clock.advance(2_250)
+    rooms.recordFinish(code, 'a', chegada(71.5))
+
+    const resultado = rooms.outcomeFor(code)!
+    expect(resultado.winnerId).toBe('b')
+    expect(resultado.reason).toBe('time')
+    expect(resultado.gap).toBeCloseTo(2.25, 5)
+    expect(resultado.entries.map((entry) => entry.playerId)).toEqual(['b', 'a'])
+  })
+
+  it('recusa uma chegada antes do tempo mínimo da prova', () => {
+    const clock = createClock()
+    const { rooms, code } = provaCompletavel(clock, 20)
+    expect(rooms.recordFinish(code, 'a', chegada(19))).toBeNull()
+  })
+
+  it('prende um tempo impossível ao que o servidor mediu', () => {
+    const clock = createClock()
+    const { rooms, code } = provaCompletavel(clock, 70)
+    // Cliente adulterado tentando reivindicar uma volta de 10 segundos.
+    const registrada = rooms.recordFinish(code, 'a', chegada(10))
+    expect(registrada?.room).toBeTruthy()
+
+    rooms.recordFinish(code, 'b', chegada(70))
+    const vencedor = rooms.outcomeFor(code)!
+    expect(vencedor.entries.find((entry) => entry.playerId === 'a')!.time).toBeGreaterThan(67)
+  })
+
+  it('não aceita um tempo no futuro', () => {
+    const clock = createClock()
+    const { rooms, code } = provaCompletavel(clock, 70)
+    rooms.recordFinish(code, 'a', chegada(500))
+    const tempo = rooms.outcomeFor(code) ?? null
+    expect(tempo).toBeNull()
+    rooms.recordFinish(code, 'b', chegada(70))
+    const registrado = rooms.outcomeFor(code)!.entries.find((entry) => entry.playerId === 'a')!
+    expect(registrado.time).toBeLessThanOrEqual(70)
+  })
+
+  it('ignora uma segunda chegada do mesmo piloto', () => {
+    const clock = createClock()
+    const { rooms, code } = provaCompletavel(clock)
+    rooms.recordFinish(code, 'a', chegada(69))
+    expect(rooms.recordFinish(code, 'a', chegada(60))).toBeNull()
+  })
+
+  it('dá a vitória por abandono a quem ficou', () => {
+    const clock = createClock()
+    const { rooms, code } = provaCompletavel(clock, 30)
+    const encerrada = rooms.abandonRace(code, 'b')
+
+    const resultado = encerrada?.outcome!
+    expect(resultado.reason).toBe('abandon')
+    expect(resultado.winnerId).toBe('a')
+    expect(resultado.gap).toBeNull()
+    expect(resultado.entries[0].outcome).toBe('unfinished')
+    expect(resultado.entries[1].outcome).toBe('abandoned')
+  })
+
+  it('quem já chegou vence mesmo se o rival abandonar depois', () => {
+    const clock = createClock()
+    const { rooms, code } = provaCompletavel(clock)
+    rooms.recordFinish(code, 'a', chegada(68))
+    const resultado = rooms.abandonRace(code, 'b')?.outcome!
+    expect(resultado.winnerId).toBe('a')
+    expect(resultado.entries[0].outcome).toBe('finished')
+  })
+})
+
+describe('revanche', () => {
+  function salaDecidida(clock: ReturnType<typeof createClock>) {
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+    clock.advance(70_000)
+    rooms.recordFinish(code, 'a', { time: 69, topSpeed: 252, collisions: 1 })
+    rooms.recordFinish(code, 'b', { time: 70, topSpeed: 250, collisions: 3 })
+    return { rooms, code }
+  }
+
+  it('espera os dois pedidos antes de liberar nova largada', () => {
+    const clock = createClock()
+    const { rooms, code } = salaDecidida(clock)
+
+    const primeiro = rooms.requestRematch(code, 'a')
+    expect(primeiro.status).toBe('finished')
+    expect(rooms.scheduleStart(code)).toBeNull()
+
+    const segundo = rooms.requestRematch(code, 'b')
+    expect(segundo.status).toBe('ready')
+    expect(rooms.scheduleStart(code)?.status).toBe('countdown')
+  })
+
+  it('limpa o resultado e a telemetria da corrida anterior', () => {
+    const clock = createClock()
+    const { rooms, code } = salaDecidida(clock)
+    rooms.requestRematch(code, 'a')
+    rooms.requestRematch(code, 'b')
+
+    expect(rooms.outcomeFor(code)).toBeNull()
+    expect(rooms.rivalTelemetry(code, 'a')).toBeNull()
+    expect(rooms.get(code)?.players.every((player) => !player.finished)).toBe(true)
+  })
+
+  it('mostra quem já pediu revanche', () => {
+    const clock = createClock()
+    const { rooms, code } = salaDecidida(clock)
+    const sala = rooms.requestRematch(code, 'a')
+    expect(sala.players.find((player) => player.id === 'a')?.rematch).toBe(true)
+    expect(sala.players.find((player) => player.id === 'b')?.rematch).toBe(false)
+  })
+
+  it('voltar ao lobby também libera a sala', () => {
+    const clock = createClock()
+    const { rooms, code } = salaDecidida(clock)
+    const sala = rooms.setReady(code, 'a', false)
+    expect(sala.status).toBe('waiting')
+    expect(rooms.outcomeFor(code)).toBeNull()
+  })
+})
+
 describe('perda momentânea de conexão', () => {
   it('mantém o piloto na sala durante a janela de retorno', () => {
     const clock = createClock()

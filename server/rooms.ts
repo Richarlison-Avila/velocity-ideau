@@ -1,10 +1,18 @@
-export type RoomStatus = 'waiting' | 'ready' | 'countdown' | 'racing'
+// A validação da chegada precisa da mesma pista que o jogo desenha, então a
+// definição vem do módulo do jogo em vez de ser copiada para cá.
+import { speedForState, TRACK_LENGTH } from '../src/game/track.js'
+
+export type RoomStatus = 'waiting' | 'ready' | 'countdown' | 'racing' | 'finished'
 
 export type PublicPlayer = {
   id: string
   name: string
   ready: boolean
   connected: boolean
+  /** Já cruzou a linha de chegada nesta corrida. */
+  finished: boolean
+  /** Já pediu revanche. */
+  rematch: boolean
 }
 
 export type PublicRoom = {
@@ -35,9 +43,11 @@ type Player = {
   socketId: string
   disconnectedAt: number | null
   telemetry: Telemetry | null
+  finish: FinishEntry | null
+  rematch: boolean
 }
 
-type RaceState = 'idle' | 'countdown' | 'racing'
+type RaceState = 'idle' | 'countdown' | 'racing' | 'finished'
 
 type Room = {
   code: string
@@ -45,6 +55,8 @@ type Room = {
   createdAt: number
   state: RaceState
   startAt: number | null
+  /** Resultado oficial da última corrida, idêntico para os dois pilotos. */
+  outcome: RaceOutcome | null
 }
 
 export type RoomUpdate = {
@@ -77,6 +89,45 @@ export const LATERAL_LIMIT = 1.28
 /** Diferença máxima aceita entre o horário da medição e o do servidor. */
 export const CLOCK_TOLERANCE_MS = 5_000
 
+/**
+ * Tempo mínimo fisicamente possível para a prova: a pista inteira na
+ * velocidade máxima do carro. Qualquer chegada mais rápida é impossível.
+ */
+export const MIN_RACE_SECONDS = TRACK_LENGTH / (speedForState(false, 0, true) / 3.6)
+
+/** Folga para a viagem do aviso de chegada até o servidor. */
+export const FINISH_TOLERANCE_SECONDS = 2
+
+export type FinishOutcome = 'finished' | 'abandoned' | 'unfinished'
+
+export type FinishEntry = {
+  playerId: string
+  name: string
+  /** Tempo de prova em segundos, ou null para quem não completou. */
+  time: number | null
+  topSpeed: number
+  collisions: number
+  outcome: FinishOutcome
+}
+
+export type RaceOutcome = {
+  code: string
+  /** Quem venceu, ou null se ninguém completou. */
+  winnerId: string | null
+  /** Como a corrida foi decidida. */
+  reason: 'time' | 'abandon'
+  /** Diferença entre primeiro e segundo, em segundos, quando os dois completaram. */
+  gap: number | null
+  /** Ordenado: vencedor primeiro. */
+  entries: FinishEntry[]
+}
+
+export type FinishReport = {
+  time: number
+  topSpeed: number
+  collisions: number
+}
+
 export type RoomStoreOptions = {
   now?: () => number
   countdownMs?: number
@@ -99,6 +150,7 @@ export class RoomStore {
       createdAt: this.now(),
       state: 'idle',
       startAt: null,
+      outcome: null,
       players: [this.createPlayer(playerId, socketId, rawName)],
     })
     return this.get(code)!
@@ -126,7 +178,7 @@ export class RoomStore {
     if (!player) throw new RoomError('NOT_IN_ROOM', 'Você não está nesta sala.')
 
     // Voltar ao lobby depois da corrida libera a sala para uma nova largada.
-    if (room.state === 'racing') this.resetRace(room)
+    if (room.state === 'racing' || room.state === 'finished') this.resetRace(room)
 
     player.ready = ready
     if (room.state === 'countdown' && !this.everyoneReady(room)) this.resetRace(room)
@@ -200,6 +252,101 @@ export class RoomStore {
     return accepted
   }
 
+  /**
+   * Registra a passagem pela linha de chegada.
+   *
+   * O cliente informa o próprio tempo, mas quem manda é o servidor: o valor é
+   * preso entre o mínimo fisicamente possível e o tempo já decorrido desde a
+   * largada oficial, com uma folga para a viagem da mensagem. Assim um relógio
+   * errado — ou um cliente adulterado — não consegue reivindicar uma volta
+   * impossível.
+   */
+  recordFinish(codeInput: string, playerId: string, report: FinishReport) {
+    const room = this.rooms.get(this.normalize(codeInput))
+    if (!room || room.state !== 'racing' || room.startAt === null) return null
+    const player = room.players.find((candidate) => candidate.id === playerId)
+    if (!player || player.finish) return null
+
+    const elapsed = (this.now() - room.startAt) / 1000
+    if (elapsed < MIN_RACE_SECONDS) return null
+
+    const reported = Number.isFinite(report.time) ? report.time : elapsed
+    const floor = Math.max(MIN_RACE_SECONDS, elapsed - FINISH_TOLERANCE_SECONDS)
+    player.finish = {
+      playerId,
+      name: player.name,
+      time: Math.min(Math.max(reported, floor), elapsed),
+      topSpeed: Number.isFinite(report.topSpeed) ? Math.max(0, report.topSpeed) : 0,
+      collisions: Number.isFinite(report.collisions) ? Math.max(0, Math.trunc(report.collisions)) : 0,
+      outcome: 'finished',
+    }
+
+    // Fecha o resultado antes de fotografar a sala, senão o estado enviado
+    // aos clientes ainda diria que a corrida está em andamento.
+    const outcome = this.settleIfComplete(room)
+    return { room: this.toPublic(room), outcome }
+  }
+
+  /**
+   * Encerra a corrida a favor de quem ficou, quando o rival não volta a tempo
+   * ou desiste no meio da prova.
+   */
+  abandonRace(codeInput: string, playerId: string) {
+    const room = this.rooms.get(this.normalize(codeInput))
+    if (!room || room.state !== 'racing') return null
+    const player = room.players.find((candidate) => candidate.id === playerId)
+    if (!player) return null
+
+    player.finish = {
+      playerId,
+      name: player.name,
+      time: null,
+      topSpeed: player.telemetry?.speed ?? 0,
+      collisions: 0,
+      outcome: 'abandoned',
+    }
+    for (const rival of room.players) {
+      if (rival.id === playerId || rival.finish) continue
+      rival.finish = {
+        playerId: rival.id,
+        name: rival.name,
+        time: null,
+        topSpeed: rival.telemetry?.speed ?? 0,
+        collisions: 0,
+        outcome: 'unfinished',
+      }
+    }
+
+    // Fecha o resultado antes de fotografar a sala, senão o estado enviado
+    // aos clientes ainda diria que a corrida está em andamento.
+    const outcome = this.settleIfComplete(room)
+    return { room: this.toPublic(room), outcome }
+  }
+
+  /** Resultado oficial da última corrida, igual para os dois pilotos. */
+  outcomeFor(codeInput: string) {
+    return this.rooms.get(this.normalize(codeInput))?.outcome ?? null
+  }
+
+  /** Pedido de revanche. Com os dois pedidos, a sala volta a ficar pronta. */
+  requestRematch(codeInput: string, playerId: string) {
+    const room = this.requireRoom(codeInput)
+    const player = room.players.find((candidate) => candidate.id === playerId)
+    if (!player) throw new RoomError('NOT_IN_ROOM', 'Você não está nesta sala.')
+    if (room.state !== 'finished') return this.toPublic(room)
+
+    player.rematch = true
+    const todos =
+      room.players.length === 2 &&
+      room.players.every((candidate) => candidate.rematch && candidate.disconnectedAt === null)
+
+    if (todos) {
+      this.resetRace(room, false)
+      for (const candidate of room.players) candidate.ready = true
+    }
+    return this.toPublic(room)
+  }
+
   /** Última telemetria conhecida de quem não é o jogador informado. */
   rivalTelemetry(codeInput: string, playerId: string) {
     const room = this.rooms.get(this.normalize(codeInput))
@@ -261,11 +408,46 @@ export class RoomStore {
     return { code, room: this.toPublic(room), cancelledCountdown }
   }
 
+  /**
+   * Fecha a corrida quando os dois pilotos já têm um desfecho e monta o
+   * resultado uma única vez, para que as duas telas recebam exatamente o mesmo.
+   */
+  private settleIfComplete(room: Room): RaceOutcome | null {
+    if (room.players.length < 2) return null
+    if (!room.players.every((player) => player.finish)) return null
+
+    const entries = room.players.map((player) => player.finish!)
+    const abandono = entries.some((entry) => entry.outcome === 'abandoned')
+    const completos = entries.filter((entry) => entry.outcome === 'finished' && entry.time !== null)
+
+    const ordenado = [...entries].sort((a, b) => {
+      if (a.outcome === 'finished' && b.outcome !== 'finished') return -1
+      if (b.outcome === 'finished' && a.outcome !== 'finished') return 1
+      if (a.outcome === 'unfinished' && b.outcome === 'abandoned') return -1
+      if (b.outcome === 'unfinished' && a.outcome === 'abandoned') return 1
+      return (a.time ?? Infinity) - (b.time ?? Infinity)
+    })
+
+    const vencedor = ordenado[0]
+    room.state = 'finished'
+    room.outcome = {
+      code: room.code,
+      winnerId: vencedor.outcome === 'abandoned' ? null : vencedor.playerId,
+      reason: abandono ? 'abandon' : 'time',
+      gap: completos.length === 2 ? Math.abs(completos[0].time! - completos[1].time!) : null,
+      entries: ordenado,
+    }
+    return room.outcome
+  }
+
   private resetRace(room: Room, clearReady = true) {
     room.state = 'idle'
     room.startAt = null
+    room.outcome = null
     for (const player of room.players) {
       player.telemetry = null
+      player.finish = null
+      player.rematch = false
       if (clearReady) player.ready = false
     }
   }
@@ -291,6 +473,8 @@ export class RoomStore {
       ready: false,
       disconnectedAt: null,
       telemetry: null,
+      finish: null,
+      rematch: false,
     }
   }
 
@@ -314,20 +498,24 @@ export class RoomStore {
   }
 
   private toPublic(room: Room): PublicRoom {
-    const players = room.players.map(({ id, name, ready, disconnectedAt }) => ({
+    const players = room.players.map(({ id, name, ready, disconnectedAt, finish, rematch }) => ({
       id,
       name,
       ready,
       connected: disconnectedAt === null,
+      finished: finish !== null,
+      rematch,
     }))
     const status: RoomStatus =
-      room.state === 'racing'
-        ? 'racing'
-        : room.state === 'countdown'
-          ? 'countdown'
-          : this.everyoneReady(room)
-            ? 'ready'
-            : 'waiting'
+      room.state === 'finished'
+        ? 'finished'
+        : room.state === 'racing'
+          ? 'racing'
+          : room.state === 'countdown'
+            ? 'countdown'
+            : this.everyoneReady(room)
+              ? 'ready'
+              : 'waiting'
     return { code: room.code, players, status, startAt: room.startAt, countdownMs: this.countdownMs }
   }
 }

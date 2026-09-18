@@ -8,6 +8,7 @@ import {
   RECONNECT_GRACE_MS,
   RoomError,
   RoomStore,
+  type FinishReport,
   type PublicRoom,
   type Telemetry,
 } from './rooms.js'
@@ -140,6 +141,33 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       socket.to(payload.code.trim().toUpperCase()).emit('race:rival', { playerId: payload.playerId, ...accepted })
     })
 
+    // Chegada: o servidor valida o tempo e só então fecha o resultado.
+    socket.on('race:finish', (payload: { code: string; playerId: string } & FinishReport) => {
+      const registrada = rooms.recordFinish(payload.code, payload.playerId, payload)
+      if (!registrada) return
+      publish(registrada.room.code, registrada.room)
+      if (registrada.outcome) io.to(registrada.room.code).emit('race:result', registrada.outcome)
+    })
+
+    // Desistir no meio da prova entrega a vitória ao adversário.
+    socket.on('race:abandon', (payload: { code: string; playerId: string }) => {
+      const encerrada = rooms.abandonRace(payload.code, payload.playerId)
+      if (!encerrada) return
+      publish(encerrada.room.code, encerrada.room)
+      if (encerrada.outcome) io.to(encerrada.room.code).emit('race:result', encerrada.outcome)
+    })
+
+    socket.on('race:rematch', (payload: { code: string; playerId: string }, ack?: Ack) => {
+      try {
+        const room = rooms.requestRematch(payload.code, payload.playerId)
+        ack?.({ ok: true, room })
+        publish(room.code, room)
+        scheduleIfReady(room.code)
+      } catch (error) {
+        ack?.({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível pedir revanche.' })
+      }
+    })
+
     socket.on('room:set-ready', (payload: { code: string; playerId: string; ready: boolean }, ack?: Ack) => {
       try {
         const wasCountingDown = rooms.get(payload.code)?.status === 'countdown'
@@ -187,6 +215,12 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
           key,
           setTimeout(() => {
             graceTimers.delete(key)
+            // Durante a prova, quem não volta a tempo perde por abandono. O
+            // resultado sai antes da limpeza, e a vaga é liberada em seguida
+            // para a sala não ficar presa com um piloto que não volta mais.
+            const encerrada = rooms.abandonRace(update.code, update.playerId)
+            if (encerrada?.outcome) io.to(update.code).emit('race:result', encerrada.outcome)
+
             const dropped = rooms.dropIfStillDisconnected(update.code, update.playerId)
             if (!dropped) return
             clearStartTimer(update.code)

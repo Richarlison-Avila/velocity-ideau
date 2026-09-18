@@ -1,6 +1,6 @@
 # Corrida Fantasma
 
-Protótipo jogável do plano em `PLANO_DESENVOLVIMENTO.md`, agora com corrida offline, lobby multiplayer, largada sincronizada e o carro fantasma do adversário.
+Protótipo jogável do plano em `PLANO_DESENVOLVIMENTO.md`: corrida offline, lobby multiplayer, largada sincronizada, carro fantasma do adversário e resultado oficial com revanche.
 
 ## Executar
 
@@ -52,6 +52,14 @@ Quem recebe guarda as medições recentes e desenha o rival 160 ms no passado, i
 
 O fantasma é apenas desenhado: a simulação da corrida (`stepRace`) não recebe nenhum dado do rival, então é impossível ele empurrar ou frear o carro do jogador.
 
+## Quem decide o vencedor
+
+O cliente avisa a própria chegada, mas quem decide é o servidor. Ele conhece o instante oficial da largada e o comprimento da pista, então prende o tempo informado entre o mínimo fisicamente possível — a pista inteira na velocidade máxima do carro — e o tempo já decorrido desde a largada. Um relógio errado ou um cliente adulterado não conseguem reivindicar uma volta impossível.
+
+Quando os dois pilotos têm um desfecho, o servidor monta o resultado uma única vez e envia o mesmo objeto para as duas telas: vencedor, tempos, diferença e posições. Se um piloto cair e não voltar dentro da janela de retorno, o adversário vence por abandono e a vaga é liberada.
+
+A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resultado e agenda uma nova largada sincronizada, sem ninguém recarregar a página.
+
 ## Estado atual
 
 - [x] Fluxo menu → largada → corrida → resultado → nova tentativa
@@ -71,9 +79,11 @@ O fantasma é apenas desenhado: a simulação da corrida (`stepRace`) não receb
 - [x] Telemetria validada pelo servidor e repassada ao adversário
 - [x] Carro fantasma interpolado, translúcido e em cor distinta
 - [x] Posição P1/P2, diferença em segundos e metros, indicador de rival fora da tela
-- [ ] Resultado validado pelo servidor e revanche
+- [x] Chegada validada pelo servidor, com tempo impossível recusado
+- [x] Mesmo vencedor, tempos e diferença nas duas telas
+- [x] Vitória por abandono quando o rival não volta
+- [x] Revanche na mesma sala, sem recarregar a página
 
 ## Limitações conhecidas
 
 - Em uma aba fora de primeiro plano o navegador pausa a animação: o relógio da corrida continua correto, mas o carro não anda enquanto a aba estiver escondida. A telemetria continua sendo enviada por temporizador, então o rival vê o fantasma parado na posição real, em vez de perdê-lo de vista.
-- O resultado ainda é calculado em cada cliente; a comparação oficial entre os dois pilotos entra na Fase 6.

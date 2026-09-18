@@ -51,6 +51,8 @@ type RaceCanvasProps = {
   rivalConnected?: boolean
   /** Chamado a cada medição para ser enviada ao servidor. */
   onTelemetry?: (snapshot: GhostSnapshot) => void
+  /** Desistir da prova em andamento, entregando a vitória ao rival. */
+  onAbandon?: () => void
   onFinish: (result: RaceResult) => void
 }
 
@@ -192,6 +194,7 @@ function RaceCanvas({
   rivalName = 'RIVAL',
   rivalConnected = true,
   onTelemetry,
+  onAbandon,
   onFinish,
 }: RaceCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -726,6 +729,9 @@ function RaceCanvas({
 
       <div className="topbar">
         <div className="brand-mini"><i /> CORRIDA FANTASMA</div>
+        {onAbandon && phase === 'racing' && (
+          <button className="abandon-button" onClick={onAbandon}>ABANDONAR</button>
+        )}
         <div className="pilot-tag"><span>PILOTO</span>{pilotName}</div>
       </div>
 

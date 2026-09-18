@@ -189,6 +189,21 @@ button { cursor: pointer; }
 .clock-note { margin: 14px 0 0; color: #6d7783; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .15em; }
 .clock-note.ok { color: #45e7ad; }
 .result-note { margin: 16px 0 0; color: #7d8792; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .14em; line-height: 1.7; }
+.result-note.waiting { color: var(--amber); }
+.result-note.rematch { color: #45e7ad; }
+.result-mark.winner { color: rgba(255,174,0,.08); }
+
+.scoreboard { margin: 6px 0 4px; border-top: 1px solid rgba(255,255,255,.1); }
+.score-row { display: grid; grid-template-columns: 42px 1fr auto; gap: 12px; align-items: center; padding: 14px 4px; border-bottom: 1px solid rgba(255,255,255,.1); text-align: left; opacity: .62; }
+.score-row.me { opacity: 1; }
+.score-row.winner { background: linear-gradient(90deg, rgba(255,174,0,.12), transparent 72%); }
+.score-row > b { color: rgba(255,255,255,.28); font: 900 26px 'Barlow Condensed', sans-serif; }
+.score-row.winner > b { color: var(--amber); }
+.score-row > strong { font: 700 18px 'Barlow Condensed', sans-serif; letter-spacing: .05em; text-transform: uppercase; }
+.score-row > i { font: 700 17px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .06em; font-variant-numeric: tabular-nums; }
+
+.abandon-button { padding: 7px 13px; border: 1px solid rgba(255,255,255,.22); background: rgba(8,12,17,.6); color: #aab3bc; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .16em; -webkit-tap-highlight-color: transparent; }
+.abandon-button:hover { border-color: rgba(255,75,43,.6); color: #fff; }
 .share-panel { text-align: center; }
 .qr-wrap { display: inline-flex; padding: 12px; background: #f4f4ee; }
 .share-panel > span { display: block; margin: 12px 0; color: #69747f; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .17em; }

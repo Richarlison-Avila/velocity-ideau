@@ -286,6 +286,137 @@ describe('telemetria e carro fantasma pelo socket', () => {
   })
 })
 
+describe('resultado e revanche pelo socket', () => {
+  type Resultado = {
+    code: string
+    winnerId: string | null
+    reason: 'time' | 'abandon'
+    gap: number | null
+    entries: Array<{ playerId: string; name: string; time: number | null; outcome: string }>
+  }
+
+  /** Troca o servidor do teste, para escolher quando a largada aconteceu. */
+  async function comCountdown(countdownMs: number) {
+    for (const client of clients.splice(0)) client.disconnect()
+    await server.close()
+    server = createGameServer({ countdownMs, graceMs: GRACE_MS, serveStatic: false })
+    await new Promise<void>((resolve) => server.http.listen(0, resolve))
+    port = (server.http.address() as AddressInfo).port
+  }
+
+  /**
+   * Sala correndo. Um countdown negativo coloca a largada no passado, que é
+   * como conseguimos uma prova longa o bastante para o servidor aceitar a
+   * chegada — ele exige o tempo mínimo físico da pista.
+   */
+  async function provaEmAndamento(countdownMs = COUNTDOWN_MS) {
+    if (countdownMs !== COUNTDOWN_MS) await comCountdown(countdownMs)
+    const { ana, beto, code } = await gridCompleto()
+
+    // Com a largada no passado o aviso chega no mesmo instante do agendamento,
+    // então os dois ouvintes precisam estar prontos antes de confirmar.
+    const correndo = waitForRoom(ana, (room) => room.status === 'racing')
+    ana.emit('room:set-ready', { code, playerId: 'ana', ready: true })
+    beto.emit('room:set-ready', { code, playerId: 'beto', ready: true })
+    await correndo
+    return { ana, beto, code }
+  }
+
+  /** Largada 72 s no passado: a prova já pode ser concluída. */
+  const PROVA_LONGA = -72_000
+
+  it('recusa uma chegada antes do tempo mínimo da prova', async () => {
+    const { ana, beto, code } = await provaEmAndamento()
+    let chegou = false
+    beto.on('race:result', () => {
+      chegou = true
+    })
+
+    ana.emit('race:finish', { code, playerId: 'ana', time: 3, topSpeed: 300, collisions: 0 })
+    beto.emit('race:finish', { code, playerId: 'beto', time: 4, topSpeed: 300, collisions: 0 })
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    expect(chegou).toBe(false)
+    expect(server.rooms.get(code)?.status).toBe('racing')
+  })
+
+  it('entrega o mesmo vencedor e os mesmos tempos para os dois pilotos', async () => {
+    const { ana, beto, code } = await provaEmAndamento(PROVA_LONGA)
+
+    const paraAna = waitFor<Resultado>(ana, 'race:result')
+    const paraBeto = waitFor<Resultado>(beto, 'race:result')
+    ana.emit('race:finish', { code, playerId: 'ana', time: 71.2, topSpeed: 252, collisions: 2 })
+    beto.emit('race:finish', { code, playerId: 'beto', time: 70.4, topSpeed: 258, collisions: 1 })
+
+    const [resultadoDaAna, resultadoDoBeto] = await Promise.all([paraAna, paraBeto])
+    // O critério da fase: as duas telas recebem exatamente o mesmo resultado.
+    expect(resultadoDaAna).toEqual(resultadoDoBeto)
+    expect(resultadoDaAna.winnerId).toBe('beto')
+    expect(resultadoDaAna.reason).toBe('time')
+    expect(resultadoDaAna.entries.map((entry) => entry.playerId)).toEqual(['beto', 'ana'])
+    expect(resultadoDaAna.gap).toBeCloseTo(0.8, 2)
+    expect(server.rooms.get(code)?.status).toBe('finished')
+  })
+
+  it('abandonar no meio da prova entrega a vitória ao rival', async () => {
+    const { ana, beto, code } = await provaEmAndamento()
+    const paraAna = waitFor<Resultado>(ana, 'race:result')
+    beto.emit('race:abandon', { code, playerId: 'beto' })
+
+    const resultado = await paraAna
+    expect(resultado.reason).toBe('abandon')
+    expect(resultado.winnerId).toBe('ana')
+    expect(resultado.entries.find((entry) => entry.playerId === 'beto')?.outcome).toBe('abandoned')
+  })
+
+  it('a revanche só larga quando os dois pedem', async () => {
+    const { ana, beto, code } = await provaEmAndamento()
+    const resultado = waitFor<Resultado>(ana, 'race:result')
+    beto.emit('race:abandon', { code, playerId: 'beto' })
+    await resultado
+
+    const pedido = waitForRoom(beto, (room) => room.players.some((player) => player.rematch))
+    ana.emit('race:rematch', { code, playerId: 'ana' })
+    await pedido
+    expect(server.rooms.get(code)?.status).toBe('finished')
+
+    const novaLargada = waitFor<Scheduled>(ana, 'race:scheduled')
+    beto.emit('race:rematch', { code, playerId: 'beto' })
+    const agendada = await novaLargada
+
+    expect(agendada.startAt).toBeGreaterThan(Date.now())
+    expect(server.rooms.get(code)?.status).toBe('countdown')
+    expect(server.rooms.get(code)?.players.every((player) => !player.finished)).toBe(true)
+  })
+
+  it('o rival que não volta perde por abandono e libera a vaga', async () => {
+    const { ana, beto, code } = await provaEmAndamento()
+    const resultado = waitFor<Resultado>(ana, 'race:result')
+    const vagaLivre = waitForRoom(ana, (room) => room.players.length === 1, 4_000)
+    beto.disconnect()
+
+    expect((await resultado).winnerId).toBe('ana')
+    // A sala não pode ficar presa com um piloto que não volta mais.
+    await vagaLivre
+    expect(server.rooms.get(code)?.players).toHaveLength(1)
+    expect(server.rooms.get(code)?.status).toBe('waiting')
+  }, 15_000)
+
+  it('a revanche recomeça a corrida nos dois aparelhos', async () => {
+    const { ana, beto, code } = await provaEmAndamento()
+    const resultado = waitFor<Resultado>(ana, 'race:result')
+    beto.emit('race:abandon', { code, playerId: 'beto' })
+    await resultado
+
+    const correndoParaAna = waitForRoom(ana, (room) => room.status === 'racing')
+    const correndoParaBeto = waitForRoom(beto, (room) => room.status === 'racing')
+    ana.emit('race:rematch', { code, playerId: 'ana' })
+    beto.emit('race:rematch', { code, playerId: 'beto' })
+
+    const [salaDaAna, salaDoBeto] = await Promise.all([correndoParaAna, correndoParaBeto])
+    expect(salaDaAna.startAt).toBe(salaDoBeto.startAt)
+  })
+})
+
 describe('perda momentânea de conexão pelo socket', () => {
   it('cancela a contagem e mantém a vaga quando o rival cai', async () => {
     const { ana, beto, code } = await gridCompleto()

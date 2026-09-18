@@ -9,6 +9,7 @@ import { socket } from './multiplayer/socket'
 import type {
   LobbyRoom,
   RaceCancelled,
+  RaceOutcome,
   RivalTelemetry,
   RoomResponse,
   ScheduledRace,
@@ -38,6 +39,7 @@ function App() {
   const [raceKey, setRaceKey] = useState(0)
   const [raceSetup, setRaceSetup] = useState<RaceSetup | null>(null)
   const [result, setResult] = useState<RaceResult | null>(null)
+  const [outcome, setOutcome] = useState<RaceOutcome | null>(null)
   const [connection, setConnection] = useState<Connection>(socket.connected ? 'connected' : 'reconnecting')
   const [clock, setClock] = useState<ClockState>(serverClock.snapshot)
 
@@ -92,12 +94,19 @@ function App() {
     // Telemetria do adversário: o buffer trata atraso e chegada fora de ordem.
     const onRival = (payload: RivalTelemetry) => ghostRef.current.push(payload)
 
+    // Resultado oficial: o mesmo objeto chega nas duas telas.
+    const onResult = (payload: RaceOutcome) => {
+      setOutcome(payload)
+      setScreen('result')
+    }
+
     socket.on('connect', onConnect)
     socket.on('disconnect', onDisconnect)
     socket.on('room:update', onRoomUpdate)
     socket.on('race:scheduled', onScheduled)
     socket.on('race:cancelled', onCancelled)
     socket.on('race:rival', onRival)
+    socket.on('race:result', onResult)
     if (socket.connected) onConnect()
 
     return () => {
@@ -107,6 +116,7 @@ function App() {
       socket.off('race:scheduled', onScheduled)
       socket.off('race:cancelled', onCancelled)
       socket.off('race:rival', onRival)
+      socket.off('race:result', onResult)
     }
   }, [])
 
@@ -122,6 +132,7 @@ function App() {
     })
     setLobbyNotice('')
     setResult(null)
+    setOutcome(null)
     setScreen((current) => (current === 'result' || current === 'lobby' ? 'race' : current))
   }, [room?.startAt, room?.status, room?.countdownMs])
 
@@ -179,13 +190,34 @@ function App() {
 
   const backToLobby = () => {
     setResult(null)
+    setOutcome(null)
     setRaceSetup(null)
     if (room) socket.emit('room:set-ready', { code: room.code, playerId: storedPlayerId, ready: false })
     setScreen(room ? 'lobby' : 'menu')
   }
 
+  const askRematch = () => {
+    if (room) socket.emit('race:rematch', { code: room.code, playerId: storedPlayerId })
+  }
+
+  const abandonRace = () => {
+    if (room) socket.emit('race:abandon', { code: room.code, playerId: storedPlayerId })
+  }
+
   const finishRace = useCallback((raceResult: RaceResult) => {
     setResult(raceResult)
+    // No duelo, quem decide o vencedor é o servidor: aqui só avisamos a chegada
+    // e esperamos o resultado oficial chegar às duas telas.
+    const code = roomCodeRef.current
+    if (code && socket.connected) {
+      socket.emit('race:finish', {
+        code,
+        playerId: storedPlayerId,
+        time: raceResult.time,
+        topSpeed: raceResult.topSpeed,
+        collisions: raceResult.collisions,
+      })
+    }
     setScreen('result')
   }, [])
 
@@ -229,39 +261,111 @@ function App() {
         rivalName={rival?.name ?? 'RIVAL'}
         rivalConnected={rival?.connected ?? false}
         onTelemetry={online ? sendTelemetry : undefined}
+        onAbandon={online ? abandonRace : undefined}
         onFinish={finishRace}
       />
     )
   }
 
-  if (screen === 'result' && result) {
+  if (screen === 'result' && (result || outcome)) {
     const online = Boolean(room)
+    const me = outcome?.entries.find((entry) => entry.playerId === storedPlayerId)
+    const rival = outcome?.entries.find((entry) => entry.playerId !== storedPlayerId)
+    const venci = Boolean(outcome && outcome.winnerId === storedPlayerId)
+    const pedidoFeito = room?.players.find((player) => player.id === storedPlayerId)?.rematch ?? false
+    const rivalPediu = room?.players.find((player) => player.id !== storedPlayerId)?.rematch ?? false
+    // Sem rival na sala não há revanche possível: a vaga precisa ser preenchida.
+    const temRival = (room?.players.length ?? 0) === 2
+
+    const manchete = !online
+      ? 'Prova concluída.'
+      : !outcome
+        ? 'Chegada registrada.'
+        : outcome.reason === 'abandon'
+          ? venci ? 'Vitória por abandono.' : 'Você abandonou.'
+          : venci
+            ? 'Vitória.'
+            : outcome.winnerId
+              ? 'Derrota.'
+              : 'Prova encerrada.'
+
     return (
       <main className="screen result-screen">
         <div className="ambient-grid" />
         <section className="result-card">
           <p className="eyebrow">BANDEIRA QUADRICULADA</p>
-          <div className="result-mark">01</div>
-          <h1>Prova concluída.</h1>
+          <div className={`result-mark ${venci ? 'winner' : ''}`}>{online && outcome ? (venci ? '01' : '02') : '01'}</div>
+          <h1>{manchete}</h1>
           <p className="result-pilot">{pilotName}</p>
-          <div className="result-stats">
-            <div><span>TEMPO TOTAL</span><strong>{formatTime(result.time)}</strong></div>
-            <div><span>VELOCIDADE MÁX.</span><strong>{Math.round(result.topSpeed)} <small>KM/H</small></strong></div>
-            <div><span>IMPACTOS</span><strong>{result.collisions}</strong></div>
-          </div>
-          {result.lateStart > 0.4 && (
+
+          {online && outcome ? (
+            <>
+              <div className="scoreboard">
+                {outcome.entries.map((entry, posicao) => (
+                  <div
+                    key={entry.playerId}
+                    className={`score-row ${entry.playerId === storedPlayerId ? 'me' : ''} ${
+                      entry.playerId === outcome.winnerId ? 'winner' : ''
+                    }`}
+                  >
+                    <b>P{posicao + 1}</b>
+                    <strong>{entry.name}</strong>
+                    <i>
+                      {entry.outcome === 'finished' && entry.time !== null
+                        ? formatTime(entry.time)
+                        : entry.outcome === 'abandoned'
+                          ? 'ABANDONOU'
+                          : 'NÃO COMPLETOU'}
+                    </i>
+                  </div>
+                ))}
+              </div>
+              <p className="result-note">
+                {outcome.gap !== null
+                  ? `DIFERENÇA DE ${outcome.gap.toFixed(3).replace('.', ',')} S · RESULTADO CONFERIDO PELO SERVIDOR`
+                  : 'RESULTADO CONFERIDO PELO SERVIDOR'}
+              </p>
+              {me && me.outcome === 'finished' && (
+                <div className="result-stats">
+                  <div><span>SEU TEMPO</span><strong>{formatTime(me.time ?? 0)}</strong></div>
+                  <div><span>VELOCIDADE MÁX.</span><strong>{Math.round(me.topSpeed)} <small>KM/H</small></strong></div>
+                  <div><span>IMPACTOS</span><strong>{me.collisions}</strong></div>
+                </div>
+              )}
+            </>
+          ) : online ? (
+            <p className="result-note waiting">
+              AGUARDANDO {rival?.name ?? 'O RIVAL'} CRUZAR A LINHA DE CHEGADA…
+            </p>
+          ) : (
+            <div className="result-stats">
+              <div><span>TEMPO TOTAL</span><strong>{formatTime(result!.time)}</strong></div>
+              <div><span>VELOCIDADE MÁX.</span><strong>{Math.round(result!.topSpeed)} <small>KM/H</small></strong></div>
+              <div><span>IMPACTOS</span><strong>{result!.collisions}</strong></div>
+            </div>
+          )}
+
+          {result && result.lateStart > 0.4 && (
             <p className="result-note">LARGADA PERDIDA POR {result.lateStart.toFixed(1)} S NESTE DISPOSITIVO</p>
           )}
-          {online ? (
-            <>
-              <button className="primary-button" onClick={backToLobby}>VOLTAR AO LOBBY <span>↗</span></button>
-              <p className="result-note">O RESULTADO OFICIAL COMPARADO ENTRE OS DOIS PILOTOS CHEGA NA FASE 6.</p>
-            </>
-          ) : (
+
+          {online && outcome ? (
+            temRival ? (
+              <>
+                <button className="primary-button" disabled={pedidoFeito} onClick={askRematch}>
+                  {pedidoFeito ? 'AGUARDANDO O RIVAL' : 'REVANCHE'} <span>↗</span>
+                </button>
+                {rivalPediu && !pedidoFeito && <p className="result-note rematch">O RIVAL JÁ PEDIU REVANCHE</p>}
+              </>
+            ) : (
+              <p className="result-note waiting">O RIVAL DEIXOU A SALA — CHAME OUTRO PILOTO PELO LOBBY</p>
+            )
+          ) : online ? null : (
             <button className="primary-button" onClick={startSoloRace}>CORRER NOVAMENTE <span>↗</span></button>
           )}
-          <button className="text-button" onClick={() => { setRaceSetup(null); setScreen(online ? 'lobby' : 'menu') }}>
-            {online ? 'VER A SALA' : 'VOLTAR AO PADDOCK'}
+
+          <button className="text-button" onClick={online ? backToLobby : () => { setRaceSetup(null); setScreen('menu') }}>
+            {online ? 'VOLTAR AO LOBBY' : 'VOLTAR AO PADDOCK'}
           </button>
         </section>
       </main>
@@ -310,8 +414,8 @@ function App() {
       </aside>
 
       <footer className="menu-footer">
-        <span>FASE 4 // LARGADA SINCRONIZADA</span>
-        <span>PRÓXIMA ETAPA: CARRO FANTASMA</span>
+        <span>FASE 6 // RESULTADO E REVANCHE</span>
+        <span>PRÓXIMA ETAPA: PUBLICAÇÃO</span>
       </footer>
     </main>
   )
