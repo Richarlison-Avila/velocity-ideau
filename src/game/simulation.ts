@@ -34,6 +34,10 @@ export const PENALTY_SECONDS = 1.65
 export const MAX_STEP_SECONDS = 0.05
 /** Carga mínima para voltar a usar o boost depois de esgotá-lo. */
 export const BOOST_UNLOCK = 25
+/** Rapidez com que o carro ganha velocidade em direção ao alvo. */
+export const ACCELERATION_RATE = 1.8
+/** Perder velocidade é mais rápido que ganhar: impacto e grama pesam. */
+export const DECELERATION_RATE = 5
 
 export function createRaceState(): RaceState {
   return {
@@ -73,7 +77,12 @@ export function stepRace(state: RaceState, input: RaceInput, dt: number): RaceEv
   state.penalty = Math.max(0, state.penalty - step)
 
   const targetSpeed = speedForState(state.offRoad, state.penalty, state.boosting)
-  state.speed += (targetSpeed - state.speed) * Math.min(1, step * (targetSpeed < state.speed ? 5 : 1.8))
+  // A aproximação exponencial dá o mesmo resultado em qualquer taxa de quadros.
+  // Com o fator linear anterior, um aparelho de 20 quadros por segundo chegava
+  // a uma velocidade 3% diferente de um de 60 durante as transições — e em um
+  // duelo isso é vantagem de hardware.
+  const taxa = targetSpeed < state.speed ? DECELERATION_RATE : ACCELERATION_RATE
+  state.speed += (targetSpeed - state.speed) * (1 - Math.exp(-step * taxa))
   state.progress = Math.min(TRACK_LENGTH, state.progress + (state.speed / 3.6) * step)
   state.topSpeed = Math.max(state.topSpeed, state.speed)
 

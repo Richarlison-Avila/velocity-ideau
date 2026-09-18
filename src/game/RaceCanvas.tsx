@@ -9,6 +9,7 @@ import {
   TELEMETRY_INTERVAL_MS,
   type GhostSnapshot,
 } from './ghost'
+import { createFeel, registerImpact, updateFeel } from './feel'
 import { createRaceState, MAX_STEP_SECONDS, stepRace, type RaceInput } from './simulation'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
 import {
@@ -355,6 +356,8 @@ function RaceCanvas({
     let animationFrame = 0
     const flashTimers: number[] = []
 
+    // Intensidades contínuas para a apresentação, derivadas da corrida.
+    const feel = createFeel()
     const effects = new ParticleField()
     const dustRate = new EmissionRate(34)
     const boostRate = new EmissionRate(26)
@@ -554,6 +557,7 @@ function RaceCanvas({
             beep(105, 0.24)
             // As faíscas saltam à frente do bico, onde a batida aconteceu.
             effects.burst('spark', 12, race.progress + CAR_VIEW_DISTANCE + 5, race.lateral, { drift: 1.8 })
+            registerImpact(feel)
           }
           if (event.type === 'finish') {
             doneRef.current = true
@@ -581,6 +585,7 @@ function RaceCanvas({
         // A cadência segue o passo que a simulação aplicou, e não o tempo do
         // quadro: um quadro longo não pode virar uma rajada de poeira.
         const passo = Math.min(Math.max(0, dt), MAX_STEP_SECONDS)
+        updateFeel(feel, race, inputRef.current, passo)
         // Os efeitos saem de trás das rodas, e não do centro: nascendo sob o
         // carro, o próprio sprite os esconderia por toda a vida útil.
         const rastro = race.progress + CAR_VIEW_DISTANCE - TRAIL_SETBACK
@@ -684,8 +689,10 @@ function RaceCanvas({
         drawCar(ctx, playerX, ondeEstaOCarro.y, Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH))
       }
 
-      if (race.offRoad && startedRef.current && !doneRef.current) {
-        ctx.fillStyle = 'rgba(255, 87, 48, .09)'
+      // O aviso de fora da pista cresce conforme o carro se afasta da borda,
+      // em vez de aparecer inteiro de uma vez.
+      if (feel.offRoad > 0.01 && startedRef.current && !doneRef.current) {
+        ctx.fillStyle = `rgba(255, 87, 48, ${(0.11 * feel.offRoad).toFixed(3)})`
         ctx.fillRect(0, 0, width, height)
       }
       animationFrame = requestAnimationFrame(draw)
