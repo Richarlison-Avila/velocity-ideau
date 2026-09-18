@@ -1,0 +1,205 @@
+import { existsSync } from 'node:fs'
+import { createServer, type Server as HttpServer } from 'node:http'
+import { resolve } from 'node:path'
+import express from 'express'
+import { Server } from 'socket.io'
+import { COUNTDOWN_MS, RECONNECT_GRACE_MS, RoomError, RoomStore, type PublicRoom } from './rooms.js'
+
+export type GameServerOptions = {
+  countdownMs?: number
+  graceMs?: number
+  /** Serve o site construído quando a pasta dist existe. */
+  serveStatic?: boolean
+}
+
+export type GameServer = {
+  http: HttpServer
+  io: Server
+  rooms: RoomStore
+  close: () => Promise<void>
+}
+
+type Ack = (response: { ok: boolean; room?: PublicRoom | null; error?: string }) => void
+
+export function createGameServer(options: GameServerOptions = {}): GameServer {
+  const countdownMs = options.countdownMs ?? COUNTDOWN_MS
+  const graceMs = options.graceMs ?? RECONNECT_GRACE_MS
+
+  const app = express()
+  const http = createServer(app)
+  const io = new Server(http, { cors: { origin: true, credentials: true } })
+  const rooms = new RoomStore({ countdownMs })
+
+  /** Timers que disparam a largada no instante agendado, por sala. */
+  const startTimers = new Map<string, NodeJS.Timeout>()
+  /** Timers que removem quem não voltou depois da queda de conexão. */
+  const graceTimers = new Map<string, NodeJS.Timeout>()
+
+  app.get('/health', (_request, response) => response.json({ ok: true, now: Date.now() }))
+
+  const graceKey = (code: string, playerId: string) => `${code}:${playerId}`
+
+  const clearStartTimer = (code: string) => {
+    const timer = startTimers.get(code)
+    if (!timer) return
+    clearTimeout(timer)
+    startTimers.delete(code)
+  }
+
+  const publish = (code: string, room: PublicRoom | null) => {
+    if (room) io.to(code).emit('room:update', room)
+  }
+
+  /** Agenda a largada quando os dois pilotos confirmam e avisa os dois clientes. */
+  const scheduleIfReady = (code: string) => {
+    if (rooms.get(code)?.status !== 'ready') return
+    const scheduled = rooms.scheduleStart(code)
+    if (!scheduled?.startAt) return
+
+    clearStartTimer(code)
+    publish(code, scheduled)
+    io.to(code).emit('race:scheduled', {
+      code,
+      startAt: scheduled.startAt,
+      countdownMs: scheduled.countdownMs,
+      serverTime: Date.now(),
+    })
+
+    const delay = Math.max(0, scheduled.startAt - Date.now())
+    startTimers.set(
+      code,
+      setTimeout(() => {
+        startTimers.delete(code)
+        publish(code, rooms.beginRace(code))
+      }, delay),
+    )
+  }
+
+  io.on('connection', (socket) => {
+    // Amostra de relógio: o cliente mede a ida e a volta e estima a diferença.
+    socket.on(
+      'time:sync',
+      (payload: { clientSentAt?: number } | undefined, ack?: (response: { serverTime: number; clientSentAt: number | null }) => void) => {
+        ack?.({ serverTime: Date.now(), clientSentAt: payload?.clientSentAt ?? null })
+      },
+    )
+
+    socket.on('room:create', (payload: { name: string; playerId: string }, ack: Ack) => {
+      try {
+        const room = rooms.create(socket.id, payload.playerId, payload.name)
+        socket.join(room.code)
+        ack({ ok: true, room })
+      } catch {
+        ack({ ok: false, error: 'Não foi possível criar a sala.' })
+      }
+    })
+
+    socket.on('room:join', (payload: { code: string; name: string; playerId: string }, ack: Ack) => {
+      try {
+        const room = rooms.join(payload.code, socket.id, payload.playerId, payload.name)
+        socket.join(room.code)
+
+        const key = graceKey(room.code, payload.playerId)
+        const grace = graceTimers.get(key)
+        if (grace) {
+          clearTimeout(grace)
+          graceTimers.delete(key)
+        }
+
+        ack({ ok: true, room })
+        publish(room.code, room)
+
+        // Quem volta durante a contagem ou a corrida recebe o instante oficial.
+        if (room.startAt && (room.status === 'countdown' || room.status === 'racing')) {
+          socket.emit('race:scheduled', {
+            code: room.code,
+            startAt: room.startAt,
+            countdownMs: room.countdownMs,
+            serverTime: Date.now(),
+          })
+        }
+      } catch (error) {
+        ack({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível entrar na sala.' })
+      }
+    })
+
+    socket.on('room:set-ready', (payload: { code: string; playerId: string; ready: boolean }, ack?: Ack) => {
+      try {
+        const wasCountingDown = rooms.get(payload.code)?.status === 'countdown'
+        const room = rooms.setReady(payload.code, payload.playerId, payload.ready)
+        ack?.({ ok: true, room })
+
+        if (wasCountingDown && room.status !== 'countdown') {
+          clearStartTimer(room.code)
+          io.to(room.code).emit('race:cancelled', { code: room.code, reason: 'Um piloto cancelou a confirmação.' })
+        }
+        publish(room.code, room)
+        scheduleIfReady(room.code)
+      } catch (error) {
+        ack?.({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível atualizar seu estado.' })
+      }
+    })
+
+    socket.on('room:leave', () => {
+      for (const update of rooms.leaveBySocket(socket.id)) {
+        clearStartTimer(update.code)
+        socket.leave(update.code)
+        if (update.room && update.cancelledCountdown) {
+          io.to(update.code).emit('race:cancelled', { code: update.code, reason: 'O rival saiu da sala.' })
+        }
+        publish(update.code, update.room)
+      }
+    })
+
+    socket.on('disconnect', () => {
+      for (const update of rooms.markDisconnected(socket.id)) {
+        if (!update.room) continue
+        if (update.cancelledCountdown) {
+          clearStartTimer(update.code)
+          io.to(update.code).emit('race:cancelled', {
+            code: update.code,
+            reason: 'O rival perdeu a conexão. Aguardando o retorno.',
+          })
+        }
+        publish(update.code, update.room)
+
+        const key = graceKey(update.code, update.playerId)
+        const existing = graceTimers.get(key)
+        if (existing) clearTimeout(existing)
+        graceTimers.set(
+          key,
+          setTimeout(() => {
+            graceTimers.delete(key)
+            const dropped = rooms.dropIfStillDisconnected(update.code, update.playerId)
+            if (!dropped) return
+            clearStartTimer(update.code)
+            if (dropped.room && dropped.cancelledCountdown) {
+              io.to(update.code).emit('race:cancelled', { code: update.code, reason: 'O rival não voltou a tempo.' })
+            }
+            publish(update.code, dropped.room)
+          }, graceMs),
+        )
+      }
+    })
+  })
+
+  const webRoot = resolve('dist')
+  if ((options.serveStatic ?? true) && existsSync(webRoot)) {
+    app.use(express.static(webRoot))
+    app.use((request, response, next) => {
+      if (request.method === 'GET') response.sendFile(resolve(webRoot, 'index.html'))
+      else next()
+    })
+  }
+
+  const close = async () => {
+    for (const timer of startTimers.values()) clearTimeout(timer)
+    for (const timer of graceTimers.values()) clearTimeout(timer)
+    startTimers.clear()
+    graceTimers.clear()
+    await io.close()
+    await new Promise<void>((resolveClose) => http.close(() => resolveClose()))
+  }
+
+  return { http, io, rooms, close }
+}

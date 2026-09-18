@@ -1,12 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  formatTime,
-  obstacles,
-  speedForState,
-  TRACK_LENGTH,
-  trackCurve,
-  VIEW_DISTANCE,
-} from './track'
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { countdownAt, DEFAULT_COUNTDOWN_MS, LIGHT_COUNT, lateBy } from './countdown'
+import { createRaceState, stepRace, type RaceInput } from './simulation'
+import { formatTime, obstacles, TRACK_LENGTH, trackCurve, VIEW_DISTANCE } from './track'
 
 type RacePhase = 'countdown' | 'racing' | 'finished'
 
@@ -14,10 +9,21 @@ export type RaceResult = {
   time: number
   topSpeed: number
   collisions: number
+  /** Atraso, em segundos, com que este dispositivo entrou na corrida. */
+  lateStart: number
 }
 
 type RaceCanvasProps = {
   pilotName: string
+  /** Instante oficial da largada, no relógio do servidor. */
+  startAt: number
+  /** Duração total da sequência de luzes enviada pelo servidor. */
+  countdownMs?: number
+  /** Relógio sincronizado. No modo treino é o relógio local. */
+  now?: () => number
+  mode?: 'solo' | 'online'
+  /** Aviso de conexão exibido sobre a pista sem interromper a corrida. */
+  connectionNotice?: string | null
   onFinish: (result: RaceResult) => void
 }
 
@@ -28,9 +34,9 @@ type Telemetry = {
   elapsed: number
   offRoad: boolean
   penalty: number
+  boosting: boolean
+  boostLocked: boolean
 }
-
-type InputState = { left: boolean; right: boolean; boost: boolean }
 
 const initialTelemetry: Telemetry = {
   progress: 0,
@@ -39,6 +45,8 @@ const initialTelemetry: Telemetry = {
   elapsed: 0,
   offRoad: false,
   penalty: 0,
+  boosting: false,
+  boostLocked: false,
 }
 
 function roundedRect(
@@ -96,14 +104,31 @@ function drawCar(ctx: CanvasRenderingContext2D, x: number, y: number, scale: num
   ctx.restore()
 }
 
-function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
+function RaceCanvas({
+  pilotName,
+  startAt,
+  countdownMs = DEFAULT_COUNTDOWN_MS,
+  now,
+  mode = 'solo',
+  connectionNotice = null,
+  onFinish,
+}: RaceCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const inputRef = useRef<InputState>({ left: false, right: false, boost: false })
+  const inputRef = useRef<RaceInput>({ left: false, right: false, boost: false })
+  const clockRef = useRef(now ?? Date.now)
+  const finishRef = useRef(onFinish)
+  const raceRef = useRef(createRaceState())
+  const startedRef = useRef(false)
+  const doneRef = useRef(false)
   const [telemetry, setTelemetry] = useState(initialTelemetry)
   const [phase, setPhase] = useState<RacePhase>('countdown')
   const [countdownLight, setCountdownLight] = useState(0)
   const [flash, setFlash] = useState<string | null>(null)
+  const [lateStart, setLateStart] = useState(0)
   const audioRef = useRef<AudioContext | null>(null)
+
+  clockRef.current = now ?? Date.now
+  finishRef.current = onFinish
 
   const beep = useCallback((frequency: number, duration = 0.12) => {
     const AudioContextClass = window.AudioContext ??
@@ -111,6 +136,7 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
     if (!AudioContextClass) return
     const audio = audioRef.current ?? new AudioContextClass()
     audioRef.current = audio
+    if (audio.state === 'suspended') void audio.resume()
     const oscillator = audio.createOscillator()
     const gain = audio.createGain()
     oscillator.type = 'square'
@@ -122,9 +148,27 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
     oscillator.stop(audio.currentTime + duration)
   }, [])
 
-  const setInput = (key: keyof InputState, active: boolean) => {
+  const setInput = (key: keyof RaceInput, active: boolean) => {
     inputRef.current[key] = active
   }
+
+  /**
+   * Controles de toque. O comando é registrado antes de capturar o ponteiro:
+   * se a captura falhar no aparelho, o botão continua funcionando.
+   */
+  const holdControl = (key: keyof RaceInput) => ({
+    onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
+      setInput(key, true)
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId)
+      } catch {
+        // Sem captura o botão ainda responde ao soltar.
+      }
+    },
+    onPointerUp: () => setInput(key, false),
+    onPointerCancel: () => setInput(key, false),
+    onLostPointerCapture: () => setInput(key, false),
+  })
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -138,36 +182,73 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
       if (event.code === 'ArrowRight' || event.code === 'KeyD') setInput('right', false)
       if (event.code === 'Space') setInput('boost', false)
     }
+    // Perder o foco solta todas as teclas, senão o carro segue virando sozinho.
+    const release = () => {
+      inputRef.current = { left: false, right: false, boost: false }
+    }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
+    window.addEventListener('blur', release)
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', release)
     }
   }, [])
 
   useEffect(() => {
-    let light = 0
-    const startedAt = performance.now()
-    const countdown = window.setInterval(() => {
-      light += 1
-      if (light <= 5) {
-        setCountdownLight(light)
-        beep(330 + light * 24)
+    // Quem abre a tela depois do instante combinado larga já em atraso.
+    setLateStart(lateBy(clockRef.current(), startAt))
+  }, [startAt])
+
+  /**
+   * Máquina de estados da largada.
+   *
+   * Roda em um temporizador, e não no ciclo de animação, porque o navegador
+   * congela `requestAnimationFrame` em abas que não estão em primeiro plano.
+   * Assim as luzes e o instante da largada continuam corretos nos dois
+   * aparelhos mesmo que um deles esteja com a tela em segundo plano.
+   */
+  useEffect(() => {
+    raceRef.current = createRaceState()
+    startedRef.current = false
+    doneRef.current = false
+    setPhase('countdown')
+    setCountdownLight(0)
+    setTelemetry(initialTelemetry)
+
+    let timer = 0
+    let lightsShown = -1
+
+    const tick = () => {
+      const state = countdownAt(clockRef.current(), startAt, countdownMs)
+
+      if (state.phase !== 'go') {
+        if (state.lights === lightsShown) return
+        lightsShown = state.lights
+        setCountdownLight(state.lights)
+        if (state.lights > 0) beep(330 + state.lights * 24)
+        return
       }
-      if (light === 6) {
-        window.clearInterval(countdown)
+
+      if (!startedRef.current) {
+        startedRef.current = true
         setCountdownLight(0)
         setPhase('racing')
         beep(740, 0.35)
       }
-    }, 600)
-    return () => {
-      window.clearInterval(countdown)
-      // Avoid retaining a stale countdown when React remounts in development.
-      if (performance.now() - startedAt < 3_700) setCountdownLight(0)
+      if (timer) {
+        window.clearInterval(timer)
+        timer = 0
+      }
     }
-  }, [beep])
+
+    tick()
+    if (!startedRef.current) timer = window.setInterval(tick, 50)
+    return () => {
+      if (timer) window.clearInterval(timer)
+    }
+  }, [beep, countdownMs, startAt])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -175,21 +256,20 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
+    const race = raceRef.current
+    const lateAtStart = lateBy(clockRef.current(), startAt)
     let width = 0
     let height = 0
-    let progress = 0
-    let lateral = 0
-    let speed = 0
-    let boost = 100
-    let penalty = 0
-    let collisions = 0
-    let topSpeed = 0
-    let raceStartedAt = 0
     let previous = performance.now()
     let lastHudUpdate = 0
     let animationFrame = 0
-    let finished = false
-    const hitObstacles = new Set<number>()
+    const flashTimers: number[] = []
+
+    // Voltar do segundo plano não pode gerar um passo gigante de simulação.
+    const resumeClock = () => {
+      previous = performance.now()
+    }
+    document.addEventListener('visibilitychange', resumeClock)
 
     const resize = () => {
       const box = canvas.getBoundingClientRect()
@@ -203,6 +283,11 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
     resize()
     window.addEventListener('resize', resize)
 
+    const announce = (message: string) => {
+      setFlash(message)
+      flashTimers.push(window.setTimeout(() => setFlash(null), 1_200))
+    }
+
     const roadGeometry = (distanceAhead: number) => {
       const closeness = 1 - distanceAhead / VIEW_DISTANCE
       const perspective = Math.pow(Math.max(0, closeness), 1.72)
@@ -210,7 +295,7 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
       const bottom = height * 0.92
       const y = horizon + perspective * (bottom - horizon)
       const roadWidth = width * (0.09 + perspective * 0.8)
-      const bend = (trackCurve(progress + distanceAhead) - trackCurve(progress)) * width * 0.31
+      const bend = (trackCurve(race.progress + distanceAhead) - trackCurve(race.progress)) * width * 0.31
       return { y, roadWidth, center: width / 2 + bend * (1 - perspective * 0.25) }
     }
 
@@ -226,7 +311,7 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
       ctx.beginPath()
       ctx.moveTo(0, height * 0.34)
       for (let x = 0; x <= width; x += 55) {
-        const ridge = height * (0.3 + 0.035 * Math.sin(x * 0.017 + progress * 0.0005))
+        const ridge = height * (0.3 + 0.035 * Math.sin(x * 0.017 + race.progress * 0.0005))
         ctx.lineTo(x, ridge)
       }
       ctx.lineTo(width, height * 0.48)
@@ -245,7 +330,7 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
         const nearDistance = VIEW_DISTANCE * (1 - (i + 1) / slices)
         const far = roadGeometry(farDistance)
         const near = roadGeometry(nearDistance)
-        const stripe = Math.floor((progress + nearDistance) / 18) % 2 === 0
+        const stripe = Math.floor((race.progress + nearDistance) / 18) % 2 === 0
 
         ctx.fillStyle = stripe ? '#244b2c' : '#214329'
         ctx.fillRect(0, far.y, width, Math.max(1, near.y - far.y + 1))
@@ -311,53 +396,44 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
       ctx.restore()
     }
 
-    const draw = (now: number) => {
-      const dt = Math.min((now - previous) / 1000, 0.05)
-      previous = now
+    const draw = (frame: number) => {
+      const serverNow = clockRef.current()
+      const dt = (frame - previous) / 1000
+      previous = frame
 
-      if (phase === 'racing' && !finished) {
-        if (raceStartedAt === 0) raceStartedAt = now
-        const steer = Number(inputRef.current.right) - Number(inputRef.current.left)
-        lateral += steer * dt * (1.35 + speed / 520)
-        lateral = Math.max(-1.28, Math.min(1.28, lateral))
-        const offRoad = Math.abs(lateral) > 0.88
-        const boosting = inputRef.current.boost && boost > 0 && !offRoad && penalty <= 0
-        boost = Math.max(0, Math.min(100, boost + (boosting ? -25 : 5.5) * dt))
-        penalty = Math.max(0, penalty - dt)
-        const targetSpeed = speedForState(offRoad, penalty, boosting)
-        speed += (targetSpeed - speed) * Math.min(1, dt * (targetSpeed < speed ? 5 : 1.8))
-        progress = Math.min(TRACK_LENGTH, progress + (speed / 3.6) * dt)
-        topSpeed = Math.max(topSpeed, speed)
-
-        for (const obstacle of obstacles) {
-          const delta = obstacle.distance - progress
-          if (
-            delta > -5 &&
-            delta < 8 &&
-            Math.abs(lateral - obstacle.lane) < 0.25 &&
-            !hitObstacles.has(obstacle.id)
-          ) {
-            hitObstacles.add(obstacle.id)
-            collisions += 1
-            penalty = 1.65
-            setFlash('IMPACTO — VELOCIDADE REDUZIDA')
-            window.setTimeout(() => setFlash(null), 1_200)
+      if (startedRef.current && !doneRef.current) {
+        const elapsed = Math.max(0, (serverNow - startAt) / 1000)
+        for (const event of stepRace(race, inputRef.current, dt)) {
+          if (event.type === 'collision') {
+            announce('IMPACTO — VELOCIDADE REDUZIDA')
             beep(105, 0.24)
+          }
+          if (event.type === 'finish') {
+            doneRef.current = true
+            setPhase('finished')
+            const result: RaceResult = {
+              time: elapsed,
+              topSpeed: race.topSpeed,
+              collisions: race.collisions,
+              lateStart: lateAtStart,
+            }
+            setTelemetry((current) => ({ ...current, progress: TRACK_LENGTH, elapsed, speed: 0 }))
+            flashTimers.push(window.setTimeout(() => finishRef.current(result), 850))
           }
         }
 
-        const elapsed = (now - raceStartedAt) / 1000
-        if (now - lastHudUpdate > 80) {
-          lastHudUpdate = now
-          setTelemetry({ progress, speed, boost, elapsed, offRoad, penalty })
-        }
-
-        if (progress >= TRACK_LENGTH) {
-          finished = true
-          setPhase('finished')
-          const result = { time: elapsed, topSpeed, collisions }
-          setTelemetry((current) => ({ ...current, progress: TRACK_LENGTH, elapsed, speed: 0 }))
-          window.setTimeout(() => onFinish(result), 850)
+        if (frame - lastHudUpdate > 80) {
+          lastHudUpdate = frame
+          setTelemetry({
+            progress: race.progress,
+            speed: race.speed,
+            boost: race.boost,
+            elapsed,
+            offRoad: race.offRoad,
+            penalty: race.penalty,
+            boosting: race.boosting,
+            boostLocked: race.boostLocked,
+          })
         }
       }
 
@@ -365,15 +441,15 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
       drawRoad()
 
       const visibleObstacles = obstacles
-        .map((obstacle) => ({ ...obstacle, ahead: obstacle.distance - progress }))
+        .map((obstacle) => ({ ...obstacle, ahead: obstacle.distance - race.progress }))
         .filter((obstacle) => obstacle.ahead > 0 && obstacle.ahead < VIEW_DISTANCE)
         .sort((a, b) => b.ahead - a.ahead)
       for (const obstacle of visibleObstacles) {
         drawObstacle(obstacle.ahead, obstacle.lane, obstacle.kind)
       }
 
-      if (TRACK_LENGTH - progress < VIEW_DISTANCE) {
-        const finish = roadGeometry(TRACK_LENGTH - progress)
+      if (TRACK_LENGTH - race.progress < VIEW_DISTANCE) {
+        const finish = roadGeometry(TRACK_LENGTH - race.progress)
         const cells = 12
         for (let i = 0; i < cells; i += 1) {
           ctx.fillStyle = i % 2 === 0 ? '#f3f3ed' : '#11151a'
@@ -382,10 +458,10 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
         }
       }
 
-      const playerX = width / 2 + lateral * width * 0.32
-      if (phase !== 'finished') drawCar(ctx, playerX, height * 0.82, Math.max(0.76, width / 620))
+      const playerX = width / 2 + race.lateral * width * 0.32
+      if (!doneRef.current) drawCar(ctx, playerX, height * 0.82, Math.max(0.76, width / 620))
 
-      if (telemetry.offRoad && phase === 'racing') {
+      if (race.offRoad && startedRef.current && !doneRef.current) {
         ctx.fillStyle = 'rgba(255, 87, 48, .09)'
         ctx.fillRect(0, 0, width, height)
       }
@@ -396,11 +472,14 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
     return () => {
       cancelAnimationFrame(animationFrame)
       window.removeEventListener('resize', resize)
+      document.removeEventListener('visibilitychange', resumeClock)
+      for (const timer of flashTimers) window.clearTimeout(timer)
     }
-  }, [beep, onFinish, phase])
+  }, [beep, countdownMs, startAt])
+
+  useEffect(() => () => { void audioRef.current?.close() }, [])
 
   const progressPercent = Math.min(100, (telemetry.progress / TRACK_LENGTH) * 100)
-  const isBoosting = inputRef.current.boost && telemetry.boost > 0 && phase === 'racing'
 
   return (
     <main className="race-shell">
@@ -413,8 +492,8 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
 
       <section className="hud" aria-label="Telemetria">
         <div className="position-block">
-          <span>POSIÇÃO</span>
-          <strong>SOLO</strong>
+          <span>MODO</span>
+          <strong>{mode === 'online' ? 'DUELO' : 'SOLO'}</strong>
         </div>
         <div className="timer-block">
           <span>TEMPO DE CORRIDA</span>
@@ -434,49 +513,38 @@ function RaceCanvas({ pilotName, onFinish }: RaceCanvasProps) {
         <div className="progress-track"><i style={{ width: `${progressPercent}%` }} /></div>
       </div>
 
-      <div className={`boost-meter ${isBoosting ? 'active' : ''}`}>
+      <div className={`boost-meter ${telemetry.boosting ? 'active' : ''} ${telemetry.boostLocked ? 'empty' : ''}`}>
         <div className="boost-copy"><span>BOOST</span><b>{Math.round(telemetry.boost)}%</b></div>
         <div className="boost-track"><i style={{ width: `${telemetry.boost}%` }} /></div>
       </div>
 
+      {connectionNotice && <div className="connection-notice">{connectionNotice}</div>}
       {telemetry.offRoad && phase === 'racing' && <div className="warning">FORA DA PISTA</div>}
       {flash && <div className="impact">{flash}</div>}
 
       {phase === 'countdown' && (
         <div className="countdown-layer">
-          <div className="lights" aria-label={`${countdownLight} de 5 luzes`}>
+          <div className="lights" aria-label={`${countdownLight} de ${LIGHT_COUNT} luzes`}>
             {[1, 2, 3, 4, 5].map((light) => (
               <i key={light} className={countdownLight >= light ? 'on' : ''} />
             ))}
           </div>
-          <p>{countdownLight === 0 ? 'PREPARE-SE' : 'AGUARDE AS LUZES'}</p>
+          <p>{countdownLight === 0 ? 'PREPARE-SE' : 'AGUARDE AS LUZES APAGAREM'}</p>
+          {mode === 'online' && <p className="countdown-sync">LARGADA SINCRONIZADA PELO SERVIDOR</p>}
         </div>
       )}
 
       {phase === 'racing' && telemetry.elapsed < 1.1 && <div className="go-signal">VAI!</div>}
+      {lateStart > 0.4 && phase !== 'finished' && (
+        <div className="late-notice">LARGADA PERDIDA POR {lateStart.toFixed(1)} S — RECUPERANDO</div>
+      )}
 
       <div className="touch-controls" aria-label="Controles de toque">
-        <button
-          className="steer left"
-          aria-label="Virar à esquerda"
-          onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setInput('left', true) }}
-          onPointerUp={() => setInput('left', false)}
-          onPointerCancel={() => setInput('left', false)}
-        >‹</button>
-        <button
-          className="steer right"
-          aria-label="Virar à direita"
-          onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setInput('right', true) }}
-          onPointerUp={() => setInput('right', false)}
-          onPointerCancel={() => setInput('right', false)}
-        >›</button>
-        <button
-          className="boost-button"
-          aria-label="Ativar boost"
-          onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setInput('boost', true) }}
-          onPointerUp={() => setInput('boost', false)}
-          onPointerCancel={() => setInput('boost', false)}
-        ><span>BOOST</span><small>SEGURE</small></button>
+        <button className="steer left" aria-label="Virar à esquerda" {...holdControl('left')}>‹</button>
+        <button className="steer right" aria-label="Virar à direita" {...holdControl('right')}>›</button>
+        <button className="boost-button" aria-label="Ativar boost" {...holdControl('boost')}>
+          <span>BOOST</span><small>SEGURE</small>
+        </button>
       </div>
 
       <div className="keyboard-hint"><kbd>A</kbd><kbd>D</kbd> DIREÇÃO <kbd>ESPAÇO</kbd> BOOST</div>

@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import { RoomError, RoomStore } from './rooms.js'
 
+/** Relógio controlado para testar agendamento e janela de reconexão. */
+function createClock(start = 1_000_000) {
+  let current = start
+  return {
+    now: () => current,
+    advance: (ms: number) => {
+      current += ms
+    },
+  }
+}
+
+function roomWithTwoPilots(store: RoomStore) {
+  const room = store.create('socket-a', 'a', 'Ana')
+  store.join(room.code, 'socket-b', 'b', 'Beto')
+  return room.code
+}
+
 describe('salas multiplayer', () => {
   it('cria uma sala e aceita exatamente dois pilotos', () => {
     const rooms = new RoomStore()
@@ -12,17 +29,192 @@ describe('salas multiplayer', () => {
 
   it('fica pronta somente quando os dois confirmam', () => {
     const rooms = new RoomStore()
-    const room = rooms.create('socket-a', 'a', 'Ana')
-    rooms.join(room.code, 'socket-b', 'b', 'Beto')
-    expect(rooms.setReady(room.code, 'a', true).status).toBe('waiting')
-    expect(rooms.setReady(room.code, 'b', true).status).toBe('ready')
+    const code = roomWithTwoPilots(rooms)
+    expect(rooms.setReady(code, 'a', true).status).toBe('waiting')
+    expect(rooms.setReady(code, 'b', true).status).toBe('ready')
   })
 
   it('remove quem sai antes da largada', () => {
     const rooms = new RoomStore()
-    const room = rooms.create('socket-a', 'a', 'Ana')
-    rooms.join(room.code, 'socket-b', 'b', 'Beto')
+    const code = roomWithTwoPilots(rooms)
     rooms.leaveBySocket('socket-b')
-    expect(rooms.get(room.code)?.players.map((player) => player.name)).toEqual(['Ana'])
+    expect(rooms.get(code)?.players.map((player) => player.name)).toEqual(['Ana'])
+  })
+
+  it('recusa entrada em sala inexistente', () => {
+    const rooms = new RoomStore()
+    expect(() => rooms.join('ZZZZZ', 'socket-a', 'a', 'Ana')).toThrow(RoomError)
+  })
+
+  it('descarta a sala quando o último piloto sai', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.leaveBySocket('socket-a')
+    rooms.leaveBySocket('socket-b')
+    expect(rooms.get(code)).toBeNull()
+    expect(rooms.size).toBe(0)
+  })
+})
+
+describe('largada sincronizada', () => {
+  it('agenda a largada no futuro apenas com os dois pilotos prontos', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now, countdownMs: 5_400 })
+    const code = roomWithTwoPilots(rooms)
+
+    rooms.setReady(code, 'a', true)
+    expect(rooms.scheduleStart(code)).toBeNull()
+
+    rooms.setReady(code, 'b', true)
+    const scheduled = rooms.scheduleStart(code)
+    expect(scheduled?.status).toBe('countdown')
+    expect(scheduled?.startAt).toBe(clock.now() + 5_400)
+    expect(scheduled?.countdownMs).toBe(5_400)
+  })
+
+  it('entrega o mesmo instante de largada para os dois pilotos', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    const scheduled = rooms.scheduleStart(code)
+
+    // Qualquer leitura posterior da sala devolve o mesmo horário oficial.
+    clock.advance(1_200)
+    expect(rooms.get(code)?.startAt).toBe(scheduled?.startAt)
+  })
+
+  it('não reagenda uma largada já marcada', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    const first = rooms.scheduleStart(code)
+    clock.advance(500)
+    expect(rooms.scheduleStart(code)).toBeNull()
+    expect(rooms.get(code)?.startAt).toBe(first?.startAt)
+  })
+
+  it('cancela a largada quando um piloto desfaz a confirmação', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+
+    const cancelled = rooms.setReady(code, 'b', false)
+    expect(cancelled.status).toBe('waiting')
+    expect(cancelled.startAt).toBeNull()
+    expect(cancelled.players.every((player) => !player.ready)).toBe(true)
+  })
+
+  it('cancela a largada quando um piloto sai durante a contagem', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+
+    const [update] = rooms.leaveBySocket('socket-b')
+    expect(update.room?.status).toBe('waiting')
+    expect(update.room?.startAt).toBeNull()
+  })
+
+  it('marca o início da corrida no instante agendado', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    const scheduled = rooms.scheduleStart(code)
+
+    clock.advance(5_400)
+    const racing = rooms.beginRace(code)
+    expect(racing?.status).toBe('racing')
+    expect(racing?.startAt).toBe(scheduled?.startAt)
+    expect(rooms.beginRace(code)).toBeNull()
+  })
+
+  it('libera uma nova largada quando os pilotos voltam ao lobby', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    rooms.beginRace(code)
+
+    expect(rooms.setReady(code, 'a', false).status).toBe('waiting')
+    expect(rooms.setReady(code, 'a', true).status).toBe('waiting')
+    expect(rooms.setReady(code, 'b', true).status).toBe('ready')
+    expect(rooms.scheduleStart(code)?.status).toBe('countdown')
+  })
+})
+
+describe('perda momentânea de conexão', () => {
+  it('mantém o piloto na sala durante a janela de retorno', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+
+    const [update] = rooms.markDisconnected('socket-b')
+    expect(update.room?.players).toHaveLength(2)
+    expect(update.room?.players.find((player) => player.id === 'b')?.connected).toBe(false)
+  })
+
+  it('cancela a contagem quando um piloto cai', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+
+    const [update] = rooms.markDisconnected('socket-b')
+    expect(update.room?.status).toBe('waiting')
+    expect(update.room?.startAt).toBeNull()
+  })
+
+  it('a reconexão devolve o piloto sem criar um terceiro', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+
+    rooms.markDisconnected('socket-b')
+    clock.advance(3_000)
+    const back = rooms.join(code, 'socket-b2', 'b', 'Beto')
+
+    expect(back.players).toHaveLength(2)
+    expect(back.players.find((player) => player.id === 'b')?.connected).toBe(true)
+    expect(rooms.dropIfStillDisconnected(code, 'b')).toBeNull()
+  })
+
+  it('remove quem não volta dentro da janela', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+
+    rooms.markDisconnected('socket-b')
+    clock.advance(12_000)
+    const dropped = rooms.dropIfStillDisconnected(code, 'b')
+
+    expect(dropped?.room?.players.map((player) => player.id)).toEqual(['a'])
+  })
+
+  it('a reconexão devolve o instante oficial de uma corrida em andamento', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    const scheduled = rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+
+    clock.advance(2_000)
+    const back = rooms.join(code, 'socket-b2', 'b', 'Beto')
+    expect(back.status).toBe('racing')
+    expect(back.startAt).toBe(scheduled?.startAt)
   })
 })
