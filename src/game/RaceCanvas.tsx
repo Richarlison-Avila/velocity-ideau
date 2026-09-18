@@ -834,7 +834,7 @@ function RaceCanvas({
         // A cadência segue o passo que a simulação aplicou, e não o tempo do
         // quadro: um quadro longo não pode virar uma rajada de poeira.
         const passo = Math.min(Math.max(0, dt), MAX_STEP_SECONDS)
-        updateFeel(feel, race, inputRef.current, passo)
+        updateFeel(feel, race, passo)
 
         // A câmera baixa um pouco com a velocidade, inclina no esterço e leva
         // um tranco curto no impacto. Tudo contínuo, limitado e proporcional

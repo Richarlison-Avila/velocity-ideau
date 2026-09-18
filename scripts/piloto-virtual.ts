@@ -9,7 +9,9 @@
  *   npm run piloto -- ABC12 --nome Rival --velocidade 260
  */
 import { io, type Socket } from 'socket.io-client'
-// A pista vem do jogo: uma cópia aqui divergiria em silêncio.
+// A pista e a curva de tração vêm do jogo: uma cópia aqui divergiria em
+// silêncio, e o fantasma arrancaria diferente do carro de verdade.
+import { ACCELERATION_PEAK, ACCELERATION_SHAPE } from '../src/game/simulation.js'
 import { TRACK_LENGTH } from '../src/game/track.js'
 
 type Room = {
@@ -111,7 +113,11 @@ function race(startAt: number) {
     const dt = Math.min(0.25, Math.max(0, (clock - lastTick) / 1000))
     lastTick = clock
     if (dt === 0) return
-    speed += (targetSpeed - speed) * Math.min(1, dt * 1.8)
+    // Mesma curva de tração do jogo: arrancada forte que cede perto do teto.
+    if (speed < targetSpeed) {
+      const fracao = speed / targetSpeed
+      speed = Math.min(targetSpeed, speed + ACCELERATION_PEAK * (1 - Math.pow(fracao, ACCELERATION_SHAPE)) * dt)
+    }
     progress = Math.min(TRACK_LENGTH, progress + (speed / 3.6) * dt)
     const lateral = Math.sin(elapsed / 2.6) * 0.55
 

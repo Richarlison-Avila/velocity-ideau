@@ -22,6 +22,20 @@ export type RaceState = {
   boosting: boolean
   /** Bloqueio após esgotar o boost: evita o liga-desliga a cada quadro. */
   boostLocked: boolean
+  /**
+   * Posição do volante, de -1 a 1. Persegue o comando com inércia em vez de
+   * saltar para ele, e é o que move o carro de fato.
+   */
+  steerInput: number
+  /**
+   * Quanto o volante andou no passado recente, com esquecimento.
+   *
+   * Uma correção de curva mexe pouco e some; um zigue-zague sustentado
+   * acumula. É daqui que sai a perda de aderência.
+   */
+  agitation: number
+  /** Aderência de 0 a 1, derivada da agitação. Multiplica a velocidade-alvo. */
+  grip: number
   finished: boolean
   hitObstacles: Set<number>
 }
@@ -34,10 +48,77 @@ export const PENALTY_SECONDS = 1.65
 export const MAX_STEP_SECONDS = 0.05
 /** Carga mínima para voltar a usar o boost depois de esgotá-lo. */
 export const BOOST_UNLOCK = 25
-/** Rapidez com que o carro ganha velocidade em direção ao alvo. */
-export const ACCELERATION_RATE = 1.8
-/** Perder velocidade é mais rápido que ganhar: impacto e grama pesam. */
+
+/**
+ * Passo fixo da integração, em segundos.
+ *
+ * A curva de tração não tem solução fechada, então ela é integrada em passos
+ * curtos e sempre do mesmo tamanho. Sem isso, um aparelho de 20 quadros por
+ * segundo chegaria a uma velocidade diferente de um de 60 — e num duelo isso
+ * é vantagem de hardware. 60, 30 e 20 quadros por segundo são múltiplos
+ * exatos deste passo, então os três percorrem a mesma sequência.
+ */
+export const PHYSICS_STEP = 1 / 120
+
+/**
+ * Aceleração com o carro parado, em km/h por segundo.
+ *
+ * A arrancada é forte, mas o ganho cede conforme a velocidade sobe — é o
+ * oposto da aproximação exponencial anterior, que gastava quase tudo no
+ * primeiro instante e colocava o carro perto de 200 km/h em menos de um
+ * segundo, sem nenhuma progressão para o olho acompanhar.
+ */
+export const ACCELERATION_PEAK = 62
+
+/**
+ * Expoente da curva de tração.
+ *
+ * Com 4, a aceleração fica quase constante até dois terços da velocidade-alvo
+ * e só então cede. É o que dá a sensação de ganho progressivo em vez de um
+ * salto seguido de estagnação.
+ */
+export const ACCELERATION_SHAPE = 4
+
+/**
+ * Empurrão extra do boost sobre a tração.
+ *
+ * Sem ele o boost virava uma promessa: a velocidade-alvo subia para 314, mas
+ * a carga acabava antes de o carro chegar perto disso. Com o empurrão, a
+ * arrancada do boost é sentida na hora e a vantagem volta à faixa combinada.
+ */
+export const BOOST_TRACTION = 1.5
+
+/** Perder velocidade é mais rápido que ganhar: a grama pesa. */
 export const DECELERATION_RATE = 5
+
+/** No impacto a queda é quase instantânea, e não uma frenagem suave. */
+export const IMPACT_DECELERATION = 16
+
+/** Deslocamento lateral por segundo com o volante todo virado, parado. */
+export const STEER_RATE = 1.35
+
+/** Inércia do volante, em segundos. Curto: não atrasa o comando, dá peso. */
+export const STEER_TAU = 0.1
+
+/** Tempo de esquecimento da agitação do volante, em segundos. */
+export const AGITATION_TAU = 1
+
+/**
+ * Agitação tolerada sem qualquer perda.
+ *
+ * Uma correção de curva — virar, ajustar e voltar — fica abaixo disto. Só o
+ * zigue-zague sustentado passa, que é exatamente o que se quer punir.
+ */
+export const AGITATION_DEADBAND = 2.4
+
+/** Faixa de agitação entre a primeira perda e a perda máxima. */
+export const AGITATION_RANGE = 3.4
+
+/** Perda máxima de aderência por esforço lateral. */
+export const MAX_GRIP_LOSS = 0.17
+
+/** Perda adicional conforme o carro se embrenha na grama. */
+export const OFF_ROAD_DEPTH_LOSS = 0.25
 
 export function createRaceState(): RaceState {
   return {
@@ -51,9 +132,32 @@ export function createRaceState(): RaceState {
     offRoad: false,
     boosting: false,
     boostLocked: false,
+    steerInput: 0,
+    agitation: 0,
+    grip: 1,
     finished: false,
     hitObstacles: new Set<number>(),
   }
+}
+
+/** Aderência disponível para uma dada agitação do volante. */
+export function gripFor(agitation: number) {
+  const excesso = (agitation - AGITATION_DEADBAND) / AGITATION_RANGE
+  return 1 - clamp(excesso, 0, 1) * MAX_GRIP_LOSS
+}
+
+/**
+ * Velocidade que o carro persegue neste instante.
+ *
+ * Parte da tabela de estados — que é o contrato com o servidor — e aplica
+ * sobre ela as perdas contínuas: o quanto o carro se embrenhou na grama e o
+ * quanto vem maltratando o volante.
+ */
+export function targetSpeedFor(state: RaceState) {
+  const base = speedForState(state.offRoad, state.penalty, state.boosting)
+  if (!state.offRoad) return base * state.grip
+  const profundidade = clamp((Math.abs(state.lateral) - OFF_ROAD_LIMIT) / (LATERAL_LIMIT - OFF_ROAD_LIMIT), 0, 1)
+  return base * (1 - profundidade * OFF_ROAD_DEPTH_LOSS) * state.grip
 }
 
 /**
@@ -67,23 +171,50 @@ export function stepRace(state: RaceState, input: RaceInput, dt: number): RaceEv
   const step = Math.min(Math.max(0, dt), MAX_STEP_SECONDS)
   if (step === 0) return events
 
-  const steer = Number(input.right) - Number(input.left)
-  state.lateral = clamp(state.lateral + steer * step * (1.35 + state.speed / 520), -LATERAL_LIMIT, LATERAL_LIMIT)
-  state.offRoad = Math.abs(state.lateral) > OFF_ROAD_LIMIT
-  if (state.boostLocked && state.boost >= BOOST_UNLOCK) state.boostLocked = false
-  state.boosting = input.boost && state.boost > 0 && !state.boostLocked && !state.offRoad && state.penalty <= 0
-  state.boost = clamp(state.boost + (state.boosting ? -25 : 5.5) * step, 0, 100)
-  if (state.boost <= 0) state.boostLocked = true
-  state.penalty = Math.max(0, state.penalty - step)
+  const comando = Number(input.right) - Number(input.left)
 
-  const targetSpeed = speedForState(state.offRoad, state.penalty, state.boosting)
-  // A aproximação exponencial dá o mesmo resultado em qualquer taxa de quadros.
-  // Com o fator linear anterior, um aparelho de 20 quadros por segundo chegava
-  // a uma velocidade 3% diferente de um de 60 durante as transições — e em um
-  // duelo isso é vantagem de hardware.
-  const taxa = targetSpeed < state.speed ? DECELERATION_RATE : ACCELERATION_RATE
-  state.speed += (targetSpeed - state.speed) * (1 - Math.exp(-step * taxa))
-  state.progress = Math.min(TRACK_LENGTH, state.progress + (state.speed / 3.6) * step)
+  let restante = step
+  while (restante > 1e-9) {
+    const h = Math.min(PHYSICS_STEP, restante)
+    restante -= h
+
+    // O volante tem inércia, e o esforço lateral é o quanto ele andou. Medir
+    // o curso do volante — e não a posição do carro na pista — é o que separa
+    // a correção necessária numa curva do zigue-zague deliberado.
+    const antesDoGiro = state.steerInput
+    state.steerInput += (comando - antesDoGiro) * (1 - Math.exp(-h / STEER_TAU))
+    state.agitation = state.agitation * Math.exp(-h / AGITATION_TAU) + Math.abs(state.steerInput - antesDoGiro)
+    state.grip = gripFor(state.agitation)
+
+    state.lateral = clamp(
+      state.lateral + state.steerInput * h * (STEER_RATE + state.speed / 520),
+      -LATERAL_LIMIT,
+      LATERAL_LIMIT,
+    )
+    state.offRoad = Math.abs(state.lateral) > OFF_ROAD_LIMIT
+
+    if (state.boostLocked && state.boost >= BOOST_UNLOCK) state.boostLocked = false
+    state.boosting = input.boost && state.boost > 0 && !state.boostLocked && !state.offRoad && state.penalty <= 0
+    state.boost = clamp(state.boost + (state.boosting ? -25 : 5.5) * h, 0, 100)
+    if (state.boost <= 0) state.boostLocked = true
+    state.penalty = Math.max(0, state.penalty - h)
+
+    const alvo = targetSpeedFor(state)
+    if (alvo > state.speed) {
+      // Tração: forte na saída, cedendo perto do teto.
+      const fracao = state.speed / Math.max(1, alvo)
+      const tracao = ACCELERATION_PEAK * (state.boosting ? BOOST_TRACTION : 1)
+      state.speed = Math.min(alvo, state.speed + tracao * (1 - Math.pow(fracao, ACCELERATION_SHAPE)) * h)
+    } else {
+      // A perda é exponencial, que é a forma certa para arrasto e frenagem —
+      // e tem solução fechada, então não depende do tamanho do passo.
+      const taxa = state.penalty > 0 ? IMPACT_DECELERATION : DECELERATION_RATE
+      state.speed += (alvo - state.speed) * (1 - Math.exp(-h * taxa))
+    }
+
+    state.progress = Math.min(TRACK_LENGTH, state.progress + (state.speed / 3.6) * h)
+  }
+
   state.topSpeed = Math.max(state.topSpeed, state.speed)
 
   for (const obstacle of obstacles) {
