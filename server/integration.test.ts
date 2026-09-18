@@ -173,6 +173,119 @@ describe('largada sincronizada pelo socket', () => {
   })
 })
 
+describe('telemetria e carro fantasma pelo socket', () => {
+  type Rival = { playerId: string; t: number; progress: number; lateral: number; speed: number; state: string }
+
+  /** Coloca os dois pilotos correndo de verdade, já passado o instante da largada. */
+  async function emCorrida() {
+    const { ana, beto, code } = await gridCompleto()
+    const agendada = waitFor<Scheduled>(ana, 'race:scheduled')
+    ana.emit('room:set-ready', { code, playerId: 'ana', ready: true })
+    beto.emit('room:set-ready', { code, playerId: 'beto', ready: true })
+    await agendada
+    await waitForRoom(ana, (room) => room.status === 'racing')
+    return { ana, beto, code }
+  }
+
+  const medicao = (code: string, playerId: string, progress: number, extra: Record<string, unknown> = {}) => ({
+    code,
+    playerId,
+    t: Date.now(),
+    progress,
+    lateral: 0,
+    speed: 252,
+    state: 'racing',
+    ...extra,
+  })
+
+  it('repassa a telemetria de um piloto para o adversário', async () => {
+    const { ana, beto, code } = await emCorrida()
+    const recebida = waitFor<Rival>(beto, 'race:rival')
+    ana.emit('race:telemetry', medicao(code, 'ana', 340, { lateral: 0.4 }))
+
+    const rival = await recebida
+    expect(rival.progress).toBe(340)
+    expect(rival.lateral).toBeCloseTo(0.4, 5)
+    expect(rival.playerId).toBe('ana')
+  })
+
+  it('não devolve a própria telemetria para quem a enviou', async () => {
+    const { ana, beto, code } = await emCorrida()
+    let voltou = false
+    ana.on('race:rival', () => {
+      voltou = true
+    })
+
+    const recebida = waitFor<Rival>(beto, 'race:rival')
+    ana.emit('race:telemetry', medicao(code, 'ana', 120))
+    await recebida
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(voltou).toBe(false)
+  })
+
+  it('os dois pilotos enxergam o fantasma um do outro', async () => {
+    const { ana, beto, code } = await emCorrida()
+    const paraBeto = waitFor<Rival>(beto, 'race:rival')
+    const paraAna = waitFor<Rival>(ana, 'race:rival')
+
+    ana.emit('race:telemetry', medicao(code, 'ana', 300))
+    beto.emit('race:telemetry', medicao(code, 'beto', 320))
+
+    expect((await paraBeto).progress).toBe(300)
+    expect((await paraAna).progress).toBe(320)
+  })
+
+  it('avisa o rival quando o piloto cruza a chegada', async () => {
+    const { ana, beto, code } = await emCorrida()
+    const recebida = waitFor<Rival>(beto, 'race:rival')
+    ana.emit('race:telemetry', medicao(code, 'ana', 4_800, { speed: 0, state: 'finished' }))
+
+    const rival = await recebida
+    expect(rival.state).toBe('finished')
+    expect(rival.speed).toBe(0)
+  })
+
+  it('recusa um avanço impossível em vez de teleportar o fantasma', async () => {
+    const { ana, beto, code } = await emCorrida()
+
+    const primeira = waitFor<Rival>(beto, 'race:rival')
+    ana.emit('race:telemetry', medicao(code, 'ana', 100))
+    await primeira
+
+    const segunda = waitFor<Rival>(beto, 'race:rival')
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    ana.emit('race:telemetry', medicao(code, 'ana', 4_700))
+
+    expect((await segunda).progress).toBeLessThan(200)
+  })
+
+  it('ignora telemetria enviada antes da largada', async () => {
+    const { ana, beto, code } = await gridCompleto()
+    let recebeu = false
+    beto.on('race:rival', () => {
+      recebeu = true
+    })
+
+    ana.emit('race:telemetry', medicao(code, 'ana', 500))
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(recebeu).toBe(false)
+  })
+
+  it('entrega a última posição do rival a quem reconecta durante a corrida', async () => {
+    const { ana, beto, code } = await emCorrida()
+    const recebida = waitFor<Rival>(beto, 'race:rival')
+    ana.emit('race:telemetry', medicao(code, 'ana', 1_250))
+    await recebida
+
+    beto.disconnect()
+    const betoDeVolta = await connect()
+    const fantasma = waitFor<Rival>(betoDeVolta, 'race:rival')
+    await ask<RoomAck>(betoDeVolta, 'room:join', { code, name: 'Beto', playerId: 'beto' })
+
+    expect((await fantasma).progress).toBe(1_250)
+  })
+})
+
 describe('perda momentânea de conexão pelo socket', () => {
   it('cancela a contagem e mantém a vaga quando o rival cai', async () => {
     const { ana, beto, code } = await gridCompleto()

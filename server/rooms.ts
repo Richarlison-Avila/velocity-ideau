@@ -17,12 +17,24 @@ export type PublicRoom = {
   countdownMs: number
 }
 
+export type RivalState = 'racing' | 'finished'
+
+export type Telemetry = {
+  /** Instante da medição, no relógio do servidor. */
+  t: number
+  progress: number
+  lateral: number
+  speed: number
+  state: RivalState
+}
+
 type Player = {
   id: string
   name: string
   ready: boolean
   socketId: string
   disconnectedAt: number | null
+  telemetry: Telemetry | null
 }
 
 type RaceState = 'idle' | 'countdown' | 'racing'
@@ -55,6 +67,15 @@ export const COUNTDOWN_MS = 5_400
 
 /** Janela para o piloto voltar depois de uma queda de conexão. */
 export const RECONNECT_GRACE_MS = 12_000
+
+/** Teto de velocidade aceito na telemetria: acima disso o avanço é impossível. */
+export const MAX_PLAUSIBLE_SPEED_MS = 120
+/** Folga em metros para não punir variação normal de rede. */
+export const PROGRESS_TOLERANCE_M = 8
+/** Limite lateral da pista, usado para descartar valores fora da faixa. */
+export const LATERAL_LIMIT = 1.28
+/** Diferença máxima aceita entre o horário da medição e o do servidor. */
+export const CLOCK_TOLERANCE_MS = 5_000
 
 export type RoomStoreOptions = {
   now?: () => number
@@ -133,7 +154,57 @@ export class RoomStore {
     const room = this.rooms.get(this.normalize(codeInput))
     if (!room || room.state !== 'countdown') return null
     room.state = 'racing'
+    for (const player of room.players) player.telemetry = null
     return this.toPublic(room)
+  }
+
+  /**
+   * Valida a telemetria antes de repassá-la ao adversário.
+   *
+   * Descarta medições fora de ordem, corrige horários incoerentes e limita o
+   * avanço ao que é fisicamente possível, para que um cliente com problema —
+   * ou adulterado — não teleporte o próprio fantasma na tela do rival.
+   */
+  acceptTelemetry(codeInput: string, playerId: string, input: Telemetry): Telemetry | null {
+    const room = this.rooms.get(this.normalize(codeInput))
+    if (!room || room.state !== 'racing') return null
+    const player = room.players.find((candidate) => candidate.id === playerId)
+    if (!player) return null
+
+    if (![input.t, input.progress, input.lateral, input.speed].every(Number.isFinite)) return null
+
+    const now = this.now()
+    const previous = player.telemetry
+    let t = Math.abs(input.t - now) > CLOCK_TOLERANCE_MS ? now : input.t
+
+    // Pacote genuinamente atrasado: o adversário já viu uma posição mais nova.
+    if (previous && t < previous.t) return null
+    // Dois envios no mesmo milissegundo — caso da chegada — não podem sumir.
+    if (previous && t === previous.t) t = previous.t + 1
+
+    let progress = Math.max(0, input.progress)
+    if (previous) {
+      const elapsed = Math.max(0, (t - previous.t) / 1000)
+      const ceiling = previous.progress + MAX_PLAUSIBLE_SPEED_MS * elapsed + PROGRESS_TOLERANCE_M
+      progress = Math.min(Math.max(progress, previous.progress), ceiling)
+    }
+
+    const accepted: Telemetry = {
+      t,
+      progress,
+      lateral: Math.max(-LATERAL_LIMIT, Math.min(LATERAL_LIMIT, input.lateral)),
+      speed: Math.max(0, Math.min(MAX_PLAUSIBLE_SPEED_MS * 3.6, input.speed)),
+      state: input.state === 'finished' ? 'finished' : 'racing',
+    }
+    player.telemetry = accepted
+    return accepted
+  }
+
+  /** Última telemetria conhecida de quem não é o jogador informado. */
+  rivalTelemetry(codeInput: string, playerId: string) {
+    const room = this.rooms.get(this.normalize(codeInput))
+    const rival = room?.players.find((candidate) => candidate.id !== playerId)
+    return rival?.telemetry ?? null
   }
 
   /** Saída explícita: remove o piloto imediatamente. */
@@ -193,7 +264,10 @@ export class RoomStore {
   private resetRace(room: Room, clearReady = true) {
     room.state = 'idle'
     room.startAt = null
-    if (clearReady) for (const player of room.players) player.ready = false
+    for (const player of room.players) {
+      player.telemetry = null
+      if (clearReady) player.ready = false
+    }
   }
 
   private everyoneReady(room: Room) {
@@ -210,7 +284,14 @@ export class RoomStore {
   }
 
   private createPlayer(id: string, socketId: string, rawName: string): Player {
-    return { id, socketId, name: this.cleanName(rawName), ready: false, disconnectedAt: null }
+    return {
+      id,
+      socketId,
+      name: this.cleanName(rawName),
+      ready: false,
+      disconnectedAt: null,
+      telemetry: null,
+    }
   }
 
   private normalize(code: string) {

@@ -10,7 +10,8 @@
     "build": "tsc -b && tsc --noEmit -p tsconfig.server.json && vite build",
     "start": "tsx server/index.ts",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "piloto": "tsx scripts/piloto-virtual.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

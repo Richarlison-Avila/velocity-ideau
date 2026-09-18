@@ -119,6 +119,13 @@ button { cursor: pointer; }
 .countdown-sync { color: #45e7ad; font-size: 10px !important; letter-spacing: .16em !important; }
 .connection-notice, .late-notice { position: absolute; z-index: 8; left: 50%; transform: translateX(-50%); padding: 8px 15px; font: 800 11px 'Barlow Condensed', sans-serif; letter-spacing: .15em; }
 .connection-notice { top: 50px; background: rgba(255,174,0,.92); color: #1a1405; }
+
+.rival-panel { position: absolute; z-index: 4; left: 50%; top: 186px; transform: translateX(-50%); min-width: min(360px, 78vw); padding: 9px 16px; border: 1px solid rgba(67,231,255,.34); background: rgba(6,14,19,.72); backdrop-filter: blur(5px); text-align: center; pointer-events: none; }
+.rival-panel span { display: block; color: #43e7ff; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .22em; text-transform: uppercase; }
+.rival-panel strong { display: block; margin-top: 3px; font: 700 15px 'Barlow Condensed', sans-serif; letter-spacing: .06em; font-variant-numeric: tabular-nums; }
+.rival-panel em { display: block; margin-top: 4px; color: #93a0ab; font: 600 10px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .1em; }
+.rival-panel.stale { border-color: rgba(255,174,0,.4); }
+.rival-panel.stale strong { color: var(--amber); }
 .late-notice { top: 20%; background: rgba(6,10,15,.88); border: 1px solid rgba(255,174,0,.5); color: var(--amber); }
 .lights { display: flex; gap: clamp(9px, 2vw, 18px); padding: 16px 20px; border: 1px solid #333c43; border-radius: 5px; background: rgba(5,8,11,.92); box-shadow: 0 20px 60px rgba(0,0,0,.4); }
 .lights i { width: clamp(32px, 6vw, 56px); aspect-ratio: 1; border-radius: 50%; background: #191e22; border: 5px solid #0c0f12; box-shadow: inset 0 0 12px #000; }
@@ -212,6 +219,8 @@ button { cursor: pointer; }
   .timer-block strong { font-size: 17px; }
   .speed-block strong { font-size: 40px; }
   .progress-wrap { top: 124px; width: 52vw; }
+  .rival-panel { top: 156px; min-width: 0; width: calc(100% - 26px); padding: 7px 10px; }
+  .rival-panel strong { font-size: 13px; }
   .touch-controls { left: 13px; right: 13px; bottom: max(16px, env(safe-area-inset-bottom)); grid-template-columns: 58px 58px 1fr 80px; gap: 7px; }
   .steer { width: 58px; height: 58px; }
   .boost-button { width: 80px; height: 80px; }

@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { countdownAt, DEFAULT_COUNTDOWN_MS, LIGHT_COUNT, lateBy } from './countdown'
+import {
+  gapBetween,
+  GhostTracker,
+  offScreenNotice,
+  positionNotice,
+  rivalSide,
+  TELEMETRY_INTERVAL_MS,
+  type GhostSnapshot,
+} from './ghost'
 import { createRaceState, stepRace, type RaceInput } from './simulation'
 import { formatTime, obstacles, TRACK_LENGTH, trackCurve, VIEW_DISTANCE } from './track'
 
@@ -24,7 +33,23 @@ type RaceCanvasProps = {
   mode?: 'solo' | 'online'
   /** Aviso de conexão exibido sobre a pista sem interromper a corrida. */
   connectionNotice?: string | null
+  /** Posições recentes do adversário, já tratadas contra atraso de rede. */
+  ghost?: GhostTracker | null
+  rivalName?: string
+  /** Falso enquanto o rival está sem sinal. */
+  rivalConnected?: boolean
+  /** Chamado a cada medição para ser enviada ao servidor. */
+  onTelemetry?: (snapshot: GhostSnapshot) => void
   onFinish: (result: RaceResult) => void
+}
+
+/** O que o HUD mostra sobre o adversário. */
+type RivalHud = {
+  position: 'P1' | 'P2'
+  headline: string
+  offScreen: string | null
+  stale: boolean
+  finished: boolean
 }
 
 type Telemetry = {
@@ -61,23 +86,62 @@ function roundedRect(
   ctx.roundRect(x, y, width, height, radius)
 }
 
-function drawCar(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
+type CarPalette = {
+  tyres: string
+  body: string
+  stripe: string
+  glass: string
+  wings: string
+  shadow: string
+  alpha: number
+}
+
+/** Cores do carro do jogador. */
+const PLAYER_PALETTE: CarPalette = {
+  tyres: '#0b0d11',
+  body: '#ff4b2b',
+  stripe: '#ffb000',
+  glass: '#c7f9ff',
+  wings: '#151820',
+  shadow: 'rgba(0,0,0,.42)',
+  alpha: 1,
+}
+
+/** O fantasma usa azul e transparência para nunca ser confundido com o próprio carro. */
+const GHOST_PALETTE: CarPalette = {
+  tyres: '#16303a',
+  body: '#43e7ff',
+  stripe: '#e8fbff',
+  glass: '#0d2a33',
+  wings: '#1d4854',
+  shadow: 'rgba(67,231,255,.14)',
+  alpha: 0.46,
+}
+
+function drawCar(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  scale: number,
+  palette: CarPalette = PLAYER_PALETTE,
+) {
   ctx.save()
+  ctx.globalAlpha = palette.alpha
   ctx.translate(x, y)
   ctx.scale(scale, scale)
 
-  ctx.fillStyle = 'rgba(0,0,0,.42)'
+  ctx.fillStyle = palette.shadow
   ctx.beginPath()
   ctx.ellipse(0, 10, 34, 14, 0, 0, Math.PI * 2)
   ctx.fill()
 
-  ctx.fillStyle = '#0b0d11'
+  ctx.fillStyle = palette.tyres
   roundedRect(ctx, -31, -3, 13, 32, 4)
   ctx.fill()
   roundedRect(ctx, 18, -3, 13, 32, 4)
   ctx.fill()
 
-  ctx.fillStyle = '#ff4b2b'
+  ctx.fillStyle = palette.body
   ctx.beginPath()
   ctx.moveTo(-23, 25)
   ctx.lineTo(-17, -25)
@@ -86,9 +150,9 @@ function drawCar(ctx: CanvasRenderingContext2D, x: number, y: number, scale: num
   ctx.closePath()
   ctx.fill()
 
-  ctx.fillStyle = '#ffb000'
+  ctx.fillStyle = palette.stripe
   ctx.fillRect(-4, -31, 8, 57)
-  ctx.fillStyle = '#c7f9ff'
+  ctx.fillStyle = palette.glass
   ctx.beginPath()
   ctx.moveTo(-10, -13)
   ctx.lineTo(0, -23)
@@ -98,7 +162,7 @@ function drawCar(ctx: CanvasRenderingContext2D, x: number, y: number, scale: num
   ctx.closePath()
   ctx.fill()
 
-  ctx.fillStyle = '#151820'
+  ctx.fillStyle = palette.wings
   ctx.fillRect(-30, 20, 60, 7)
   ctx.fillRect(-27, -28, 54, 6)
   ctx.restore()
@@ -111,6 +175,10 @@ function RaceCanvas({
   now,
   mode = 'solo',
   connectionNotice = null,
+  ghost = null,
+  rivalName = 'RIVAL',
+  rivalConnected = true,
+  onTelemetry,
   onFinish,
 }: RaceCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -120,7 +188,10 @@ function RaceCanvas({
   const raceRef = useRef(createRaceState())
   const startedRef = useRef(false)
   const doneRef = useRef(false)
+  const ghostRef = useRef(ghost)
+  const sendTelemetryRef = useRef(onTelemetry)
   const [telemetry, setTelemetry] = useState(initialTelemetry)
+  const [rival, setRival] = useState<RivalHud | null>(null)
   const [phase, setPhase] = useState<RacePhase>('countdown')
   const [countdownLight, setCountdownLight] = useState(0)
   const [flash, setFlash] = useState<string | null>(null)
@@ -129,6 +200,8 @@ function RaceCanvas({
 
   clockRef.current = now ?? Date.now
   finishRef.current = onFinish
+  ghostRef.current = ghost
+  sendTelemetryRef.current = onTelemetry
 
   const beep = useCallback((frequency: number, duration = 0.12) => {
     const AudioContextClass = window.AudioContext ??
@@ -262,6 +335,8 @@ function RaceCanvas({
     let height = 0
     let previous = performance.now()
     let lastHudUpdate = 0
+    let lastTelemetrySent = 0
+    let lastRivalHud = 0
     let animationFrame = 0
     const flashTimers: number[] = []
 
@@ -274,6 +349,7 @@ function RaceCanvas({
     const resize = () => {
       const box = canvas.getBoundingClientRect()
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
+      if (box.width === width && box.height === height) return
       width = box.width
       height = box.height
       canvas.width = Math.floor(width * pixelRatio)
@@ -281,6 +357,12 @@ function RaceCanvas({
       ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
     }
     resize()
+
+    // A janela nem sempre muda de tamanho junto com a tela do jogo: em telas
+    // divididas, ao girar o celular ou quando a barra do navegador some, só o
+    // elemento muda. Observar o próprio canvas evita a pista fora de escala.
+    const observer = new ResizeObserver(resize)
+    observer.observe(canvas)
     window.addEventListener('resize', resize)
 
     const announce = (message: string) => {
@@ -366,6 +448,23 @@ function RaceCanvas({
       }
     }
 
+    /**
+     * Desenha o fantasma na mesma projeção usada pela pista. O fator 0.36
+     * faz a faixa do rival coincidir com a do jogador quando estão lado a lado.
+     */
+    const drawGhost = (distanceAhead: number, lateral: number, faded: boolean) => {
+      const projected = roadGeometry(distanceAhead)
+      const closeness = Math.max(0, 1 - distanceAhead / VIEW_DISTANCE)
+      const perspective = Math.pow(closeness, 1.72)
+      const x = projected.center + projected.roadWidth * lateral * 0.36
+      const scale = Math.max(0.76, width / 620) * Math.max(0.06, perspective)
+
+      drawCar(ctx, x, projected.y, scale, {
+        ...GHOST_PALETTE,
+        alpha: GHOST_PALETTE.alpha * (faded ? 0.5 : 1),
+      })
+    }
+
     const drawObstacle = (distanceAhead: number, lane: number, kind: 'barrier' | 'debris') => {
       const projected = roadGeometry(distanceAhead)
       const closeness = Math.max(0, 1 - distanceAhead / VIEW_DISTANCE)
@@ -418,8 +517,27 @@ function RaceCanvas({
               lateStart: lateAtStart,
             }
             setTelemetry((current) => ({ ...current, progress: TRACK_LENGTH, elapsed, speed: 0 }))
+            // O rival precisa saber imediatamente que o carro parou na chegada.
+            sendTelemetryRef.current?.({
+              t: serverNow,
+              progress: race.progress,
+              lateral: race.lateral,
+              speed: 0,
+              state: 'finished',
+            })
             flashTimers.push(window.setTimeout(() => finishRef.current(result), 850))
           }
+        }
+
+        if (!doneRef.current && frame - lastTelemetrySent > TELEMETRY_INTERVAL_MS) {
+          lastTelemetrySent = frame
+          sendTelemetryRef.current?.({
+            t: serverNow,
+            progress: race.progress,
+            lateral: race.lateral,
+            speed: race.speed,
+            state: 'racing',
+          })
         }
 
         if (frame - lastHudUpdate > 80) {
@@ -440,12 +558,37 @@ function RaceCanvas({
       drawBackdrop()
       drawRoad()
 
+      // Posição do fantasma neste quadro, já interpolada.
+      const rivalSample = ghostRef.current?.sample(serverNow) ?? null
+      const rivalAhead = rivalSample ? rivalSample.progress - race.progress : 0
+      const rivalVisible = Boolean(rivalSample) && rivalAhead > 0 && rivalAhead < VIEW_DISTANCE
+
       const visibleObstacles = obstacles
         .map((obstacle) => ({ ...obstacle, ahead: obstacle.distance - race.progress }))
         .filter((obstacle) => obstacle.ahead > 0 && obstacle.ahead < VIEW_DISTANCE)
         .sort((a, b) => b.ahead - a.ahead)
+
+      // O fantasma entra na ordem de profundidade dos obstáculos.
+      let ghostDrawn = !rivalVisible
       for (const obstacle of visibleObstacles) {
+        if (!ghostDrawn && rivalAhead > obstacle.ahead) {
+          drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale)
+          ghostDrawn = true
+        }
         drawObstacle(obstacle.ahead, obstacle.lane, obstacle.kind)
+      }
+      if (!ghostDrawn) drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale)
+
+      if (rivalSample && frame - lastRivalHud > 100) {
+        lastRivalHud = frame
+        const gap = gapBetween(race.progress, rivalSample.progress, race.speed, rivalSample.speed)
+        setRival({
+          position: gap.position,
+          headline: positionNotice(gap),
+          offScreen: rivalVisible ? null : offScreenNotice(gap, rivalSide(race.lateral, rivalSample.lateral)),
+          stale: rivalSample.stale,
+          finished: rivalSample.state === 'finished',
+        })
       }
 
       if (TRACK_LENGTH - race.progress < VIEW_DISTANCE) {
@@ -471,6 +614,7 @@ function RaceCanvas({
     animationFrame = requestAnimationFrame(draw)
     return () => {
       cancelAnimationFrame(animationFrame)
+      observer.disconnect()
       window.removeEventListener('resize', resize)
       document.removeEventListener('visibilitychange', resumeClock)
       for (const timer of flashTimers) window.clearTimeout(timer)
@@ -492,8 +636,8 @@ function RaceCanvas({
 
       <section className="hud" aria-label="Telemetria">
         <div className="position-block">
-          <span>MODO</span>
-          <strong>{mode === 'online' ? 'DUELO' : 'SOLO'}</strong>
+          <span>{mode === 'online' && rival ? 'POSIÇÃO' : 'MODO'}</span>
+          <strong>{mode === 'online' ? (rival?.position ?? 'DUELO') : 'SOLO'}</strong>
         </div>
         <div className="timer-block">
           <span>TEMPO DE CORRIDA</span>
@@ -517,6 +661,22 @@ function RaceCanvas({
         <div className="boost-copy"><span>BOOST</span><b>{Math.round(telemetry.boost)}%</b></div>
         <div className="boost-track"><i style={{ width: `${telemetry.boost}%` }} /></div>
       </div>
+
+      {mode === 'online' && phase !== 'countdown' && (
+        <div className={`rival-panel ${rival?.stale || !rivalConnected ? 'stale' : ''}`} aria-live="polite">
+          <span>{rivalName}</span>
+          {!rivalConnected ? (
+            <strong>SEM SINAL — AGUARDANDO O RETORNO</strong>
+          ) : !rival ? (
+            <strong>AGUARDANDO TELEMETRIA</strong>
+          ) : rival.finished ? (
+            <strong>CRUZOU A LINHA DE CHEGADA</strong>
+          ) : (
+            <strong>{rival.headline}</strong>
+          )}
+          {rival?.offScreen && rivalConnected && !rival.finished && <em>{rival.offScreen}</em>}
+        </div>
+      )}
 
       {connectionNotice && <div className="connection-notice">{connectionNotice}</div>}
       {telemetry.offRoad && phase === 'racing' && <div className="warning">FORA DA PISTA</div>}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RoomError, RoomStore } from './rooms.js'
+import { RoomError, RoomStore, type Telemetry } from './rooms.js'
 
 /** Relógio controlado para testar agendamento e janela de reconexão. */
 function createClock(start = 1_000_000) {
@@ -149,6 +149,138 @@ describe('largada sincronizada', () => {
     expect(rooms.setReady(code, 'a', true).status).toBe('waiting')
     expect(rooms.setReady(code, 'b', true).status).toBe('ready')
     expect(rooms.scheduleStart(code)?.status).toBe('countdown')
+  })
+})
+
+describe('telemetria do adversário', () => {
+  /** Deixa a sala correndo, que é o único estado em que a telemetria vale. */
+  function salaCorrendo(clock: ReturnType<typeof createClock>) {
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+    return { rooms, code }
+  }
+
+  const medicao = (t: number, progress: number, extra: Partial<Telemetry> = {}): Telemetry => ({
+    t,
+    progress,
+    lateral: 0,
+    speed: 252,
+    state: 'racing',
+    ...extra,
+  })
+
+  it('aceita a telemetria de quem está correndo', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    const aceita = rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 120))
+    expect(aceita?.progress).toBe(120)
+    expect(aceita?.state).toBe('racing')
+  })
+
+  it('recusa telemetria antes da largada', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    expect(rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 120))).toBeNull()
+  })
+
+  it('recusa telemetria de quem não está na sala', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    expect(rooms.acceptTelemetry(code, 'intruso', medicao(clock.now(), 120))).toBeNull()
+  })
+
+  it('descarta pacotes fora de ordem', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 120))
+    clock.advance(200)
+    rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 134))
+
+    // Um pacote com horário anterior ao último aceito é ignorado.
+    expect(rooms.acceptTelemetry(code, 'a', medicao(clock.now() - 100, 127))).toBeNull()
+    expect(rooms.rivalTelemetry(code, 'b')?.progress).toBe(134)
+  })
+
+  it('não perde a chegada enviada no mesmo milissegundo da última medição', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    const agora = clock.now()
+    rooms.acceptTelemetry(code, 'a', medicao(agora, 4_790))
+
+    const chegada = rooms.acceptTelemetry(code, 'a', medicao(agora, 4_800, { speed: 0, state: 'finished' }))
+    expect(chegada?.state).toBe('finished')
+    expect(chegada?.t).toBe(agora + 1)
+    expect(rooms.rivalTelemetry(code, 'b')?.state).toBe('finished')
+  })
+
+  it('recusa números inválidos', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    expect(rooms.acceptTelemetry(code, 'a', medicao(clock.now(), Number.NaN))).toBeNull()
+    expect(rooms.acceptTelemetry(code, 'a', medicao(clock.now(), Infinity))).toBeNull()
+  })
+
+  it('impede que o progresso ande para trás', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 400))
+    clock.advance(100)
+    expect(rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 250))?.progress).toBe(400)
+  })
+
+  it('limita um avanço impossível ao máximo plausível', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 100))
+    clock.advance(100) // 0,1 s permitem no máximo 12 m mais a folga
+
+    const aceita = rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 4_000))
+    expect(aceita?.progress).toBeLessThan(150)
+    expect(aceita?.progress).toBeGreaterThan(100)
+  })
+
+  it('mantém a faixa dentro dos limites da pista', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    const aceita = rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 10, { lateral: 9 }))
+    expect(aceita?.lateral).toBe(1.28)
+  })
+
+  it('corrige um horário incoerente usando o relógio do servidor', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    const aceita = rooms.acceptTelemetry(code, 'a', medicao(clock.now() + 600_000, 10))
+    expect(aceita?.t).toBe(clock.now())
+  })
+
+  it('entrega ao rival a última posição conhecida', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 512))
+    expect(rooms.rivalTelemetry(code, 'b')?.progress).toBe(512)
+    expect(rooms.rivalTelemetry(code, 'a')).toBeNull()
+  })
+
+  it('esquece a telemetria da corrida anterior', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 4_000))
+
+    rooms.setReady(code, 'a', false)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+
+    expect(rooms.rivalTelemetry(code, 'b')).toBeNull()
+    expect(rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 5))?.progress).toBe(5)
   })
 })
 

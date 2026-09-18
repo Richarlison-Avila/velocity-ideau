@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { DEFAULT_COUNTDOWN_MS } from './game/countdown'
+import { GhostTracker, type GhostSnapshot } from './game/ghost'
 import RaceCanvas, { type RaceResult } from './game/RaceCanvas'
 import { formatTime } from './game/track'
 import { serverClock, type ClockState } from './multiplayer/clock'
 import Lobby from './multiplayer/Lobby'
 import { socket } from './multiplayer/socket'
-import type { LobbyRoom, RaceCancelled, RoomResponse, ScheduledRace } from './multiplayer/types'
+import type {
+  LobbyRoom,
+  RaceCancelled,
+  RivalTelemetry,
+  RoomResponse,
+  ScheduledRace,
+} from './multiplayer/types'
 
 type Screen = 'menu' | 'lobby' | 'race' | 'result'
 type RaceSetup = { startAt: number; countdownMs: number; mode: 'solo' | 'online' }
@@ -35,6 +42,7 @@ function App() {
   const [clock, setClock] = useState<ClockState>(serverClock.snapshot)
 
   // Refs para o ciclo do socket, que não deve depender do estado da tela.
+  const ghostRef = useRef(new GhostTracker())
   const roomCodeRef = useRef<string | null>(storedRoom)
   const pilotNameRef = useRef(pilotName)
   const screenRef = useRef(screen)
@@ -81,11 +89,15 @@ function App() {
       if (screenRef.current === 'race') setScreen('lobby')
     }
 
+    // Telemetria do adversário: o buffer trata atraso e chegada fora de ordem.
+    const onRival = (payload: RivalTelemetry) => ghostRef.current.push(payload)
+
     socket.on('connect', onConnect)
     socket.on('disconnect', onDisconnect)
     socket.on('room:update', onRoomUpdate)
     socket.on('race:scheduled', onScheduled)
     socket.on('race:cancelled', onCancelled)
+    socket.on('race:rival', onRival)
     if (socket.connected) onConnect()
 
     return () => {
@@ -94,6 +106,7 @@ function App() {
       socket.off('room:update', onRoomUpdate)
       socket.off('race:scheduled', onScheduled)
       socket.off('race:cancelled', onCancelled)
+      socket.off('race:rival', onRival)
     }
   }, [])
 
@@ -103,6 +116,8 @@ function App() {
     if (room.status !== 'countdown' && room.status !== 'racing') return
     setRaceSetup((current) => {
       if (current?.startAt === room.startAt && current.mode === 'online') return current
+      // Cada largada começa com o fantasma zerado.
+      ghostRef.current.reset()
       return { startAt: room.startAt!, countdownMs: room.countdownMs, mode: 'online' }
     })
     setLobbyNotice('')
@@ -174,6 +189,12 @@ function App() {
     setScreen('result')
   }, [])
 
+  const sendTelemetry = useCallback((snapshot: GhostSnapshot) => {
+    const code = roomCodeRef.current
+    if (!code || !socket.connected) return
+    socket.emit('race:telemetry', { code, playerId: storedPlayerId, ...snapshot })
+  }, [])
+
   const connectionNotice =
     connection === 'reconnecting' ? 'CONEXÃO INSTÁVEL — RECONECTANDO' : null
 
@@ -193,15 +214,21 @@ function App() {
   }
 
   if (screen === 'race' && raceSetup) {
+    const online = raceSetup.mode === 'online'
+    const rival = room?.players.find((player) => player.id !== storedPlayerId)
     return (
       <RaceCanvas
         key={`${raceSetup.mode}-${raceSetup.startAt}-${raceKey}`}
         pilotName={pilotName}
         startAt={raceSetup.startAt}
         countdownMs={raceSetup.countdownMs}
-        now={raceSetup.mode === 'online' ? serverClock.now : undefined}
+        now={online ? serverClock.now : undefined}
         mode={raceSetup.mode}
-        connectionNotice={raceSetup.mode === 'online' ? connectionNotice : null}
+        connectionNotice={online ? connectionNotice : null}
+        ghost={online ? ghostRef.current : null}
+        rivalName={rival?.name ?? 'RIVAL'}
+        rivalConnected={rival?.connected ?? false}
+        onTelemetry={online ? sendTelemetry : undefined}
         onFinish={finishRace}
       />
     )

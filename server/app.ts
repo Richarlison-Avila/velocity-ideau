@@ -3,7 +3,14 @@ import { createServer, type Server as HttpServer } from 'node:http'
 import { resolve } from 'node:path'
 import express from 'express'
 import { Server } from 'socket.io'
-import { COUNTDOWN_MS, RECONNECT_GRACE_MS, RoomError, RoomStore, type PublicRoom } from './rooms.js'
+import {
+  COUNTDOWN_MS,
+  RECONNECT_GRACE_MS,
+  RoomError,
+  RoomStore,
+  type PublicRoom,
+  type Telemetry,
+} from './rooms.js'
 
 export type GameServerOptions = {
   countdownMs?: number
@@ -117,10 +124,20 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
             countdownMs: room.countdownMs,
             serverTime: Date.now(),
           })
+          // E também a última posição conhecida do rival, para o fantasma voltar na hora.
+          const rival = rooms.rivalTelemetry(room.code, payload.playerId)
+          if (rival) socket.emit('race:rival', rival)
         }
       } catch (error) {
         ack({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível entrar na sala.' })
       }
+    })
+
+    // Telemetria do piloto, repassada só ao adversário da mesma sala.
+    socket.on('race:telemetry', (payload: { code: string; playerId: string } & Telemetry) => {
+      const accepted = rooms.acceptTelemetry(payload.code, payload.playerId, payload)
+      if (!accepted) return
+      socket.to(payload.code.trim().toUpperCase()).emit('race:rival', { playerId: payload.playerId, ...accepted })
     })
 
     socket.on('room:set-ready', (payload: { code: string; playerId: string; ready: boolean }, ack?: Ack) => {

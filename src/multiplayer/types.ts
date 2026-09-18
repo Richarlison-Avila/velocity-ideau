@@ -34,3 +34,13 @@ export type RaceCancelled = {
   code: string
   reason: string
 }
+
+/** Telemetria trocada entre os dois pilotos durante a corrida. */
+export type RivalTelemetry = {
+  /** Instante da medição, no relógio do servidor. */
+  t: number
+  progress: number
+  lateral: number
+  speed: number
+  state: 'racing' | 'finished'
+}
