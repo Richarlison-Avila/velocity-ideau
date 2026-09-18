@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { firstSceneryIndex, lastSceneryIndex, SCENERY_SPACING } from './layout'
 import {
   CAR_HALF_LATERAL,
   CAR_SCREEN_RATIO,
   CAR_VIEW_DISTANCE,
-  firstRoadsideIndex,
   formatTime,
   isTallMarker,
   LATERAL_LIMIT,
-  lastRoadsideIndex,
   lateralOffset,
   OFF_ROAD_LIMIT,
   roadProjection,
@@ -98,37 +97,39 @@ describe('marcadores laterais', () => {
     expect(ROADSIDE_LATERAL).toBeGreaterThan(LATERAL_LIMIT - 0.1)
   })
 
-  it('só considera o que está à frente e dentro do campo de visão', () => {
-    const progresso = 1_234
-    const primeiro = firstRoadsideIndex(progresso)
-    const ultimo = lastRoadsideIndex(progresso)
+  it('cada marcador cai exatamente sobre uma vaga par do cenário', () => {
+    // É o que permite desenhar cenário e marcadores no mesmo laço, em uma só
+    // ordem de profundidade. Se este número mudar, o laço passa a mentir.
+    expect(ROADSIDE_SPACING).toBe(SCENERY_SPACING * 2)
 
-    expect(primeiro * ROADSIDE_SPACING).toBeGreaterThanOrEqual(progresso)
-    expect(ultimo * ROADSIDE_SPACING).toBeLessThanOrEqual(progresso + VIEW_DISTANCE)
-    expect((primeiro - 1) * ROADSIDE_SPACING).toBeLessThan(progresso)
+    for (let vaga = 0; vaga < 40; vaga += 2) {
+      expect((vaga * SCENERY_SPACING) % ROADSIDE_SPACING).toBe(0)
+    }
   })
 
   it('mantém uma quantidade estável na tela', () => {
     for (let progresso = 0; progresso < 4_800; progresso += 37) {
-      const quantos = lastRoadsideIndex(progresso) - firstRoadsideIndex(progresso) + 1
-      expect(quantos).toBeGreaterThanOrEqual(Math.floor(VIEW_DISTANCE / ROADSIDE_SPACING))
-      expect(quantos).toBeLessThanOrEqual(Math.ceil(VIEW_DISTANCE / ROADSIDE_SPACING) + 1)
+      const vagas = lastSceneryIndex(progresso) - firstSceneryIndex(progresso) + 1
+      const marcadores = Math.floor(vagas / 2)
+      expect(marcadores).toBeGreaterThanOrEqual(Math.floor(VIEW_DISTANCE / ROADSIDE_SPACING) - 1)
+      expect(marcadores).toBeLessThanOrEqual(Math.ceil(VIEW_DISTANCE / ROADSIDE_SPACING) + 1)
     }
   })
 
   it('um marcador não muda de lugar nem de tipo entre quadros', () => {
     // O mesmo índice sempre descreve a mesma coisa, venha de onde vier.
-    const indice = 61
-    expect(isTallMarker(indice)).toBe(isTallMarker(indice))
-    expect(indice * ROADSIDE_SPACING).toBe(1_220)
+    const vaga = 122
+    expect(vaga % 2).toBe(0)
+    expect(vaga * SCENERY_SPACING).toBe(1_220)
+    expect(isTallMarker(vaga / 2)).toBe(isTallMarker(vaga / 2))
 
     // E ele continua sendo listado enquanto o carro se aproxima.
-    for (const progresso of [1_000, 1_100, 1_200, 1_219]) {
-      expect(firstRoadsideIndex(progresso)).toBeLessThanOrEqual(indice)
-      expect(lastRoadsideIndex(progresso)).toBeGreaterThanOrEqual(indice)
+    for (const progresso of [800, 1_000, 1_100, 1_219]) {
+      expect(firstSceneryIndex(progresso)).toBeLessThanOrEqual(vaga)
+      expect(lastSceneryIndex(progresso)).toBeGreaterThanOrEqual(vaga)
     }
     // Depois de passar, some.
-    expect(firstRoadsideIndex(1_221)).toBeGreaterThan(indice)
+    expect(firstSceneryIndex(1_221)).toBeGreaterThan(vaga)
   })
 
   it('o marcador alto aparece no ritmo combinado', () => {

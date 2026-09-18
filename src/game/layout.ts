@@ -96,8 +96,14 @@ function clamp(value: number, min: number, max: number) {
 // Cenário
 // ---------------------------------------------------------------------------
 
-/** Espaçamento das vagas de cenário, em metros. */
-export const SCENERY_SPACING = 9
+/**
+ * Espaçamento das vagas de cenário, em metros.
+ *
+ * É metade do espaçamento dos marcadores de distância, então toda vaga par
+ * cai exatamente sobre um marcador. Isso deixa cenário e marcadores no mesmo
+ * laço e na mesma ordem de profundidade, sem precisar intercalar duas listas.
+ */
+export const SCENERY_SPACING = 10
 
 /** Quantas vagas formam um trecho com densidade e caráter próprios. */
 export const SCENERY_REGION = 12

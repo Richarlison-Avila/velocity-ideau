@@ -10,17 +10,21 @@ import {
   type GhostSnapshot,
 } from './ghost'
 import { createFeel, registerImpact, updateFeel } from './feel'
-import { createTrackLayout } from './layout'
+import {
+  createSceneryItem,
+  createTrackLayout,
+  firstSceneryIndex,
+  lastSceneryIndex,
+  SCENERY_SPACING,
+} from './layout'
 import { createRaceState, MAX_STEP_SECONDS, stepRace, type RaceInput } from './simulation'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
 import {
   CAR_SPRITE_REFERENCE_WIDTH,
   CAR_VIEW_DISTANCE,
   CURVE_BEND_SCALE,
-  firstRoadsideIndex,
   formatTime,
   isTallMarker,
-  lastRoadsideIndex,
   lateralOffset,
   obstacles,
   roadProjection,
@@ -154,6 +158,28 @@ type CarPose = {
 }
 
 const POSE_NEUTRA: CarPose = { tilt: 0, squash: 0 }
+
+/**
+ * Lados da pista, em constante de módulo.
+ *
+ * Parece exagero, mas este vetor seria recriado quase cem vezes por quadro se
+ * ficasse dentro do laço do cenário.
+ */
+const LADOS: Array<-1 | 1> = [-1, 1]
+
+/**
+ * Paletas prontas do cenário.
+ *
+ * Montar a cor como texto a cada objeto alocaria centenas de strings por
+ * quadro. O traçado sorteia um índice; aqui ele só vira uma cor já existente.
+ */
+const COPAS = ['#1d4b2a', '#236030', '#2a6d38', '#1a4325', '#2f7a40', '#265c33']
+const COPAS_LUZ = ['#2d6f3c', '#33863f', '#3c944c', '#296437', '#45a657', '#377f47']
+const TRONCOS = ['#3b2d23', '#46362b', '#31261e']
+const ARBUSTOS = ['#255c33', '#2d6b3a', '#1f5130']
+const CAPINS = ['#357c46', '#3d8a4f', '#2e7040']
+const PLACAS = ['#d8dee2', '#e6b325', '#cf4436']
+const CERCA = '#6d7b7f'
 
 function drawCar(
   ctx: CanvasRenderingContext2D,
@@ -538,32 +564,149 @@ function RaceCanvas({
       }
     }
 
-    /**
-     * Marcadores das laterais. São a referência que dá velocidade à cena: por
-     * estarem longe do centro, varrem a tela muito mais rápido do que a pista
-     * ao longe. O laço vai do mais distante para o mais próximo e não monta
-     * lista nenhuma, para não alocar a cada quadro.
-     */
-    const drawRoadside = () => {
-      const ultimo = lastRoadsideIndex(race.progress)
-      const primeiro = firstRoadsideIndex(race.progress)
-      for (let indice = ultimo; indice >= primeiro; indice -= 1) {
-        const ahead = indice * ROADSIDE_SPACING - race.progress
-        const projetado = roadGeometry(ahead)
-        const alto = isTallMarker(indice)
-        const altura = projetado.roadWidth * (alto ? 0.2 : 0.115)
-        const largura = Math.max(1, projetado.roadWidth * 0.013)
+    /** Objeto reaproveitado pelo cenário: o laço não pode alocar. */
+    const cenario = createSceneryItem()
 
-        for (const lado of [-1, 1]) {
-          const x = projetado.center + lateralOffset(ROADSIDE_LATERAL * lado, projetado.roadWidth)
-          // Sombra curta no chão ancora o poste na grama.
-          ctx.fillStyle = 'rgba(0,0,0,.25)'
-          ctx.fillRect(x - largura, projetado.y, largura * 2, Math.max(1, largura * 0.7))
-          ctx.fillStyle = '#46606c'
-          ctx.fillRect(x - largura / 2, projetado.y - altura, largura, altura)
-          ctx.fillStyle = alto ? '#f2b52e' : '#c9d6dc'
-          ctx.fillRect(x - largura, projetado.y - altura, largura * 2, Math.max(1, altura * 0.22))
+    /** Uma árvore, na família e no tom que o traçado sorteou para aquela vaga. */
+    const desenharArvore = (x: number, chao: number, altura: number, tom: number, variante: number, perto: boolean) => {
+      const tronco = Math.max(1, altura * 0.1)
+      ctx.fillStyle = TRONCOS[variante]
+      ctx.fillRect(x - tronco / 2, chao - altura * 0.46, tronco, altura * 0.46)
+
+      ctx.fillStyle = COPAS[tom]
+      if (variante === 0) {
+        // Conífera: duas saias sobrepostas, que é o que dá a silhueta de pinheiro.
+        triangulo(x, chao - altura, altura * 0.3, altura * 0.44)
+        triangulo(x, chao - altura * 0.72, altura * 0.35, altura * 0.42)
+      } else {
+        ctx.beginPath()
+        ctx.ellipse(x, chao - altura * 0.68, altura * 0.34, altura * 0.37, 0, 0, Math.PI * 2)
+        ctx.fill()
+      }
+
+      // O realce vem de cima e da esquerda, como o resto da cena.
+      if (!perto) return
+      ctx.fillStyle = COPAS_LUZ[tom]
+      ctx.beginPath()
+      ctx.ellipse(x - altura * 0.11, chao - altura * 0.8, altura * 0.14, altura * 0.16, 0, 0, Math.PI * 2)
+      ctx.fill()
+    }
+
+    const triangulo = (x: number, topo: number, meiaBase: number, altura: number) => {
+      ctx.beginPath()
+      ctx.moveTo(x, topo)
+      ctx.lineTo(x + meiaBase, topo + altura)
+      ctx.lineTo(x - meiaBase, topo + altura)
+      ctx.closePath()
+      ctx.fill()
+    }
+
+    /**
+     * Cenário e marcadores de distância, do fundo para a frente.
+     *
+     * Tudo sai do traçado, que é função pura da semente: o outro piloto vê
+     * exatamente as mesmas árvores nos mesmos lugares. O laço percorre índices
+     * e preenche sempre o mesmo objeto, sem montar lista nem alocar.
+     */
+    const drawScenery = () => {
+      const ultimo = lastSceneryIndex(race.progress)
+      const primeiro = firstSceneryIndex(race.progress)
+
+      for (let indice = ultimo; indice >= primeiro; indice -= 1) {
+        const ahead = indice * SCENERY_SPACING - race.progress
+        const projetado = roadGeometry(ahead)
+        const referencia = projetado.roadWidth
+        // Longe demais para render qualquer coisa legível: sairia um pixel sujo.
+        if (referencia < 6) continue
+
+        // Névoa: o que está longe se dissolve no horizonte em vez de aparecer
+        // nítido e minúsculo, que é justamente o que denuncia a projeção falsa.
+        const nitidez = Math.min(1, 0.16 + projetado.perspective * 2.6)
+        const perto = projetado.perspective > 0.16
+
+        ctx.save()
+        ctx.globalAlpha = nitidez
+
+        for (const lado of LADOS) {
+          if (!layout.scenery(indice, lado, cenario)) continue
+          const x = projetado.center + lateralOffset(cenario.lateral, referencia)
+          const tamanho = referencia * cenario.scale
+          const tom = Math.min(COPAS.length - 1, Math.floor(cenario.tone * COPAS.length))
+
+          if (cenario.kind === 'tree') {
+            desenharArvore(x, projetado.y, tamanho * 0.52, tom, cenario.variant, perto)
+          } else if (cenario.kind === 'bush') {
+            const raio = tamanho * 0.07
+            ctx.fillStyle = ARBUSTOS[cenario.variant]
+            ctx.beginPath()
+            ctx.ellipse(x, projetado.y - raio * 0.7, raio * 1.4, raio, 0, 0, Math.PI * 2)
+            ctx.fill()
+            if (perto) {
+              ctx.fillStyle = COPAS_LUZ[tom]
+              ctx.beginPath()
+              ctx.ellipse(x - raio * 0.4, projetado.y - raio, raio * 0.5, raio * 0.42, 0, 0, Math.PI * 2)
+              ctx.fill()
+            }
+          } else if (cenario.kind === 'fence') {
+            // O vão cobre metade do espaçamento para cada lado, então as
+            // travessas de vagas vizinhas se encontram e a cerca fica contínua.
+            const altura = tamanho * 0.058
+            const vao = referencia * 0.055
+            const travessa = Math.max(1, altura * 0.07)
+            ctx.fillStyle = CERCA
+            ctx.fillRect(x - Math.max(1, altura * 0.07), projetado.y - altura, Math.max(1, altura * 0.14), altura)
+            ctx.fillRect(x - vao, projetado.y - altura * 0.94, vao * 2, travessa)
+            ctx.fillRect(x - vao, projetado.y - altura * 0.52, vao * 2, travessa)
+          } else if (cenario.kind === 'sign') {
+            const altura = tamanho * 0.11
+            const painel = altura * 0.42
+            const poste = Math.max(1, altura * 0.07)
+            ctx.fillStyle = CERCA
+            ctx.fillRect(x - poste / 2, projetado.y - altura, poste, altura)
+            // A moldura escura descola a placa da vegetação atrás dela.
+            ctx.fillStyle = '#1b2228'
+            ctx.fillRect(x - painel * 0.56, projetado.y - altura - painel * 0.42, painel * 1.12, painel * 0.84)
+            ctx.fillStyle = PLACAS[cenario.variant]
+            ctx.fillRect(x - painel / 2, projetado.y - altura - painel * 0.36, painel, painel * 0.72)
+          } else {
+            // Capim: talos afinando para a ponta, senão viram barras sólidas.
+            const altura = Math.max(1, tamanho * 0.032)
+            const talo = Math.max(1, altura * 0.16)
+            ctx.fillStyle = CAPINS[cenario.variant]
+            for (let folha = -2; folha <= 2; folha += 1) {
+              const base = x + folha * talo * 1.9
+              const ponta = base + folha * talo * 0.9
+              const comprimento = altura * (1 - Math.abs(folha) * 0.17)
+              ctx.beginPath()
+              ctx.moveTo(base - talo / 2, projetado.y)
+              ctx.lineTo(base + talo / 2, projetado.y)
+              ctx.lineTo(ponta, projetado.y - comprimento)
+              ctx.closePath()
+              ctx.fill()
+            }
+          }
         }
+
+        // Marcador de distância: cai em toda vaga par, porque o espaçamento do
+        // cenário é metade do dele. Fica no mesmo laço para a ordem de
+        // profundidade valer para tudo o que está na beira da pista.
+        if (indice % 2 === 0) {
+          const alto = isTallMarker(indice / 2)
+          const altura = referencia * (alto ? 0.2 : 0.115)
+          const largura = Math.max(1, referencia * 0.013)
+          for (const lado of LADOS) {
+            const x = projetado.center + lateralOffset(ROADSIDE_LATERAL * lado, referencia)
+            // Sombra curta no chão ancora o poste na grama.
+            ctx.fillStyle = 'rgba(0,0,0,.25)'
+            ctx.fillRect(x - largura, projetado.y, largura * 2, Math.max(1, largura * 0.7))
+            ctx.fillStyle = '#46606c'
+            ctx.fillRect(x - largura / 2, projetado.y - altura, largura, altura)
+            ctx.fillStyle = alto ? '#f2b52e' : '#c9d6dc'
+            ctx.fillRect(x - largura, projetado.y - altura, largura * 2, Math.max(1, altura * 0.22))
+          }
+        }
+
+        ctx.restore()
       }
     }
 
@@ -758,7 +901,7 @@ function RaceCanvas({
 
       drawBackdrop()
       drawRoad()
-      drawRoadside()
+      drawScenery()
 
       // As marcas de pneu ficam no asfalto, abaixo de tudo o que corre na pista.
       effects.update(Math.min(Math.max(0, dt), MAX_STEP_SECONDS), race.progress)

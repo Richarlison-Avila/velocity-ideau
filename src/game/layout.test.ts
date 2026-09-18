@@ -290,7 +290,10 @@ describe('cenário lateral', () => {
     const indice = 61
     const esperado = layout.scenery(indice, 1, item) ? descrever(item) : '-'
 
-    for (const progresso of [120, 300, 450, 540]) {
+    // A faixa de progresso em que essa vaga está à vista sai das constantes,
+    // para o teste não quebrar se o espaçamento mudar de novo.
+    const onde = indice * SCENERY_SPACING
+    for (const progresso of [onde - VIEW_DISTANCE + 1, onde - 200, onde - 50, onde]) {
       expect(firstSceneryIndex(progresso)).toBeLessThanOrEqual(indice)
       expect(lastSceneryIndex(progresso)).toBeGreaterThanOrEqual(indice)
       const agora = layout.scenery(indice, 1, item) ? descrever(item) : '-'
