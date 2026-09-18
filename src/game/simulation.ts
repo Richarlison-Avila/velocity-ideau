@@ -1,4 +1,6 @@
-import { obstacles, speedForState, TRACK_LENGTH } from './track'
+// A extensão .js é exigida pelo Node, que roda este módulo no servidor durante
+// os testes de aceitação. O Vite resolve para o arquivo .ts normalmente.
+import { obstacles, speedForState, TRACK_LENGTH } from './track.js'
 
 export type RaceInput = { left: boolean; right: boolean; boost: boolean }
 

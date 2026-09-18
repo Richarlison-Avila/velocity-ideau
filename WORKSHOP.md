@@ -84,6 +84,18 @@ Se a rede do evento cair no meio, trocar para o hotspot é questão de mudar de 
 
 ## 5. Conferência na véspera
 
+O roteiro da apresentação é também um teste automatizado. Ele sobe o servidor,
+conecta dois pilotos, corre as duas provas com a física de verdade, troca
+telemetria, confere que as duas telas recebem o mesmo vencedor e pede
+revanche — tudo em poucos segundos:
+
+```bash
+npx vitest run server/demonstracao.test.ts
+```
+
+Se esse teste passar, o caminho inteiro da demonstração está de pé. O que ele
+não cobre é a rede e os aparelhos do evento, que é o resto desta lista.
+
 - [ ] `npm ci && npm run build && npm test` sem falhas
 - [ ] Servidor sobe e `/health` responde `{"ok":true}`
 - [ ] Abrir o jogo em um computador e em um celular, na rede do evento

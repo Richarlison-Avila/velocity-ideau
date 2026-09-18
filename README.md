@@ -52,6 +52,12 @@ npm test
 
 A suíte cobre a física da corrida, a sequência das cinco luzes, a estimativa de relógio, a interpolação do fantasma, as regras das salas e testes de integração que sobem o servidor real e conectam dois clientes Socket.IO — inclusive medindo o erro do fantasma com pacotes atrasados e perdidos.
 
+O roteiro da apresentação é um teste de aceitação à parte, que percorre a demonstração inteira — dois pilotos na mesma sala, largada, corrida com a física real, fantasma, resultado e revanche:
+
+```bash
+npx vitest run server/demonstracao.test.ts
+```
+
 ### Piloto virtual
 
 Para testar o fantasma sem um segundo aparelho, entre em uma sala pelo navegador e rode:
