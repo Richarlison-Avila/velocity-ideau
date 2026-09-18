@@ -10,11 +10,13 @@ import {
   type GhostSnapshot,
 } from './ghost'
 import { createFeel, registerImpact, updateFeel } from './feel'
+import { createTrackLayout } from './layout'
 import { createRaceState, MAX_STEP_SECONDS, stepRace, type RaceInput } from './simulation'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
 import {
   CAR_SPRITE_REFERENCE_WIDTH,
   CAR_VIEW_DISTANCE,
+  CURVE_BEND_SCALE,
   firstRoadsideIndex,
   formatTime,
   isTallMarker,
@@ -25,7 +27,6 @@ import {
   ROADSIDE_LATERAL,
   ROADSIDE_SPACING,
   TRACK_LENGTH,
-  trackCurve,
   VIEW_DISTANCE,
 } from './track'
 
@@ -210,6 +211,7 @@ function RaceCanvas({
   pilotName,
   startAt,
   countdownMs = DEFAULT_COUNTDOWN_MS,
+  trackSeed,
   now,
   mode = 'solo',
   connectionNotice = null,
@@ -370,6 +372,10 @@ function RaceCanvas({
 
     const race = raceRef.current
     const lateAtStart = lateBy(clockRef.current(), startAt)
+
+    // O traçado da prova, reconstruído a partir da semente oficial. O outro
+    // piloto monta exatamente o mesmo a partir do mesmo número.
+    const layout = createTrackLayout(trackSeed)
     let width = 0
     let height = 0
     let previous = performance.now()
@@ -433,10 +439,12 @@ function RaceCanvas({
     // A curva no ponto do carro é a mesma para todas as profundidades do
     // quadro, então é calculada uma vez em vez de a cada chamada.
     let curvaAqui = 0
+    /** Rumo da pista sob o carro, usado pelo horizonte. */
+    let rumoAqui = 0
 
     const roadGeometry = (distanceAhead: number) => {
       const { y, roadWidth, perspective } = roadProjection(distanceAhead, width, height)
-      const bend = (trackCurve(race.progress + distanceAhead) - curvaAqui) * width * 0.31
+      const bend = (layout.centerOffset(race.progress + distanceAhead) - curvaAqui) * width * CURVE_BEND_SCALE
       return {
         y: y + (camera.lift + camera.shake) * perspective,
         roadWidth,
@@ -462,11 +470,16 @@ function RaceCanvas({
       ctx.fillStyle = gradienteDoCeu()
       ctx.fillRect(0, 0, width, height * 0.44)
 
+      // As montanhas correm para o lado contrário ao da curva. Elas estão
+      // longe demais para acompanhar a pista, e é justamente esse
+      // deslocamento em sentido oposto que faz a cena parecer virar.
+      const desvio = -(layout.centerOffset(race.progress + VIEW_DISTANCE) - curvaAqui) * width * CURVE_BEND_SCALE * 0.42
+
       ctx.fillStyle = '#14222b'
       ctx.beginPath()
       ctx.moveTo(0, height * 0.34)
       for (let x = 0; x <= width; x += 55) {
-        const ridge = height * (0.3 + 0.035 * Math.sin(x * 0.017 + race.progress * 0.0005))
+        const ridge = height * (0.3 + 0.035 * Math.sin((x + desvio) * 0.017 + race.progress * 0.0005))
         ctx.lineTo(x, ridge)
       }
       ctx.lineTo(width, height * 0.48)
@@ -740,7 +753,8 @@ function RaceCanvas({
 
       // A simulação já avançou: a partir daqui o quadro inteiro usa o mesmo
       // progresso, e portanto a mesma curva de referência.
-      curvaAqui = trackCurve(race.progress)
+      curvaAqui = layout.centerOffset(race.progress)
+      rumoAqui = layout.heading(race.progress)
 
       drawBackdrop()
       drawRoad()
@@ -834,7 +848,7 @@ function RaceCanvas({
       document.removeEventListener('visibilitychange', resumeClock)
       for (const timer of flashTimers) window.clearTimeout(timer)
     }
-  }, [beep, countdownMs, startAt])
+  }, [beep, countdownMs, startAt, trackSeed])
 
   /**
    * Envio da telemetria.

@@ -127,13 +127,16 @@ export function isTallMarker(index: number) {
   return index % ROADSIDE_TALL_EVERY === 0
 }
 
-export function trackCurve(distance: number) {
-  return (
-    Math.sin(distance / 310) * 0.46 +
-    Math.sin(distance / 790 + 0.8) * 0.35 +
-    Math.sin(distance / 1450) * 0.18
-  )
-}
+/**
+ * Conversão do deslocamento da linha central, em metros, para pixels de
+ * curvatura na tela.
+ *
+ * O traçado é gerado em metros por `layout.ts`; este é o único número que
+ * decide o quanto isso aparece. Com o rumo máximo de 0,42 rad, a linha do
+ * horizonte chega a cerca de 23% da largura da tela fora do centro — visível,
+ * sem jogar a pista para fora do quadro.
+ */
+export const CURVE_BEND_SCALE = 0.0012
 
 export function formatTime(seconds: number) {
   const safe = Math.max(0, seconds)
