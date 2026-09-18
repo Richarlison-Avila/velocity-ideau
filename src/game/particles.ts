@@ -43,9 +43,6 @@ export const WHEEL_OFFSET = 0.17
  */
 export const TRAIL_SETBACK = 9
 
-/** Meia largura do carro desenhado, em pixels na escala base. */
-export const CAR_HALF_WIDTH = 31
-
 export type SpawnOptions = {
   life?: number
   drift?: number

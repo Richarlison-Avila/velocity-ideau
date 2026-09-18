@@ -119,10 +119,19 @@ function roundedRect(
 
 type CarPalette = {
   tyres: string
+  /** Aro, para a roda não ser um retângulo preto chapado. */
+  rim: string
   body: string
+  /** Lado na sombra da carroceria, que é o que dá volume. */
+  bodyDark: string
+  /** Aresta iluminada por cima. */
+  bodyLight: string
   stripe: string
   glass: string
   wings: string
+  wingEdge: string
+  /** Luz traseira, acesa no centro da asa. */
+  light: string
   shadow: string
   alpha: number
 }
@@ -130,10 +139,15 @@ type CarPalette = {
 /** Cores do carro do jogador. */
 const PLAYER_PALETTE: CarPalette = {
   tyres: '#0b0d11',
+  rim: '#2c3138',
   body: '#ff4b2b',
+  bodyDark: '#a8280f',
+  bodyLight: '#ff8a5c',
   stripe: '#ffb000',
   glass: '#c7f9ff',
   wings: '#151820',
+  wingEdge: '#2b3038',
+  light: '#ff2d2d',
   shadow: 'rgba(0,0,0,.42)',
   alpha: 1,
 }
@@ -141,23 +155,40 @@ const PLAYER_PALETTE: CarPalette = {
 /** O fantasma usa azul e transparência para nunca ser confundido com o próprio carro. */
 const GHOST_PALETTE: CarPalette = {
   tyres: '#16303a',
+  rim: '#24444f',
   body: '#43e7ff',
+  bodyDark: '#1d8ba3',
+  bodyLight: '#a6f4ff',
   stripe: '#e8fbff',
   glass: '#0d2a33',
   wings: '#1d4854',
+  wingEdge: '#2c5f6d',
+  light: '#8ff0ff',
   shadow: 'rgba(67,231,255,.14)',
   alpha: 0.46,
 }
 
-/** Deformações de apresentação do carro. Nada disso afeta a corrida. */
+/**
+ * Deformações de apresentação do carro.
+ *
+ * Tudo aqui sai de `feel.ts`, que por sua vez só lê a simulação. Nada disso
+ * volta para a corrida: não desloca a hitbox, não muda a posição competitiva
+ * e não atrasa o comando.
+ */
 type CarPose = {
   /** Inclinação da carroceria, em radianos. */
   tilt: number
   /** Compressão vertical: negativo estica, positivo achata. */
   squash: number
+  /** Esterço visual das rodas dianteiras, de -1 a 1. */
+  steer: number
+  /** Brilho do escapamento durante o boost, de 0 a 1. */
+  boost: number
+  /** Trepidação fora do asfalto, em pixels da escala base. */
+  jitter: number
 }
 
-const POSE_NEUTRA: CarPose = { tilt: 0, squash: 0 }
+const POSE_NEUTRA: CarPose = { tilt: 0, squash: 0, steer: 0, boost: 0, jitter: 0 }
 
 /**
  * Lados da pista, em constante de módulo.
@@ -181,6 +212,47 @@ const CAPINS = ['#357c46', '#3d8a4f', '#2e7040']
 const PLACAS = ['#d8dee2', '#e6b325', '#cf4436']
 const CERCA = '#6d7b7f'
 
+/**
+ * Uma roda, com aro e banda de rodagem.
+ *
+ * As dianteiras giram no próprio eixo conforme o volante. É o único elemento
+ * do carro que roda por conta própria, e por isso recebe o ângulo em vez de
+ * herdar a inclinação da carroceria.
+ */
+function drawWheel(
+  ctx: CanvasRenderingContext2D,
+  palette: CarPalette,
+  x: number,
+  y: number,
+  largura: number,
+  altura: number,
+  angulo: number,
+) {
+  ctx.save()
+  ctx.translate(x, y)
+  if (angulo !== 0) ctx.rotate(angulo)
+  ctx.fillStyle = palette.tyres
+  roundedRect(ctx, -largura / 2, -altura / 2, largura, altura, largura * 0.35)
+  ctx.fill()
+  // O aro aparece como uma faixa clara no meio da banda.
+  ctx.fillStyle = palette.rim
+  roundedRect(ctx, -largura * 0.28, -altura * 0.22, largura * 0.56, altura * 0.44, largura * 0.2)
+  ctx.fill()
+  ctx.restore()
+}
+
+/**
+ * O carro, visto de trás e um pouco de cima.
+ *
+ * O eixo vertical do desenho é profundidade: o topo é o bico, a base é a asa
+ * traseira, que é a parte mais próxima da câmera. É por isso que a ordem de
+ * desenho vai de cima para baixo — asa dianteira, rodas da frente,
+ * carroceria, cockpit, rodas de trás e por último a asa traseira.
+ *
+ * A meia-largura do desenho é `CAR_SPRITE_HALF_WIDTH`, e daí saem o limite de
+ * saída de pista e o alinhamento dos efeitos. Mexer na silhueta sem mexer
+ * naquela constante faria o jogo cobrar uma coisa e mostrar outra.
+ */
 function drawCar(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -192,44 +264,143 @@ function drawCar(
   ctx.save()
   ctx.globalAlpha = palette.alpha
   ctx.translate(x, y)
+
+  // A sombra de contato fica no chão: não acompanha nem a inclinação nem a
+  // compressão da carroceria, senão o carro pareceria flutuar.
+  ctx.fillStyle = palette.shadow
+  ctx.beginPath()
+  ctx.ellipse(0, 20 * scale, 30 * scale, 8 * scale, 0, 0, Math.PI * 2)
+  ctx.fill()
+
+  ctx.translate(pose.jitter * scale, 0)
   if (pose.tilt !== 0) ctx.rotate(pose.tilt)
   ctx.scale(scale * (1 + pose.squash * 0.5), scale * (1 - pose.squash))
 
-  ctx.fillStyle = palette.shadow
+  const esterco = pose.steer * 0.34
+
+  // Asa dianteira: mais estreita e mais longe, quase escondida pelo bico.
+  ctx.fillStyle = palette.wings
+  roundedRect(ctx, -24, -38, 48, 5, 1.5)
+  ctx.fill()
+  ctx.fillStyle = palette.wingEdge
+  ctx.fillRect(-24, -39, 4, 8)
+  ctx.fillRect(20, -39, 4, 8)
+
+  // Rodas dianteiras: menores, porque estão mais longe, e esterçadas.
+  drawWheel(ctx, palette, -25, -24, 10, 19, esterco)
+  drawWheel(ctx, palette, 25, -24, 10, 19, esterco)
+
+  // Assoalho, que aparece por baixo da carroceria e a assenta no chão.
+  ctx.fillStyle = palette.wings
   ctx.beginPath()
-  ctx.ellipse(0, 10, 34, 14, 0, 0, Math.PI * 2)
+  ctx.moveTo(-22, 18)
+  ctx.lineTo(-16, -18)
+  ctx.lineTo(16, -18)
+  ctx.lineTo(22, 18)
+  ctx.closePath()
   ctx.fill()
 
-  ctx.fillStyle = palette.tyres
-  roundedRect(ctx, -31, -3, 13, 32, 4)
-  ctx.fill()
-  roundedRect(ctx, 18, -3, 13, 32, 4)
-  ctx.fill()
-
+  // Carroceria: larga atrás, afinando até o bico.
   ctx.fillStyle = palette.body
   ctx.beginPath()
-  ctx.moveTo(-23, 25)
-  ctx.lineTo(-17, -25)
-  ctx.quadraticCurveTo(0, -38, 17, -25)
-  ctx.lineTo(23, 25)
+  ctx.moveTo(-19, 17)
+  ctx.lineTo(-13, -19)
+  ctx.quadraticCurveTo(0, -33, 13, -19)
+  ctx.lineTo(19, 17)
   ctx.closePath()
   ctx.fill()
 
+  // Lado na sombra e aresta iluminada: é o que tira a silhueta do chapado.
+  ctx.fillStyle = palette.bodyDark
+  ctx.beginPath()
+  ctx.moveTo(6, -26)
+  ctx.lineTo(13, -19)
+  ctx.lineTo(19, 17)
+  ctx.lineTo(9, 17)
+  ctx.closePath()
+  ctx.fill()
+  ctx.fillStyle = palette.bodyLight
+  ctx.beginPath()
+  ctx.moveTo(-6, -26)
+  ctx.lineTo(-13, -19)
+  ctx.lineTo(-16, 0)
+  ctx.lineTo(-9, 0)
+  ctx.closePath()
+  ctx.fill()
+
+  // Entradas de ar dos sidepods.
+  ctx.fillStyle = palette.wings
+  roundedRect(ctx, -18, -6, 6, 13, 2)
+  ctx.fill()
+  roundedRect(ctx, 12, -6, 6, 13, 2)
+  ctx.fill()
+
+  // Faixa central, do bico à tampa do motor. Estreita de propósito: larga
+  // demais, ela come a cor do carro e some a silhueta.
   ctx.fillStyle = palette.stripe
-  ctx.fillRect(-4, -31, 8, 57)
+  ctx.beginPath()
+  ctx.moveTo(-2, -30)
+  ctx.lineTo(2, -30)
+  ctx.lineTo(3.5, 17)
+  ctx.lineTo(-3.5, 17)
+  ctx.closePath()
+  ctx.fill()
+
+  // Cockpit e halo.
   ctx.fillStyle = palette.glass
   ctx.beginPath()
-  ctx.moveTo(-10, -13)
-  ctx.lineTo(0, -23)
-  ctx.lineTo(10, -13)
-  ctx.lineTo(7, 0)
-  ctx.lineTo(-7, 0)
+  ctx.moveTo(-8, -11)
+  ctx.lineTo(0, -20)
+  ctx.lineTo(8, -11)
+  ctx.lineTo(6, -2)
+  ctx.lineTo(-6, -2)
   ctx.closePath()
   ctx.fill()
+  ctx.strokeStyle = palette.wings
+  ctx.lineWidth = 2.4
+  ctx.beginPath()
+  ctx.arc(0, -10, 8.5, Math.PI, 0)
+  ctx.stroke()
 
+  // Rodas traseiras: largas, e é delas que saem poeira e marcas de pneu.
+  drawWheel(ctx, palette, -25, 6, 12, 25, 0)
+  drawWheel(ctx, palette, 25, 6, 12, 25, 0)
+
+  // O escapamento acende no boost, logo acima da asa.
+  if (pose.boost > 0.01) {
+    ctx.save()
+    ctx.globalAlpha = palette.alpha * pose.boost
+    ctx.fillStyle = palette.light
+    ctx.beginPath()
+    ctx.ellipse(0, 19, 7 + pose.boost * 4, 3 + pose.boost * 2, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+  }
+
+  // Asa traseira: é o elemento mais próximo da câmera e fecha o desenho. O
+  // plano recebe um tom claro em cima: em preto sobre asfalto escuro, ela
+  // simplesmente sumia.
   ctx.fillStyle = palette.wings
-  ctx.fillRect(-30, 20, 60, 7)
-  ctx.fillRect(-27, -28, 54, 6)
+  ctx.fillRect(-8, 12, 16, 8)
+  ctx.fillStyle = palette.wingEdge
+  roundedRect(ctx, -30, 16, 60, 6, 2)
+  ctx.fill()
+  ctx.fillStyle = palette.stripe
+  ctx.fillRect(-30, 16, 60, 1.6)
+  ctx.fillStyle = palette.wings
+  roundedRect(ctx, -30, 21.5, 60, 4, 1.5)
+  ctx.fill()
+
+  // Laterais da asa, na cor do carro: é o que identifica o piloto de longe.
+  ctx.fillStyle = palette.body
+  roundedRect(ctx, -30, 11, 5, 15, 1.5)
+  ctx.fill()
+  roundedRect(ctx, 25, 11, 5, 15, 1.5)
+  ctx.fill()
+
+  ctx.fillStyle = palette.light
+  ctx.fillRect(-3, 22.5, 6, 3)
+
   ctx.restore()
 }
 
@@ -567,6 +738,16 @@ function RaceCanvas({
     /** Objeto reaproveitado pelo cenário: o laço não pode alocar. */
     const cenario = createSceneryItem()
 
+    // Poses e paleta reaproveitadas entre quadros, pelo mesmo motivo.
+    const poseDoJogador: CarPose = { tilt: 0, squash: 0, steer: 0, boost: 0, jitter: 0 }
+    const poseDoFantasma: CarPose = { tilt: 0, squash: 0, steer: 0, boost: 0, jitter: 0 }
+    const paletaDoFantasma: CarPalette = { ...GHOST_PALETTE }
+
+    /** Última posição lateral conhecida do rival, para derivar o esterço dele. */
+    let lateralDoFantasma = 0
+    const aproximarFantasma = (alvo: number, dt: number) =>
+      poseDoFantasma.steer + (alvo - poseDoFantasma.steer) * (1 - Math.exp(-Math.max(0, dt) / 0.18))
+
     /** Uma árvore, na família e no tom que o traçado sorteou para aquela vaga. */
     const desenharArvore = (x: number, chao: number, altura: number, tom: number, variante: number, perto: boolean) => {
       const tronco = Math.max(1, altura * 0.1)
@@ -711,18 +892,25 @@ function RaceCanvas({
     }
 
     /**
-     * Desenha o fantasma na mesma projeção usada pela pista. O fator 0.36
-     * faz a faixa do rival coincidir com a do jogador quando estão lado a lado.
+     * Desenha o fantasma na mesma projeção e com o mesmo modelo do jogador.
+     *
+     * A pose dele não vem de `feel` — não temos a simulação do rival, só a
+     * telemetria — mas sai da mesma grandeza: o quanto ele andou de lado
+     * desde o quadro anterior. Cor e transparência continuam sendo dele.
      */
-    const drawGhost = (distanceAhead: number, lateral: number, faded: boolean) => {
+    const drawGhost = (distanceAhead: number, lateral: number, faded: boolean, dt: number) => {
       const projected = roadGeometry(distanceAhead)
       const x = projected.center + lateralOffset(lateral, projected.roadWidth)
-      const scale = Math.max(0.76, width / 620) * Math.max(0.06, projected.perspective)
+      const scale = Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH) * Math.max(0.06, projected.perspective)
 
-      drawCar(ctx, x, projected.y, scale, {
-        ...GHOST_PALETTE,
-        alpha: GHOST_PALETTE.alpha * (faded ? 0.5 : 1),
-      })
+      const deriva = dt > 0 ? (lateral - lateralDoFantasma) / dt : 0
+      lateralDoFantasma = lateral
+      const volante = Math.max(-1, Math.min(1, deriva / 1.8))
+      poseDoFantasma.steer = aproximarFantasma(volante, dt)
+      poseDoFantasma.tilt = poseDoFantasma.steer * 0.075 * forcaDoMovimento
+
+      paletaDoFantasma.alpha = GHOST_PALETTE.alpha * (faded ? 0.5 : 1)
+      drawCar(ctx, x, projected.y, scale, paletaDoFantasma, poseDoFantasma)
     }
 
     /** Poeira, faíscas, rastro de boost e marcas de pneu, na projeção da pista. */
@@ -925,12 +1113,12 @@ function RaceCanvas({
         if (ahead <= 0 || ahead >= VIEW_DISTANCE) continue
 
         if (!ghostDrawn && rivalAhead > ahead) {
-          drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale)
+          drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt)
           ghostDrawn = true
         }
         drawObstacle(ahead, obstaculo.lane, obstaculo.kind)
       }
-      if (!ghostDrawn) drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale)
+      if (!ghostDrawn) drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt)
 
       if (rivalSample && frame - lastRivalHud > 100) {
         lastRivalHud = frame
@@ -966,12 +1154,24 @@ function RaceCanvas({
       const ondeEstaOCarro = roadGeometry(CAR_VIEW_DISTANCE)
       const playerX = ondeEstaOCarro.center + lateralOffset(race.lateral, ondeEstaOCarro.roadWidth)
       if (!doneRef.current) {
-        // O corpo inclina no esterço e comprime na arrancada e no impacto.
-        const pose = {
-          tilt: feel.steer * 0.075 * forcaDoMovimento,
-          squash: (feel.accel * 0.05 - feel.impact * 0.1) * forcaDoMovimento,
-        }
-        drawCar(ctx, playerX, ondeEstaOCarro.y, Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH), PLAYER_PALETTE, pose)
+        // A pose inteira sai de `feel`, que só lê a simulação: o corpo inclina
+        // no esterço, comprime na arrancada e no impacto, as rodas da frente
+        // seguem o volante e a carroceria treme na grama.
+        poseDoJogador.tilt = feel.steer * 0.075 * forcaDoMovimento
+        poseDoJogador.squash = (feel.accel * 0.05 - feel.impact * 0.1) * forcaDoMovimento
+        poseDoJogador.steer = feel.steer
+        poseDoJogador.boost = feel.boost
+        poseDoJogador.jitter =
+          feel.offRoad * Math.sin(frame * 0.055) * 1.6 * forcaDoMovimento +
+          feel.impact * Math.sin(frame * 0.085) * 2.4 * forcaDoMovimento
+        drawCar(
+          ctx,
+          playerX,
+          ondeEstaOCarro.y,
+          Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH),
+          PLAYER_PALETTE,
+          poseDoJogador,
+        )
       }
 
       // O aviso de fora da pista cresce conforme o carro se afasta da borda,
