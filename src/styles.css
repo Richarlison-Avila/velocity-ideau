@@ -206,6 +206,11 @@ button { cursor: pointer; }
 
 .abandon-button { padding: 7px 13px; border: 1px solid rgba(255,255,255,.22); background: rgba(8,12,17,.6); color: #aab3bc; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .16em; -webkit-tap-highlight-color: transparent; }
 .abandon-button:hover { border-color: rgba(255,75,43,.6); color: #fff; }
+/* O botão de som fica ao lado de abandonar, e existe também no treino. */
+.topbar-actions { display: flex; gap: 8px; align-items: center; }
+.sound-button { padding: 7px 11px; border: 1px solid rgba(255,255,255,.22); background: rgba(8,12,17,.6); color: #e8c15a; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .14em; -webkit-tap-highlight-color: transparent; }
+.sound-button:hover { border-color: rgba(232,193,90,.6); }
+.sound-button.off { color: #6b737b; }
 .share-panel { text-align: center; }
 .qr-wrap { display: inline-flex; padding: 12px; background: #f4f4ee; }
 .share-panel > span { display: block; margin: 12px 0; color: #69747f; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .17em; }

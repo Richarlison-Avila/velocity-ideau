@@ -9,6 +9,7 @@ import {
   TELEMETRY_INTERVAL_MS,
   type GhostSnapshot,
 } from './ghost'
+import { RaceAudio } from './audio'
 import { createFeel, registerImpact, updateFeel } from './feel'
 import {
   createSceneryItem,
@@ -195,6 +196,28 @@ type CarPose = {
 }
 
 const POSE_NEUTRA: CarPose = { tilt: 0, squash: 0, steer: 0, boost: 0, jitter: 0 }
+
+/** Preferência de som, guardada entre corridas e entre recargas da página. */
+const SOM_KEY = 'ghost-racer-mudo'
+
+function lerPreferencia() {
+  try {
+    return sessionStorage.getItem(SOM_KEY) === '1'
+  } catch {
+    // Navegação privada pode recusar o armazenamento; o som segue ligado.
+    return false
+  }
+}
+
+function guardarPreferencia(mudo: boolean) {
+  try {
+    sessionStorage.setItem(SOM_KEY, mudo ? '1' : '0')
+  } catch {
+    // Sem armazenamento só se perde a lembrança entre recargas.
+  }
+}
+
+let somDesligado = lerPreferencia()
 
 /**
  * Lados da pista, em constante de módulo.
@@ -453,29 +476,51 @@ function RaceCanvas({
   const [countdownLight, setCountdownLight] = useState(0)
   const [flash, setFlash] = useState<string | null>(null)
   const [lateStart, setLateStart] = useState(0)
-  const audioRef = useRef<AudioContext | null>(null)
+  const audioRef = useRef<RaceAudio | null>(null)
+  const [mudo, setMudo] = useState(somDesligado)
 
   clockRef.current = now ?? Date.now
   finishRef.current = onFinish
   ghostRef.current = ghost
   sendTelemetryRef.current = onTelemetry
 
-  const beep = useCallback((frequency: number, duration = 0.12) => {
+  /**
+   * Motor, vento e rolamento, criados na primeira vez que o som é pedido.
+   *
+   * O navegador só libera áudio depois de um gesto do usuário, e a primeira
+   * luz da largada vem logo depois do clique que iniciou a corrida — então
+   * é ali que o contexto nasce, já destravado.
+   */
+  const som = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.resume()
+      return audioRef.current
+    }
     const AudioContextClass = window.AudioContext ??
       (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-    if (!AudioContextClass) return
-    const audio = audioRef.current ?? new AudioContextClass()
-    audioRef.current = audio
-    if (audio.state === 'suspended') void audio.resume()
-    const oscillator = audio.createOscillator()
-    const gain = audio.createGain()
-    oscillator.type = 'square'
-    oscillator.frequency.value = frequency
-    gain.gain.setValueAtTime(0.045, audio.currentTime)
-    gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + duration)
-    oscillator.connect(gain).connect(audio.destination)
-    oscillator.start()
-    oscillator.stop(audio.currentTime + duration)
+    if (!AudioContextClass) return null
+    try {
+      const motor = new RaceAudio(new AudioContextClass())
+      motor.setMuted(somDesligado)
+      motor.resume()
+      audioRef.current = motor
+      return motor
+    } catch {
+      // Sem áudio o jogo segue igual: é reforço, não regra.
+      return null
+    }
+  }, [])
+
+  const beep = useCallback((frequency: number, duration = 0.12) => {
+    som()?.beep(frequency, duration)
+  }, [som])
+
+  const alternarSom = useCallback(() => {
+    const proximo = !somDesligado
+    somDesligado = proximo
+    guardarPreferencia(proximo)
+    setMudo(proximo)
+    audioRef.current?.setMuted(proximo)
   }, [])
 
   const setInput = (key: keyof RaceInput, active: boolean) => {
@@ -1042,7 +1087,7 @@ function RaceCanvas({
         for (const event of stepRace(race, inputRef.current, dt)) {
           if (event.type === 'collision') {
             announce('IMPACTO — VELOCIDADE REDUZIDA')
-            beep(105, 0.24)
+            audioRef.current?.impact(0.6 + feel.speed * 0.4)
             // As faíscas saltam à frente do bico, onde a batida aconteceu.
             // Quanto mais rápido o carro estava, mais faíscas saltam.
             const faiscas = Math.round(8 + feel.speed * 10)
@@ -1055,6 +1100,7 @@ function RaceCanvas({
           if (event.type === 'finish') {
             doneRef.current = true
             setPhase('finished')
+            audioRef.current?.update({ speed: 0, boost: 0, offRoad: 0, running: false })
             const result: RaceResult = {
               time: elapsed,
               topSpeed: race.topSpeed,
@@ -1079,6 +1125,15 @@ function RaceCanvas({
         // quadro: um quadro longo não pode virar uma rajada de poeira.
         const passo = Math.min(Math.max(0, dt), MAX_STEP_SECONDS)
         updateFeel(feel, race, passo)
+
+        // O som lê as mesmas intensidades que a imagem: motor, vento e
+        // cascalho saem de `feel`, não de uma segunda leitura da corrida.
+        audioRef.current?.update({
+          speed: feel.speed,
+          boost: feel.boost,
+          offRoad: feel.offRoad,
+          running: true,
+        })
 
         // A câmera baixa um pouco com a velocidade, inclina no esterço e leva
         // um tranco curto no impacto. Tudo contínuo, limitado e proporcional
@@ -1284,7 +1339,10 @@ function RaceCanvas({
     return () => window.clearInterval(timer)
   }, [onTelemetry, startAt])
 
-  useEffect(() => () => { void audioRef.current?.close() }, [])
+  useEffect(() => () => {
+    audioRef.current?.close()
+    audioRef.current = null
+  }, [])
 
   const progressPercent = Math.min(100, (telemetry.progress / TRACK_LENGTH) * 100)
 
@@ -1294,9 +1352,19 @@ function RaceCanvas({
 
       <div className="topbar">
         <div className="brand-mini"><i /> CORRIDA FANTASMA</div>
-        {onAbandon && phase === 'racing' && (
-          <button className="abandon-button" onClick={onAbandon}>ABANDONAR</button>
-        )}
+        <div className="topbar-actions">
+          <button
+            className={`sound-button ${mudo ? 'off' : ''}`}
+            onClick={alternarSom}
+            aria-pressed={!mudo}
+            aria-label={mudo ? 'Ligar o som' : 'Desligar o som'}
+          >
+            {mudo ? 'SOM ✕' : 'SOM ♪'}
+          </button>
+          {onAbandon && phase === 'racing' && (
+            <button className="abandon-button" onClick={onAbandon}>ABANDONAR</button>
+          )}
+        </div>
         <div className="pilot-tag"><span>PILOTO</span>{pilotName}</div>
       </div>
 
