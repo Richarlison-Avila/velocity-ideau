@@ -76,13 +76,29 @@ describe('alinhamento entre o que o jogo desenha e o que ele cobra', () => {
     expect(noMaximo.x + LARGURA * 0.06).toBeLessThan(LARGURA)
   })
 
-  it('carro e obstáculo na mesma faixa aparecem na mesma coluna da tela', () => {
+  it('carro e obstáculo na mesma faixa convergem para a mesma coluna', () => {
+    // Este teste comparava `naTela(faixa, CAR_VIEW_DISTANCE)` consigo mesmo e
+    // passava sempre. Agora ele acompanha o obstáculo se aproximando: a
+    // coluna dele precisa convergir para a do carro, e não cruzá-la.
     for (const faixa of [-0.52, -0.1, 0, 0.42, 0.56]) {
       const carro = naTela(faixa, CAR_VIEW_DISTANCE)
-      // O obstáculo é desenhado com a mesma conta, só que na distância dele.
-      const obstaculo = naTela(faixa, CAR_VIEW_DISTANCE)
-      expect(obstaculo.x).toBeCloseTo(carro.x, 9)
+      let anterior = Infinity
+      for (const distancia of [180, 120, 80, 50, 30, CAR_VIEW_DISTANCE]) {
+        const obstaculo = naTela(faixa, distancia)
+        const erro = Math.abs(obstaculo.x - carro.x)
+        expect(erro).toBeLessThanOrEqual(anterior + 1e-9)
+        anterior = erro
+      }
+      expect(anterior).toBeCloseTo(0, 9)
     }
+  })
+
+  it('o carro é desenhado perto da câmera, não a meio quarteirão dela', () => {
+    // Com a projeção anterior o carro ficava 41 m à frente da câmera, e a
+    // colisão — que dispara quando o obstáculo alcança a câmera — chegava
+    // meio segundo depois de o obstáculo passar visualmente pelo carro.
+    const atrasoEmSegundos = CAR_VIEW_DISTANCE / (speedForState(false, 0, false) / 3.6)
+    expect(atrasoEmSegundos).toBeLessThan(0.35)
   })
 
   it('a faixa jogável continua acomodando todos os obstáculos', () => {
@@ -123,8 +139,10 @@ describe('marcadores laterais', () => {
     expect(vaga * SCENERY_SPACING).toBe(1_220)
     expect(isTallMarker(vaga / 2)).toBe(isTallMarker(vaga / 2))
 
-    // E ele continua sendo listado enquanto o carro se aproxima.
-    for (const progresso of [800, 1_000, 1_100, 1_219]) {
+    // E ele continua sendo listado enquanto o carro se aproxima. A faixa sai
+    // das constantes: fixá-la à mão quebra sempre que a janela muda.
+    const onde = vaga * SCENERY_SPACING
+    for (const progresso of [onde - VIEW_DISTANCE + 1, onde - 120, onde - 40, onde - 1]) {
       expect(firstSceneryIndex(progresso)).toBeLessThanOrEqual(vaga)
       expect(lastSceneryIndex(progresso)).toBeGreaterThanOrEqual(vaga)
     }

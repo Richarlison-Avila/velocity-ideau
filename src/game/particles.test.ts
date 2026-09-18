@@ -79,8 +79,10 @@ describe('efeitos da pista', () => {
   it('a partícula nasce onde o carro aparece na tela', () => {
     // O carro é desenhado perto da base, o que corresponde a uma distância
     // curta à frente da câmera: é dali que a poeira precisa sair.
-    expect(CAR_VIEW_DISTANCE).toBeGreaterThan(20)
-    expect(CAR_VIEW_DISTANCE).toBeLessThan(60)
+    // Derivado da janela, e não um número fixo: o carro fica perto da base
+    // da tela, o que corresponde a uma fração curta do campo de visão.
+    expect(CAR_VIEW_DISTANCE).toBeGreaterThan(0)
+    expect(CAR_VIEW_DISTANCE).toBeLessThan(VIEW_DISTANCE * 0.15)
 
     const campo = new ParticleField()
     campo.spawn('dust', 1_000 + CAR_VIEW_DISTANCE, 0)

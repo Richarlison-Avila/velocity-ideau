@@ -1,5 +1,19 @@
 export const TRACK_LENGTH = 4_800
-export const VIEW_DISTANCE = 430
+
+/**
+ * Até onde a câmera enxerga, em metros.
+ *
+ * Era 430 m, e isso espalhava a pista inteira por uma faixa fina da tela: os
+ * primeiros 20 metros ocupavam 5% dela, e o fluxo na tela era praticamente o
+ * mesmo a 3 e a 150 metros de distância — 126 contra 93 pixels por segundo.
+ * O olho lê profundidade pela *diferença* entre o perto e o longe, e com essa
+ * razão de 1,4 a pista desliza em vez de recuar.
+ *
+ * Aproximar o horizonte dobra o fluxo junto à câmera e melhora a razão para
+ * 2,3. Custa metade do tempo de leitura de um obstáculo — de 6,1 s para
+ * 3,1 s, ainda folgado para uma correção lateral, que leva 0,14 s.
+ */
+export const VIEW_DISTANCE = 215
 
 /** Proporções da projeção pseudo-3D, compartilhadas pelo desenho e pelos efeitos. */
 export const HORIZON_RATIO = 0.29
@@ -126,8 +140,12 @@ export function isTallMarker(index: number) {
  * decide o quanto isso aparece. Com o rumo máximo de 0,42 rad, a linha do
  * horizonte chega a cerca de 23% da largura da tela fora do centro — visível,
  * sem jogar a pista para fora do quadro.
+ *
+ * Dobrou junto com o encurtamento da distância de visão: com a janela pela
+ * metade, o desvio acumulado dentro dela também cai pela metade. Sem a
+ * compensação, aproximar o horizonte teria endireitado as curvas de brinde.
  */
-export const CURVE_BEND_SCALE = 0.0012
+export const CURVE_BEND_SCALE = 0.0024
 
 /**
  * Conversão da altura da linha central, em metros, para pixels na tela.
@@ -135,8 +153,12 @@ export const CURVE_BEND_SCALE = 0.0012
  * O par deste número é `CURVE_BEND_SCALE`: um decide o quanto a curva aparece,
  * o outro o quanto a lomba aparece. Ele é limitado pelo mesmo motivo que a
  * inclinação: alto demais, a pista se dobra sobre si mesma numa crista.
+ *
+ * Dobrou junto com o encurtamento da distância de visão, pelo mesmo motivo da
+ * curva — e a folga do invariante não mudou, porque o desnível dentro da
+ * janela caiu na mesma proporção.
  */
-export const SLOPE_RISE_SCALE = 0.0156
+export const SLOPE_RISE_SCALE = 0.0312
 
 export function formatTime(seconds: number) {
   const safe = Math.max(0, seconds)
