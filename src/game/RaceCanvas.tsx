@@ -622,7 +622,12 @@ function RaceCanvas({
             announce('IMPACTO — VELOCIDADE REDUZIDA')
             beep(105, 0.24)
             // As faíscas saltam à frente do bico, onde a batida aconteceu.
-            effects.burst('spark', 12, race.progress + CAR_VIEW_DISTANCE + 5, race.lateral, { drift: 1.8 })
+            // Quanto mais rápido o carro estava, mais faíscas saltam.
+            const faiscas = Math.round(8 + feel.speed * 10)
+            effects.burst('spark', faiscas, race.progress + CAR_VIEW_DISTANCE + 5, race.lateral, {
+              drift: 1.4 + feel.speed,
+              life: 0.35 + feel.speed * 0.25,
+            })
             registerImpact(feel)
           }
           if (event.type === 'finish') {
@@ -667,19 +672,33 @@ function RaceCanvas({
         const rastro = race.progress + CAR_VIEW_DISTANCE - TRAIL_SETBACK
         const derrapando = Math.abs(race.lateral) > 0.6 && race.speed > 120
 
-        for (let i = dustRate.take(passo, race.offRoad); i > 0; i -= 1) {
+        // A intensidade dos efeitos acompanha a velocidade e o quanto o carro
+        // se afastou do asfalto, em vez de ligar e desligar por estado.
+        const forcaPoeira = 0.3 + feel.speed * 0.9 + feel.offRoad * 0.4
+        for (let i = dustRate.take(passo, race.offRoad, forcaPoeira); i > 0; i -= 1) {
           const roda = Math.random() < 0.5 ? -1 : 1
           effects.spawn('dust', rastro, race.lateral + roda * (WHEEL_OFFSET + Math.random() * 0.08), {
-            drift: roda * (0.2 + Math.random() * 0.5),
-            size: 7 + Math.random() * 6,
+            drift: roda * (0.2 + Math.random() * 0.5) * (0.5 + feel.speed),
+            size: (6 + Math.random() * 6) * (0.7 + feel.speed * 0.6),
+            life: 0.5 + feel.speed * 0.35,
           })
         }
-        for (let i = boostRate.take(passo, race.boosting); i > 0; i -= 1) {
+
+        for (let i = boostRate.take(passo, race.boosting, feel.boost); i > 0; i -= 1) {
           const roda = Math.random() < 0.5 ? -1 : 1
-          effects.spawn('boost', rastro, race.lateral + roda * WHEEL_OFFSET)
+          effects.spawn('boost', rastro, race.lateral + roda * WHEEL_OFFSET, {
+            size: 6 + feel.boost * 4,
+            life: 0.25 + feel.boost * 0.2,
+          })
         }
-        for (let i = skidRate.take(passo, race.offRoad || derrapando || race.penalty > 0); i > 0; i -= 1) {
-          for (const roda of [-1, 1]) effects.spawn('skid', rastro, race.lateral + roda * WHEEL_OFFSET)
+
+        const forcaDerrapagem = Math.max(feel.offRoad, derrapando ? Math.abs(feel.steer) : 0, race.penalty > 0 ? 1 : 0)
+        for (let i = skidRate.take(passo, forcaDerrapagem > 0.05, forcaDerrapagem); i > 0; i -= 1) {
+          for (const roda of [-1, 1]) {
+            effects.spawn('skid', rastro, race.lateral + roda * WHEEL_OFFSET, {
+              size: 5 + forcaDerrapagem * 3,
+            })
+          }
         }
 
         if (frame - lastHudUpdate > 80) {

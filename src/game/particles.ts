@@ -133,12 +133,16 @@ export class EmissionRate {
 
   constructor(private readonly perSecond: number) {}
 
-  take(dt: number, active: boolean) {
-    if (!active) {
+  /**
+   * @param intensity Multiplicador contínuo de 0 a 1 ou mais. Permite que a
+   * poeira aumente com a velocidade em vez de só ligar e desligar.
+   */
+  take(dt: number, active: boolean, intensity = 1) {
+    if (!active || intensity <= 0) {
       this.accumulated = 0
       return 0
     }
-    this.accumulated += dt * this.perSecond
+    this.accumulated += dt * this.perSecond * intensity
     const quantidade = Math.floor(this.accumulated)
     this.accumulated -= quantidade
     return quantidade

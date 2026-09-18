@@ -132,4 +132,28 @@ describe('cadência de emissão', () => {
     for (let quadro = 0; quadro < 60; quadro += 1) cadencia.take(1 / 60, false)
     expect(cadencia.take(1 / 60, true)).toBe(0)
   })
+
+  it('a intensidade escala a quantidade de forma contínua', () => {
+    const contar = (intensidade: number) => {
+      const cadencia = new EmissionRate(40)
+      let total = 0
+      for (let quadro = 0; quadro < 60; quadro += 1) total += cadencia.take(1 / 60, true, intensidade)
+      return total
+    }
+
+    // O acumulador trabalha com frações, então há um de folga no arredondamento.
+    expect(contar(1)).toBeGreaterThanOrEqual(39)
+    expect(contar(1)).toBeLessThanOrEqual(40)
+    expect(contar(0.5)).toBeGreaterThanOrEqual(19)
+    expect(contar(0.5)).toBeLessThanOrEqual(20)
+    expect(contar(0.25)).toBeGreaterThanOrEqual(9)
+    expect(contar(0.25)).toBeLessThanOrEqual(10)
+  })
+
+  it('intensidade zero não emite nada, mesmo ligada', () => {
+    const cadencia = new EmissionRate(40)
+    let total = 0
+    for (let quadro = 0; quadro < 60; quadro += 1) total += cadencia.take(1 / 60, true, 0)
+    expect(total).toBe(0)
+  })
 })
