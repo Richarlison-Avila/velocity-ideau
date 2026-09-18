@@ -92,6 +92,8 @@ type Telemetry = {
   penalty: number
   boosting: boolean
   boostLocked: boolean
+  /** Aderência de 0 a 1. Abaixo de 1, o piloto está maltratando o volante. */
+  grip: number
 }
 
 const initialTelemetry: Telemetry = {
@@ -103,6 +105,7 @@ const initialTelemetry: Telemetry = {
   penalty: 0,
   boosting: false,
   boostLocked: false,
+  grip: 1,
 }
 
 function roundedRect(
@@ -1036,7 +1039,6 @@ function RaceCanvas({
         // Os efeitos saem de trás das rodas, e não do centro: nascendo sob o
         // carro, o próprio sprite os esconderia por toda a vida útil.
         const rastro = race.progress + CAR_VIEW_DISTANCE - TRAIL_SETBACK
-        const derrapando = Math.abs(race.lateral) > 0.6 && race.speed > 120
 
         // A intensidade dos efeitos acompanha a velocidade e o quanto o carro
         // se afastou do asfalto, em vez de ligar e desligar por estado.
@@ -1058,7 +1060,10 @@ function RaceCanvas({
           })
         }
 
-        const forcaDerrapagem = Math.max(feel.offRoad, derrapando ? Math.abs(feel.steer) : 0, race.penalty > 0 ? 1 : 0)
+        // A marca de pneu acompanha o esforço lateral que a simulação mediu, e
+        // não um "velocidade > X e lateral > Y" — que era justamente o tipo de
+        // corte binário que fazia o efeito piscar ao cruzar o limite.
+        const forcaDerrapagem = Math.max(feel.offRoad, feel.strain, race.penalty > 0 ? 1 : 0)
         for (let i = skidRate.take(passo, forcaDerrapagem > 0.05, forcaDerrapagem); i > 0; i -= 1) {
           for (const roda of [-1, 1]) {
             effects.spawn('skid', rastro, race.lateral + roda * WHEEL_OFFSET, {
@@ -1078,6 +1083,7 @@ function RaceCanvas({
             penalty: race.penalty,
             boosting: race.boosting,
             boostLocked: race.boostLocked,
+            grip: race.grip,
           })
         }
       }
@@ -1282,6 +1288,11 @@ function RaceCanvas({
 
       {connectionNotice && <div className="connection-notice">{connectionNotice}</div>}
       {telemetry.offRoad && phase === 'racing' && <div className="warning">FORA DA PISTA</div>}
+      {/* A perda por esforço lateral precisa ser vista para ser justa: uma
+          punição que o piloto não percebe é só um bug do ponto de vista dele. */}
+      {!telemetry.offRoad && telemetry.grip < 0.97 && phase === 'racing' && (
+        <div className="warning grip">PERDENDO ADERÊNCIA</div>
+      )}
       {flash && <div className="impact">{flash}</div>}
 
       {phase === 'countdown' && (
