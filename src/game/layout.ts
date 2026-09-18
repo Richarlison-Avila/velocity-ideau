@@ -77,6 +77,42 @@ export const MAX_HEADING_DELTA = HEADING_STEP + HEADING_RETURN * HEADING_LIMIT
  */
 export const MAX_CURVATURE = (1.5 * MAX_HEADING_DELTA) / CURVE_SEGMENT
 
+// ---------------------------------------------------------------------------
+// Relevo
+// ---------------------------------------------------------------------------
+
+/** Comprimento de cada trecho de inclinação constante, em metros. */
+export const SLOPE_SEGMENT = 155
+
+/**
+ * Inclinação máxima da pista, em metros por metro — pouco mais de 4°.
+ *
+ * Parece modesto, e é de propósito. O limite não é estético: o produto desta
+ * constante pela escala de desenho decide se a projeção se dobra sobre si
+ * mesma numa lomba. Dobrada, a parte de trás da subida apareceria acima da
+ * crista e seria preciso recortar geometria escondida — inclusive árvores,
+ * que passariam a flutuar no céu. Com este par, a altura de tela cai de forma
+ * estritamente monótona com a distância, e isso é garantido por teste.
+ *
+ * A conta: o termo perigoso da derivada é proporcional a
+ * `SLOPE_RISE_SCALE × desnível na janela`, e ele precisa ficar abaixo de
+ * `BOTTOM_RATIO − HORIZON_RATIO`, que vale 0,63. Com desnível máximo de
+ * `SLOPE_LIMIT × VIEW_DISTANCE`, sobra 20% de folga.
+ */
+export const SLOPE_LIMIT = 0.075
+
+/** Maior mudança de inclinação sorteada de um trecho para o seguinte. */
+export const SLOPE_STEP = 0.055
+
+/** Puxão de volta ao plano, para a pista não subir a prova inteira. */
+export const SLOPE_RETURN = 0.36
+
+/** Proporção de trechos planos. */
+export const FLAT_SHARE = 0.26
+
+/** Maior mudança de inclinação possível, somando sorteio e retorno. */
+export const MAX_SLOPE_DELTA = SLOPE_STEP + SLOPE_RETURN * SLOPE_LIMIT
+
 /** Espaçamento da tabela de posições da linha central, em metros. */
 const SAMPLE_STEP = 8
 
@@ -155,6 +191,10 @@ export type TrackLayout = {
   heading: (distance: number) => number
   /** Curvatura naquele ponto, em radianos por metro. */
   curvature: (distance: number) => number
+  /** Altura da linha central naquele ponto, em metros. */
+  elevation: (distance: number) => number
+  /** Inclinação naquele ponto, em metros por metro. Positiva na subida. */
+  slope: (distance: number) => number
   /**
    * Preenche `out` com o objeto daquela vaga e devolve true; devolve false
    * quando a vaga é área de respiro.
@@ -204,6 +244,39 @@ export function createTrackLayout(seed: number): TrackLayout {
     return offsets[indice] + (offsets[indice + 1] - offsets[indice]) * t
   }
 
+  // Relevo, construído pela mesma máquina do rumo: inclinação alvo por trecho,
+  // suavização com derivada nula nas pontas — o que zera a curvatura vertical
+  // na emenda e evita quebra — e integração feita uma vez.
+  const inclinacoes = new Float64Array(Math.ceil(comprimento / SLOPE_SEGMENT) + 3)
+  for (let i = 3; i < inclinacoes.length; i += 1) {
+    const plano = randomAt(seed, i, 4) < FLAT_SHARE
+    const bruto = plano ? 0 : (randomAt(seed, i, 3) * 2 - 1) * SLOPE_STEP
+    inclinacoes[i] = clamp(inclinacoes[i - 1] * (1 - SLOPE_RETURN) + bruto, -SLOPE_LIMIT, SLOPE_LIMIT)
+  }
+
+  function inclinacaoEm(distance: number) {
+    const bruto = clamp(distance, 0, comprimento) / SLOPE_SEGMENT
+    const trecho = Math.min(inclinacoes.length - 2, Math.floor(bruto))
+    const t = bruto - trecho
+    return inclinacoes[trecho] + (inclinacoes[trecho + 1] - inclinacoes[trecho]) * smoothstep(t)
+  }
+
+  const alturas = new Float64Array(amostras)
+  let subida = 0
+  for (let i = 1; i < amostras; i += 1) {
+    const anterior = inclinacaoEm((i - 1) * SAMPLE_STEP)
+    const atual = inclinacaoEm(i * SAMPLE_STEP)
+    subida += ((anterior + atual) / 2) * SAMPLE_STEP
+    alturas[i] = subida
+  }
+
+  function alturaEm(distance: number) {
+    const bruto = clamp(distance, 0, comprimento) / SAMPLE_STEP
+    const indice = Math.min(amostras - 2, Math.floor(bruto))
+    const t = bruto - indice
+    return alturas[indice] + (alturas[indice + 1] - alturas[indice]) * t
+  }
+
   /** Família da vaga antes da supressão, para o vizinho poder consultá-la. */
   function familiaBruta(index: number, side: -1 | 1): SceneryKind | null {
     if (index < 0) return null
@@ -222,6 +295,8 @@ export function createTrackLayout(seed: number): TrackLayout {
     centerOffset: offsetEm,
     heading: rumoEm,
     curvature: (distance) => rumoEm(distance + 0.5) - rumoEm(distance - 0.5),
+    elevation: alturaEm,
+    slope: inclinacaoEm,
     scenery(index, side, out) {
       const familia = familiaBruta(index, side)
       if (familia === null) return false

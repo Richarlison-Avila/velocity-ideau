@@ -30,6 +30,7 @@ import {
   roadProjection,
   ROADSIDE_LATERAL,
   ROADSIDE_SPACING,
+  SLOPE_RISE_SCALE,
   TRACK_LENGTH,
   VIEW_DISTANCE,
 } from './track'
@@ -641,12 +642,21 @@ function RaceCanvas({
     let curvaAqui = 0
     /** Rumo da pista sob o carro, usado pelo horizonte. */
     let rumoAqui = 0
+    /** Altura e inclinação sob o carro, referência do relevo neste quadro. */
+    let alturaAqui = 0
+    let inclinacaoAqui = 0
 
     const roadGeometry = (distanceAhead: number) => {
       const { y, roadWidth, perspective } = roadProjection(distanceAhead, width, height)
       const bend = (layout.centerOffset(race.progress + distanceAhead) - curvaAqui) * width * CURVE_BEND_SCALE
+      // O relevo entra pelo mesmo caminho da curva, só que na vertical: o
+      // trecho mais alto que o ponto do carro sobe na tela, e a perspectiva
+      // faz o efeito sumir no horizonte. Como tudo o que aparece na pista
+      // passa por aqui, pista, cenário, obstáculos, partículas, fantasma,
+      // chegada e carro sobem e descem juntos — por construção.
+      const rise = (layout.elevation(race.progress + distanceAhead) - alturaAqui) * height * SLOPE_RISE_SCALE
       return {
-        y: y + (camera.lift + camera.shake) * perspective,
+        y: y + (camera.lift + camera.shake - rise) * perspective,
         roadWidth,
         perspective,
         center: width / 2 + bend * (1 - perspective * 0.25) + camera.roll * perspective,
@@ -675,11 +685,17 @@ function RaceCanvas({
       // deslocamento em sentido oposto que faz a cena parecer virar.
       const desvio = -(layout.centerOffset(race.progress + VIEW_DISTANCE) - curvaAqui) * width * CURVE_BEND_SCALE * 0.42
 
+      // E descem quando o carro sobe. A câmera acompanha a inclinação da
+      // pista, então na subida ela aponta para cima e o que está longe cai na
+      // tela — até ficar escondido atrás da própria lomba. É a regra clássica
+      // do horizonte reagindo ao relevo.
+      const subida = inclinacaoAqui * height * 0.75
+
       ctx.fillStyle = '#14222b'
       ctx.beginPath()
-      ctx.moveTo(0, height * 0.34)
+      ctx.moveTo(0, height * 0.34 + subida)
       for (let x = 0; x <= width; x += 55) {
-        const ridge = height * (0.3 + 0.035 * Math.sin((x + desvio) * 0.017 + race.progress * 0.0005))
+        const ridge = height * (0.3 + 0.035 * Math.sin((x + desvio) * 0.017 + race.progress * 0.0005)) + subida
         ctx.lineTo(x, ridge)
       }
       ctx.lineTo(width, height * 0.48)
@@ -1092,6 +1108,8 @@ function RaceCanvas({
       // progresso, e portanto a mesma curva de referência.
       curvaAqui = layout.centerOffset(race.progress)
       rumoAqui = layout.heading(race.progress)
+      alturaAqui = layout.elevation(race.progress)
+      inclinacaoAqui = layout.slope(race.progress)
 
       drawBackdrop()
       drawRoad()

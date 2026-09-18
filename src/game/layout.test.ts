@@ -8,12 +8,15 @@ import {
   HEADING_LIMIT,
   lastSceneryIndex,
   MAX_CURVATURE,
+  MAX_SLOPE_DELTA,
   randomAt,
   ROADSIDE_MARGIN,
   SCENERY_SPACING,
+  SLOPE_LIMIT,
+  SLOPE_SEGMENT,
   type SceneryItem,
 } from './layout'
-import { ROAD_EDGE, TRACK_LENGTH, VIEW_DISTANCE } from './track'
+import { roadProjection, ROAD_EDGE, SLOPE_RISE_SCALE, TRACK_LENGTH, VIEW_DISTANCE } from './track'
 
 /** Sementes variadas, para nenhuma conclusão depender de um sorteio feliz. */
 const SEMENTES = [0, 1, 7, 42, 1_337, 99_991, 0x7fffffff, 0xdeadbeef]
@@ -24,6 +27,7 @@ function fotografar(seed: number) {
   const item = createSceneryItem()
   const linhas: string[] = []
   for (let d = 0; d <= TRACK_LENGTH; d += 25) linhas.push(layout.centerOffset(d).toFixed(9))
+  for (let d = 0; d <= TRACK_LENGTH; d += 25) linhas.push(layout.elevation(d).toFixed(9))
   for (let i = 0; i < 400; i += 1) {
     for (const lado of [-1, 1] as const) {
       linhas.push(layout.scenery(i, lado, item) ? descrever(item) : '-')
@@ -301,5 +305,112 @@ describe('cenário lateral', () => {
     }
     // Depois de passar, some do campo de visão.
     expect(firstSceneryIndex(indice * SCENERY_SPACING + 1)).toBeGreaterThan(indice)
+  })
+})
+
+describe('relevo', () => {
+  it('a inclinação nunca passa do limite declarado', () => {
+    for (const seed of SEMENTES) {
+      const layout = createTrackLayout(seed)
+      for (let d = 0; d <= TRACK_LENGTH + VIEW_DISTANCE; d += 3) {
+        expect(Math.abs(layout.slope(d))).toBeLessThanOrEqual(SLOPE_LIMIT + 1e-9)
+      }
+    }
+  })
+
+  it('a inclinação muda de forma contínua, sem degrau', () => {
+    // A suavização tem derivada nula nas pontas de cada trecho, então a
+    // emenda entre dois trechos não produz quebra.
+    const saltoMaximo = (2 * MAX_SLOPE_DELTA) / SLOPE_SEGMENT
+    for (const seed of SEMENTES) {
+      const layout = createTrackLayout(seed)
+      let anterior = layout.slope(0)
+      for (let d = 1; d <= TRACK_LENGTH; d += 1) {
+        const atual = layout.slope(d)
+        expect(Math.abs(atual - anterior)).toBeLessThan(saltoMaximo)
+        anterior = atual
+      }
+    }
+  })
+
+  it('a altura é a integral da inclinação, e começa plana', () => {
+    for (const seed of SEMENTES) {
+      const layout = createTrackLayout(seed)
+      // Os três primeiros trechos são planos: a arrancada não acontece numa
+      // rampa. A margem de 20 m no fim existe porque a tabela de alturas é
+      // amostrada a cada 8 m, e a última amostra do trecho plano já encosta
+      // no primeiro trecho inclinado.
+      for (let d = 0; d <= SLOPE_SEGMENT * 2 - 20; d += 5) {
+        expect(Math.abs(layout.slope(d))).toBeLessThan(1e-9)
+        expect(Math.abs(layout.elevation(d))).toBeLessThan(1e-9)
+      }
+
+      // E daí em diante a altura acompanha a inclinação. A tolerância é
+      // larga de propósito: a tabela de alturas é interpolada em linha reta
+      // entre amostras de 8 m, então a derivada dela é a inclinação *média*
+      // do intervalo, não a instantânea do ponto.
+      for (let d = 600; d <= TRACK_LENGTH; d += 97) {
+        const derivada = (layout.elevation(d + 1) - layout.elevation(d - 1)) / 2
+        expect(derivada).toBeCloseTo(layout.slope(d), 2)
+      }
+    }
+  })
+
+  it('a prova tem subidas e descidas de verdade', () => {
+    for (const seed of SEMENTES) {
+      const layout = createTrackLayout(seed)
+      let sobe = false
+      let desce = false
+      for (let d = 0; d <= TRACK_LENGTH; d += 5) {
+        if (layout.slope(d) > 0.02) sobe = true
+        if (layout.slope(d) < -0.02) desce = true
+      }
+      expect(sobe).toBe(true)
+      expect(desce).toBe(true)
+    }
+  })
+
+  /**
+   * O invariante que sustenta todo o desenho do relevo.
+   *
+   * Se a altura de tela deixar de cair de forma monótona com a distância, a
+   * pista se dobra sobre si mesma numa lomba: o trecho de trás da subida
+   * aparece acima da crista, e aí seria preciso recortar geometria escondida
+   * — árvores incluídas, que passariam a flutuar no céu. É este teste que
+   * permite `drawRoad` continuar desenhando do fundo para a frente sem
+   * recorte nenhum, e é ele que fixa o par SLOPE_LIMIT / SLOPE_RISE_SCALE.
+   */
+  it('a pista nunca se dobra sobre si mesma', () => {
+    const telas: Array<[number, number]> = [
+      [360, 640],
+      [800, 450],
+      [1280, 720],
+      [375, 812],
+    ]
+
+    for (const seed of SEMENTES) {
+      const layout = createTrackLayout(seed)
+      for (const [largura, altura] of telas) {
+        for (let progresso = 0; progresso <= TRACK_LENGTH; progresso += 231) {
+          const alturaAqui = layout.elevation(progresso)
+          let anterior = Infinity
+          for (let i = 0; i <= 84; i += 1) {
+            const d = (VIEW_DISTANCE * i) / 84
+            const { y, perspective } = roadProjection(d, largura, altura)
+            const rise = (layout.elevation(progresso + d) - alturaAqui) * altura * SLOPE_RISE_SCALE
+            const telaY = y - rise * perspective
+            if (anterior !== Infinity) expect(telaY).toBeLessThan(anterior)
+            anterior = telaY
+          }
+        }
+      }
+    }
+  })
+
+  it('a escala de desenho respeita a folga que garante o invariante', () => {
+    // O termo perigoso da derivada é proporcional a escala × desnível, e
+    // precisa ficar abaixo da queda total da projeção, que é 0,63.
+    const desnivelMaximo = SLOPE_LIMIT * VIEW_DISTANCE
+    expect(SLOPE_RISE_SCALE * desnivelMaximo).toBeLessThan(0.63)
   })
 })

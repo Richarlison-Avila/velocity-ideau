@@ -129,6 +129,15 @@ export function isTallMarker(index: number) {
  */
 export const CURVE_BEND_SCALE = 0.0012
 
+/**
+ * Conversão da altura da linha central, em metros, para pixels na tela.
+ *
+ * O par deste número é `CURVE_BEND_SCALE`: um decide o quanto a curva aparece,
+ * o outro o quanto a lomba aparece. Ele é limitado pelo mesmo motivo que a
+ * inclinação: alto demais, a pista se dobra sobre si mesma numa crista.
+ */
+export const SLOPE_RISE_SCALE = 0.0156
+
 export function formatTime(seconds: number) {
   const safe = Math.max(0, seconds)
   const minutes = Math.floor(safe / 60)
