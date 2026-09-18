@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AMBIENT_COUNT,
+  ambientFor,
   createSceneryItem,
   createTrackLayout,
   CURVE_SEGMENT,
@@ -412,5 +414,51 @@ describe('relevo', () => {
     // precisa ficar abaixo da queda total da projeção, que é 0,63.
     const desnivelMaximo = SLOPE_LIMIT * VIEW_DISTANCE
     expect(SLOPE_RISE_SCALE * desnivelMaximo).toBeLessThan(0.63)
+  })
+})
+
+describe('ambiente da corrida', () => {
+  it('sai da semente, então os dois pilotos correm no mesmo lugar', () => {
+    for (const seed of SEMENTES) {
+      expect(ambientFor(seed)).toBe(ambientFor(seed))
+      expect(createTrackLayout(seed).ambient).toBe(ambientFor(seed))
+    }
+  })
+
+  it('todos os ambientes aparecem ao longo de muitas corridas', () => {
+    const vistos = new Set<string>()
+    for (let seed = 0; seed < 400; seed += 1) vistos.add(ambientFor(seed * 104_729).nome)
+    expect(vistos.size).toBe(AMBIENT_COUNT)
+  })
+
+  it('cada ambiente traz a paleta completa', () => {
+    for (let seed = 0; seed < 200; seed += 1) {
+      const ambiente = ambientFor(seed * 7_919)
+      for (const cor of [
+        ambiente.ceuTopo,
+        ambiente.ceuMeio,
+        ambiente.ceuBaixo,
+        ambiente.serra,
+        ambiente.chao,
+        ambiente.gramaClara,
+        ambiente.gramaEscura,
+        ambiente.asfaltoClaro,
+        ambiente.asfaltoEscuro,
+      ]) {
+        expect(cor).toMatch(/^#[0-9a-f]{6}$/)
+      }
+      // A névoa é montada como texto no gradiente, então precisa ser só os
+      // três componentes — um "#aabbcc" aqui geraria uma cor inválida.
+      expect(ambiente.nevoaRGB).toMatch(/^\d{1,3},\d{1,3},\d{1,3}$/)
+      expect(['verde', 'seca']).toContain(ambiente.flora)
+    }
+  })
+
+  it('não muda de ambiente no meio da corrida', () => {
+    const layout = createTrackLayout(4_242)
+    const primeiro = layout.ambient
+    layout.elevation(2_000)
+    layout.centerOffset(3_500)
+    expect(layout.ambient).toBe(primeiro)
   })
 })

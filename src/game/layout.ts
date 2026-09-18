@@ -183,8 +183,107 @@ const FAMILIES: SceneryKind[][] = [
   ['grass', 'sign'],
 ]
 
+// ---------------------------------------------------------------------------
+// Ambiente
+// ---------------------------------------------------------------------------
+
+/** Conjunto de cores da vegetação. A pista seca não tem mato verde. */
+export type Flora = 'verde' | 'seca'
+
+/**
+ * Identidade visual de uma corrida.
+ *
+ * É o que o Top Gear conseguia trocando de país a cada etapa: a mesma pista
+ * parece outra com outro céu. Aqui sai da semente, então os dois pilotos
+ * correm no mesmo lugar, e não custa asset nenhum.
+ */
+export type Ambient = {
+  nome: string
+  ceuTopo: string
+  ceuMeio: string
+  ceuBaixo: string
+  serra: string
+  chao: string
+  gramaClara: string
+  gramaEscura: string
+  asfaltoClaro: string
+  asfaltoEscuro: string
+  /** Componentes da névoa do horizonte, para montar os dois extremos. */
+  nevoaRGB: string
+  flora: Flora
+}
+
+const AMBIENTES: Ambient[] = [
+  {
+    nome: 'entardecer',
+    ceuTopo: '#06101b',
+    ceuMeio: '#173d4b',
+    ceuBaixo: '#ff875f',
+    serra: '#14222b',
+    chao: '#183824',
+    gramaClara: '#244b2c',
+    gramaEscura: '#214329',
+    asfaltoClaro: '#30343b',
+    asfaltoEscuro: '#2b2f35',
+    nevoaRGB: '255,135,95',
+    flora: 'verde',
+  },
+  {
+    nome: 'manhã',
+    ceuTopo: '#0c2440',
+    ceuMeio: '#3f7fa8',
+    ceuBaixo: '#ffd9a3',
+    serra: '#1b3242',
+    chao: '#1d4429',
+    gramaClara: '#2b5834',
+    gramaEscura: '#264f30',
+    asfaltoClaro: '#383d45',
+    asfaltoEscuro: '#32363d',
+    nevoaRGB: '255,217,163',
+    flora: 'verde',
+  },
+  {
+    nome: 'meio-dia',
+    ceuTopo: '#12467a',
+    ceuMeio: '#5c9fcf',
+    ceuBaixo: '#cfe8f5',
+    serra: '#2b4a5c',
+    chao: '#245231',
+    gramaClara: '#2f6338',
+    gramaEscura: '#2a5a34',
+    asfaltoClaro: '#3d434b',
+    asfaltoEscuro: '#373c43',
+    nevoaRGB: '207,232,245',
+    flora: 'verde',
+  },
+  {
+    nome: 'travessia seca',
+    ceuTopo: '#2b1c14',
+    ceuMeio: '#8a4a28',
+    ceuBaixo: '#f0b978',
+    serra: '#3a2a20',
+    chao: '#4a3b21',
+    gramaClara: '#5a4826',
+    gramaEscura: '#514021',
+    asfaltoClaro: '#413c33',
+    asfaltoEscuro: '#3a352d',
+    nevoaRGB: '240,185,120',
+    flora: 'seca',
+  },
+]
+
+/** Quantos ambientes existem, para os testes não dependerem do vetor. */
+export const AMBIENT_COUNT = AMBIENTES.length
+
+/** Ambiente daquela corrida. Função pura da semente, como todo o resto. */
+export function ambientFor(seed: number): Ambient {
+  return AMBIENTES[Math.floor(randomAt(seed, 0, 21) * AMBIENTES.length)]
+}
+
 export type TrackLayout = {
   seed: number
+  /** Céu, terreno e vegetação desta corrida. */
+  ambient: Ambient
   /** Deslocamento lateral da linha central, em metros. */
   centerOffset: (distance: number) => number
   /** Rumo da pista naquele ponto, em radianos. */
@@ -292,6 +391,7 @@ export function createTrackLayout(seed: number): TrackLayout {
 
   return {
     seed,
+    ambient: ambientFor(seed),
     centerOffset: offsetEm,
     heading: rumoEm,
     curvature: (distance) => rumoEm(distance + 0.5) - rumoEm(distance - 0.5),

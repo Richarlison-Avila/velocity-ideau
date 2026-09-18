@@ -16,6 +16,7 @@ import {
   firstSceneryIndex,
   lastSceneryIndex,
   SCENERY_SPACING,
+  type Flora,
 } from './layout'
 import { createRaceState, MAX_STEP_SECONDS, stepRace, type RaceInput } from './simulation'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
@@ -28,6 +29,7 @@ import {
   lateralOffset,
   obstacles,
   roadProjection,
+  HORIZON_RATIO,
   ROADSIDE_LATERAL,
   ROADSIDE_SPACING,
   SLOPE_RISE_SCALE,
@@ -203,16 +205,29 @@ const POSE_NEUTRA: CarPose = { tilt: 0, squash: 0, steer: 0, boost: 0, jitter: 0
 const LADOS: Array<-1 | 1> = [-1, 1]
 
 /**
- * Paletas prontas do cenário.
+ * Paletas prontas do cenário, por tipo de vegetação.
  *
  * Montar a cor como texto a cada objeto alocaria centenas de strings por
  * quadro. O traçado sorteia um índice; aqui ele só vira uma cor já existente.
+ * O ambiente da corrida escolhe o conjunto — numa travessia seca não há mato
+ * verde na beira da pista.
  */
-const COPAS = ['#1d4b2a', '#236030', '#2a6d38', '#1a4325', '#2f7a40', '#265c33']
-const COPAS_LUZ = ['#2d6f3c', '#33863f', '#3c944c', '#296437', '#45a657', '#377f47']
-const TRONCOS = ['#3b2d23', '#46362b', '#31261e']
-const ARBUSTOS = ['#255c33', '#2d6b3a', '#1f5130']
-const CAPINS = ['#357c46', '#3d8a4f', '#2e7040']
+const VEGETACAO: Record<Flora, { copas: string[]; luz: string[]; troncos: string[]; arbustos: string[]; capins: string[] }> = {
+  verde: {
+    copas: ['#1d4b2a', '#236030', '#2a6d38', '#1a4325', '#2f7a40', '#265c33'],
+    luz: ['#2d6f3c', '#33863f', '#3c944c', '#296437', '#45a657', '#377f47'],
+    troncos: ['#3b2d23', '#46362b', '#31261e'],
+    arbustos: ['#255c33', '#2d6b3a', '#1f5130'],
+    capins: ['#357c46', '#3d8a4f', '#2e7040'],
+  },
+  seca: {
+    copas: ['#5a5227', '#6b6130', '#4e4723', '#746a35', '#5f562a', '#665d2e'],
+    luz: ['#7c7239', '#8a7f42', '#6e6533', '#93874a', '#7f7540', '#877c44'],
+    troncos: ['#4a3722', '#55412a', '#3d2d1c'],
+    arbustos: ['#5d5228', '#6a5f2f', '#514724'],
+    capins: ['#8a7b3c', '#97883f', '#7d7036'],
+  },
+}
 const PLACAS = ['#d8dee2', '#e6b325', '#cf4436']
 const CERCA = '#6d7b7f'
 
@@ -577,6 +592,10 @@ function RaceCanvas({
     // O traçado da prova, reconstruído a partir da semente oficial. O outro
     // piloto monta exatamente o mesmo a partir do mesmo número.
     const layout = createTrackLayout(trackSeed)
+    // Céu, terreno e vegetação desta corrida, sorteados da mesma semente: os
+    // dois pilotos correm no mesmo lugar, à mesma hora do dia.
+    const ambiente = layout.ambient
+    const flora = VEGETACAO[ambiente.flora]
     let width = 0
     let height = 0
     let previous = performance.now()
@@ -669,11 +688,29 @@ function RaceCanvas({
     const gradienteDoCeu = () => {
       if (ceu && ceuAltura === height) return ceu
       ceu = ctx.createLinearGradient(0, 0, 0, height * 0.5)
-      ceu.addColorStop(0, '#06101b')
-      ceu.addColorStop(0.58, '#173d4b')
-      ceu.addColorStop(1, '#ff875f')
+      ceu.addColorStop(0, ambiente.ceuTopo)
+      ceu.addColorStop(0.58, ambiente.ceuMeio)
+      ceu.addColorStop(1, ambiente.ceuBaixo)
       ceuAltura = height
       return ceu
+    }
+
+    // Névoa do horizonte. Out Run e Top Gear dissolvem o fundo na cor do céu:
+    // é isso que separa uma projeção com profundidade de uma chapada, em que
+    // o longe aparece nítido e minúsculo. O gradiente é montado uma vez por
+    // tamanho de tela, não por quadro.
+    let bruma: CanvasGradient | null = null
+    let brumaAltura = -1
+    const gradienteDaBruma = () => {
+      if (bruma && brumaAltura === height) return bruma
+      // Começa acima da linha do horizonte porque numa subida a pista passa
+      // dela — e a faixa extra cai sobre o céu, que já é desta cor.
+      bruma = ctx.createLinearGradient(0, height * (HORIZON_RATIO - 0.1), 0, height * 0.64)
+      bruma.addColorStop(0, `rgba(${ambiente.nevoaRGB},.5)`)
+      bruma.addColorStop(0.45, `rgba(${ambiente.nevoaRGB},.22)`)
+      bruma.addColorStop(1, `rgba(${ambiente.nevoaRGB},0)`)
+      brumaAltura = height
+      return bruma
     }
 
     const drawBackdrop = () => {
@@ -691,7 +728,7 @@ function RaceCanvas({
       // do horizonte reagindo ao relevo.
       const subida = inclinacaoAqui * height * 0.75
 
-      ctx.fillStyle = '#14222b'
+      ctx.fillStyle = ambiente.serra
       ctx.beginPath()
       ctx.moveTo(0, height * 0.34 + subida)
       for (let x = 0; x <= width; x += 55) {
@@ -703,7 +740,7 @@ function RaceCanvas({
       ctx.closePath()
       ctx.fill()
 
-      ctx.fillStyle = '#183824'
+      ctx.fillStyle = ambiente.chao
       ctx.fillRect(0, height * 0.38, width, height)
     }
 
@@ -718,10 +755,10 @@ function RaceCanvas({
         const near = roadGeometry(nearDistance)
         const stripe = Math.floor((race.progress + nearDistance) / 18) % 2 === 0
 
-        ctx.fillStyle = stripe ? '#244b2c' : '#214329'
+        ctx.fillStyle = stripe ? ambiente.gramaClara : ambiente.gramaEscura
         ctx.fillRect(0, far.y, width, Math.max(1, near.y - far.y + 1))
 
-        ctx.fillStyle = stripe ? '#30343b' : '#2b2f35'
+        ctx.fillStyle = stripe ? ambiente.asfaltoClaro : ambiente.asfaltoEscuro
         ctx.beginPath()
         ctx.moveTo(far.center - far.roadWidth / 2, far.y)
         ctx.lineTo(far.center + far.roadWidth / 2, far.y)
@@ -770,10 +807,10 @@ function RaceCanvas({
     /** Uma árvore, na família e no tom que o traçado sorteou para aquela vaga. */
     const desenharArvore = (x: number, chao: number, altura: number, tom: number, variante: number, perto: boolean) => {
       const tronco = Math.max(1, altura * 0.1)
-      ctx.fillStyle = TRONCOS[variante]
+      ctx.fillStyle = flora.troncos[variante]
       ctx.fillRect(x - tronco / 2, chao - altura * 0.46, tronco, altura * 0.46)
 
-      ctx.fillStyle = COPAS[tom]
+      ctx.fillStyle = flora.copas[tom]
       if (variante === 0) {
         // Conífera: duas saias sobrepostas, que é o que dá a silhueta de pinheiro.
         triangulo(x, chao - altura, altura * 0.3, altura * 0.44)
@@ -786,7 +823,7 @@ function RaceCanvas({
 
       // O realce vem de cima e da esquerda, como o resto da cena.
       if (!perto) return
-      ctx.fillStyle = COPAS_LUZ[tom]
+      ctx.fillStyle = flora.luz[tom]
       ctx.beginPath()
       ctx.ellipse(x - altura * 0.11, chao - altura * 0.8, altura * 0.14, altura * 0.16, 0, 0, Math.PI * 2)
       ctx.fill()
@@ -831,18 +868,18 @@ function RaceCanvas({
           if (!layout.scenery(indice, lado, cenario)) continue
           const x = projetado.center + lateralOffset(cenario.lateral, referencia)
           const tamanho = referencia * cenario.scale
-          const tom = Math.min(COPAS.length - 1, Math.floor(cenario.tone * COPAS.length))
+          const tom = Math.min(flora.copas.length - 1, Math.floor(cenario.tone * flora.copas.length))
 
           if (cenario.kind === 'tree') {
             desenharArvore(x, projetado.y, tamanho * 0.52, tom, cenario.variant, perto)
           } else if (cenario.kind === 'bush') {
             const raio = tamanho * 0.07
-            ctx.fillStyle = ARBUSTOS[cenario.variant]
+            ctx.fillStyle = flora.arbustos[cenario.variant]
             ctx.beginPath()
             ctx.ellipse(x, projetado.y - raio * 0.7, raio * 1.4, raio, 0, 0, Math.PI * 2)
             ctx.fill()
             if (perto) {
-              ctx.fillStyle = COPAS_LUZ[tom]
+              ctx.fillStyle = flora.luz[tom]
               ctx.beginPath()
               ctx.ellipse(x - raio * 0.4, projetado.y - raio, raio * 0.5, raio * 0.42, 0, 0, Math.PI * 2)
               ctx.fill()
@@ -872,7 +909,7 @@ function RaceCanvas({
             // Capim: talos afinando para a ponta, senão viram barras sólidas.
             const altura = Math.max(1, tamanho * 0.032)
             const talo = Math.max(1, altura * 0.16)
-            ctx.fillStyle = CAPINS[cenario.variant]
+            ctx.fillStyle = flora.capins[cenario.variant]
             for (let folha = -2; folha <= 2; folha += 1) {
               const base = x + folha * talo * 1.9
               const ponta = base + folha * talo * 0.9
@@ -1166,6 +1203,12 @@ function RaceCanvas({
           ctx.fillRect(finish.center - finish.roadWidth / 2 + i * cellWidth, finish.y, cellWidth + 1, 5)
         }
       }
+
+      // A bruma entra depois de tudo que tem profundidade — pista, cenário,
+      // obstáculos, fantasma e chegada — e antes do carro e dos efeitos dele,
+      // que estão sempre perto da câmera e continuam nítidos.
+      ctx.fillStyle = gradienteDaBruma()
+      ctx.fillRect(0, height * (HORIZON_RATIO - 0.1), width, height * 0.75 - height * HORIZON_RATIO)
 
       // Poeira, faíscas e rastro de boost passam por cima da pista e dos carros.
       for (const particula of efeitos) {
