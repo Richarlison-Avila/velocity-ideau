@@ -15,10 +15,15 @@ import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle
 import {
   CAR_SPRITE_REFERENCE_WIDTH,
   CAR_VIEW_DISTANCE,
+  firstRoadsideIndex,
   formatTime,
+  isTallMarker,
+  lastRoadsideIndex,
   lateralOffset,
   obstacles,
   roadProjection,
+  ROADSIDE_LATERAL,
+  ROADSIDE_SPACING,
   TRACK_LENGTH,
   trackCurve,
   VIEW_DISTANCE,
@@ -467,6 +472,35 @@ function RaceCanvas({
     }
 
     /**
+     * Marcadores das laterais. São a referência que dá velocidade à cena: por
+     * estarem longe do centro, varrem a tela muito mais rápido do que a pista
+     * ao longe. O laço vai do mais distante para o mais próximo e não monta
+     * lista nenhuma, para não alocar a cada quadro.
+     */
+    const drawRoadside = () => {
+      const ultimo = lastRoadsideIndex(race.progress)
+      const primeiro = firstRoadsideIndex(race.progress)
+      for (let indice = ultimo; indice >= primeiro; indice -= 1) {
+        const ahead = indice * ROADSIDE_SPACING - race.progress
+        const projetado = roadGeometry(ahead)
+        const alto = isTallMarker(indice)
+        const altura = projetado.roadWidth * (alto ? 0.2 : 0.115)
+        const largura = Math.max(1, projetado.roadWidth * 0.013)
+
+        for (const lado of [-1, 1]) {
+          const x = projetado.center + lateralOffset(ROADSIDE_LATERAL * lado, projetado.roadWidth)
+          // Sombra curta no chão ancora o poste na grama.
+          ctx.fillStyle = 'rgba(0,0,0,.25)'
+          ctx.fillRect(x - largura, projetado.y, largura * 2, Math.max(1, largura * 0.7))
+          ctx.fillStyle = '#46606c'
+          ctx.fillRect(x - largura / 2, projetado.y - altura, largura, altura)
+          ctx.fillStyle = alto ? '#f2b52e' : '#c9d6dc'
+          ctx.fillRect(x - largura, projetado.y - altura, largura * 2, Math.max(1, altura * 0.22))
+        }
+      }
+    }
+
+    /**
      * Desenha o fantasma na mesma projeção usada pela pista. O fator 0.36
      * faz a faixa do rival coincidir com a do jogador quando estão lado a lado.
      */
@@ -623,6 +657,7 @@ function RaceCanvas({
 
       drawBackdrop()
       drawRoad()
+      drawRoadside()
 
       // As marcas de pneu ficam no asfalto, abaixo de tudo o que corre na pista.
       effects.update(Math.min(Math.max(0, dt), MAX_STEP_SECONDS), race.progress)

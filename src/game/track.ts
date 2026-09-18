@@ -99,6 +99,34 @@ export const OFF_ROAD_LIMIT = ROAD_EDGE - CAR_HALF_LATERAL
 /** Até onde o carro chega na grama antes de o limite físico segurá-lo. */
 export const LATERAL_LIMIT = ROAD_EDGE + 0.16
 
+/**
+ * Marcadores na lateral da pista.
+ *
+ * São a principal referência de velocidade: passam perto da câmera e varrem a
+ * tela muito mais rápido que a pista ao longe. Ficam em distâncias absolutas
+ * e múltiplas do espaçamento, então nunca piscam nem mudam de lugar entre um
+ * quadro e outro. O render percorre os índices direto, sem montar lista.
+ */
+export const ROADSIDE_SPACING = 20
+/** Ficam do lado de fora do asfalto, sem invadir a faixa jogável. */
+export const ROADSIDE_LATERAL = ROAD_EDGE + 0.14
+/** Um marcador alto a cada tantos, para dar ritmo à contagem. */
+export const ROADSIDE_TALL_EVERY = 5
+
+/** Primeiro marcador ainda à frente da câmera. */
+export function firstRoadsideIndex(progress: number) {
+  return Math.ceil(progress / ROADSIDE_SPACING)
+}
+
+/** Último marcador dentro do campo de visão. */
+export function lastRoadsideIndex(progress: number) {
+  return Math.floor((progress + VIEW_DISTANCE) / ROADSIDE_SPACING)
+}
+
+export function isTallMarker(index: number) {
+  return index % ROADSIDE_TALL_EVERY === 0
+}
+
 export function trackCurve(distance: number) {
   return (
     Math.sin(distance / 310) * 0.46 +

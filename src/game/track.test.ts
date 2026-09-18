@@ -3,11 +3,16 @@ import {
   CAR_HALF_LATERAL,
   CAR_SCREEN_RATIO,
   CAR_VIEW_DISTANCE,
+  firstRoadsideIndex,
   formatTime,
+  isTallMarker,
   LATERAL_LIMIT,
+  lastRoadsideIndex,
   lateralOffset,
   OFF_ROAD_LIMIT,
   roadProjection,
+  ROADSIDE_LATERAL,
+  ROADSIDE_SPACING,
   ROAD_EDGE,
   speedForState,
   VIEW_DISTANCE,
@@ -84,5 +89,57 @@ describe('alinhamento entre o que o jogo desenha e o que ele cobra', () => {
   it('a faixa jogável continua acomodando todos os obstáculos', () => {
     expect(OFF_ROAD_LIMIT).toBeGreaterThan(0.6)
     expect(LATERAL_LIMIT).toBeGreaterThan(ROAD_EDGE)
+  })
+})
+
+describe('marcadores laterais', () => {
+  it('ficam fora do asfalto, sem invadir a faixa jogável', () => {
+    expect(ROADSIDE_LATERAL).toBeGreaterThan(ROAD_EDGE)
+    expect(ROADSIDE_LATERAL).toBeGreaterThan(LATERAL_LIMIT - 0.1)
+  })
+
+  it('só considera o que está à frente e dentro do campo de visão', () => {
+    const progresso = 1_234
+    const primeiro = firstRoadsideIndex(progresso)
+    const ultimo = lastRoadsideIndex(progresso)
+
+    expect(primeiro * ROADSIDE_SPACING).toBeGreaterThanOrEqual(progresso)
+    expect(ultimo * ROADSIDE_SPACING).toBeLessThanOrEqual(progresso + VIEW_DISTANCE)
+    expect((primeiro - 1) * ROADSIDE_SPACING).toBeLessThan(progresso)
+  })
+
+  it('mantém uma quantidade estável na tela', () => {
+    for (let progresso = 0; progresso < 4_800; progresso += 37) {
+      const quantos = lastRoadsideIndex(progresso) - firstRoadsideIndex(progresso) + 1
+      expect(quantos).toBeGreaterThanOrEqual(Math.floor(VIEW_DISTANCE / ROADSIDE_SPACING))
+      expect(quantos).toBeLessThanOrEqual(Math.ceil(VIEW_DISTANCE / ROADSIDE_SPACING) + 1)
+    }
+  })
+
+  it('um marcador não muda de lugar nem de tipo entre quadros', () => {
+    // O mesmo índice sempre descreve a mesma coisa, venha de onde vier.
+    const indice = 61
+    expect(isTallMarker(indice)).toBe(isTallMarker(indice))
+    expect(indice * ROADSIDE_SPACING).toBe(1_220)
+
+    // E ele continua sendo listado enquanto o carro se aproxima.
+    for (const progresso of [1_000, 1_100, 1_200, 1_219]) {
+      expect(firstRoadsideIndex(progresso)).toBeLessThanOrEqual(indice)
+      expect(lastRoadsideIndex(progresso)).toBeGreaterThanOrEqual(indice)
+    }
+    // Depois de passar, some.
+    expect(firstRoadsideIndex(1_221)).toBeGreaterThan(indice)
+  })
+
+  it('o marcador alto aparece no ritmo combinado', () => {
+    const altos = []
+    for (let i = 0; i < 20; i += 1) if (isTallMarker(i)) altos.push(i)
+    expect(altos).toEqual([0, 5, 10, 15])
+  })
+
+  it('passam mais vezes por segundo do que as faixas da pista', () => {
+    const metrosPorSegundo = speedForState(false, 0, false) / 3.6
+    const marcadoresPorSegundo = (metrosPorSegundo / ROADSIDE_SPACING) * 2 // dois lados
+    expect(marcadoresPorSegundo).toBeGreaterThan(metrosPorSegundo / 18)
   })
 })
