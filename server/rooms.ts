@@ -41,6 +41,13 @@ export type PublicRoom = {
    * próprias estaria correndo outra corrida.
    */
   difficulty: Difficulty
+  /**
+   * Quem criou a sala e decide a dificuldade.
+   *
+   * Vai para os clientes porque a interface precisa saber de quem é a
+   * escolha — mostrar um seletor a quem não manda nele seria mentir.
+   */
+  hostId: string | null
 }
 
 export type RivalState = 'racing' | 'finished'
@@ -77,6 +84,8 @@ type Room = {
   trackSeed: number
   /** Dificuldade escolhida no lobby, congelada quando a contagem começa. */
   difficulty: Difficulty
+  /** Quem criou a sala. Passa adiante se ele sair. */
+  hostId: string | null
   /** Resultado oficial da última corrida, idêntico para os dois pilotos. */
   outcome: RaceOutcome | null
 }
@@ -89,7 +98,7 @@ export type RoomUpdate = {
 }
 
 export class RoomError extends Error {
-  constructor(public code: 'ROOM_NOT_FOUND' | 'ROOM_FULL' | 'NOT_IN_ROOM', message: string) {
+  constructor(public code: 'ROOM_NOT_FOUND' | 'ROOM_FULL' | 'NOT_IN_ROOM' | 'NOT_HOST', message: string) {
     super(message)
   }
 }
@@ -203,6 +212,7 @@ export class RoomStore {
       startAt: null,
       trackSeed: this.nextSeed(),
       difficulty: 'normal',
+      hostId: playerId,
       outcome: null,
       players: [this.createPlayer(playerId, socketId, rawName)],
     })
@@ -222,6 +232,7 @@ export class RoomStore {
 
     if (room.players.length >= 2) throw new RoomError('ROOM_FULL', 'Esta sala já está cheia.')
     room.players.push(this.createPlayer(playerId, socketId, rawName))
+    this.ensureHost(room)
     return this.toPublic(room)
   }
 
@@ -251,6 +262,11 @@ export class RoomStore {
     if (!room.players.some((candidate) => candidate.id === playerId)) {
       throw new RoomError('NOT_IN_ROOM', 'Você não está nesta sala.')
     }
+    // Só quem criou a sala escolhe. Com os dois podendo trocar, a decisão
+    // viraria um cabo de guerra e ninguém saberia em que prova vai largar.
+    if (room.hostId !== playerId) {
+      throw new RoomError('NOT_HOST', 'Só quem criou a sala escolhe a dificuldade.')
+    }
     if (room.state === 'countdown' || room.state === 'racing') return this.toPublic(room)
 
     const escolhida = toDifficulty(difficulty)
@@ -260,6 +276,11 @@ export class RoomStore {
     room.difficulty = escolhida
     for (const candidate of room.players) candidate.ready = false
     return this.toPublic(room)
+  }
+
+  /** Quem manda na sala agora. */
+  hostOf(codeInput: string) {
+    return this.rooms.get(this.normalize(codeInput))?.hostId ?? null
   }
 
   /** Dificuldade oficial da sala, para o servidor validar a chegada. */
@@ -494,6 +515,7 @@ export class RoomStore {
       this.rooms.delete(code)
       return { code, room: null, cancelledCountdown }
     }
+    this.ensureHost(room)
     if (room.state !== 'idle') this.resetRace(room)
     return { code, room: this.toPublic(room), cancelledCountdown }
   }
@@ -542,6 +564,18 @@ export class RoomStore {
     }
   }
 
+  /**
+   * Garante que a sala sempre tenha um anfitrião presente.
+   *
+   * Se o criador sai de vez, quem ficou assume — sem isso a dificuldade
+   * ficaria trancada no valor que ele deixou. Uma queda de conexão não
+   * transfere nada: ele continua dono enquanto a janela de retorno correr.
+   */
+  private ensureHost(room: Room) {
+    if (room.players.some((player) => player.id === room.hostId)) return
+    room.hostId = room.players[0]?.id ?? null
+  }
+
   private everyoneReady(room: Room) {
     return (
       room.players.length === 2 &&
@@ -560,6 +594,8 @@ export class RoomStore {
       startAt: null,
       trackSeed: this.nextSeed(),
       difficulty: 'normal',
+      // A sala de demonstração nasce vazia: o primeiro a entrar é o anfitrião.
+      hostId: null,
       outcome: null,
       players: [],
     }
@@ -632,6 +668,7 @@ export class RoomStore {
       countdownMs: this.countdownMs,
       trackSeed: room.trackSeed,
       difficulty: room.difficulty,
+      hostId: room.hostId,
     }
   }
 }

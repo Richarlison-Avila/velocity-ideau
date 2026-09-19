@@ -25,6 +25,8 @@ export type LobbyRoom = {
   trackSeed: number
   /** Dificuldade oficial da sala, igual para os dois pilotos. */
   difficulty: Difficulty
+  /** Quem criou a sala. Só ele escolhe a dificuldade. */
+  hostId: string | null
 }
 
 export type RoomResponse = {

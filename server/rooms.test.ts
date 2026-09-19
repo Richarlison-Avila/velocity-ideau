@@ -658,7 +658,7 @@ describe('dificuldade oficial da sala', () => {
   it('a escolha vale para os dois pilotos', () => {
     const rooms = new RoomStore()
     const code = roomWithTwoPilots(rooms)
-    const depois = rooms.setDifficulty(code, 'b', 'profissional')
+    const depois = rooms.setDifficulty(code, 'a', 'profissional')
     expect(depois.difficulty).toBe('profissional')
     // Qualquer leitura posterior devolve o mesmo: é estado da sala, não do piloto.
     expect(rooms.get(code)?.difficulty).toBe('profissional')
@@ -702,15 +702,69 @@ describe('dificuldade oficial da sala', () => {
     rooms.setReady(code, 'b', true)
     rooms.scheduleStart(code)
 
-    expect(rooms.setDifficulty(code, 'b', 'profissional').difficulty).toBe('dificil')
+    expect(rooms.setDifficulty(code, 'a', 'profissional').difficulty).toBe('dificil')
     rooms.beginRace(code)
-    expect(rooms.setDifficulty(code, 'b', 'profissional').difficulty).toBe('dificil')
+    expect(rooms.setDifficulty(code, 'a', 'profissional').difficulty).toBe('dificil')
   })
 
   it('recusa quem não está na sala', () => {
     const rooms = new RoomStore()
     const code = roomWithTwoPilots(rooms)
     expect(() => rooms.setDifficulty(code, 'intruso', 'profissional')).toThrow(RoomError)
+  })
+
+  it('só quem criou a sala escolhe', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    expect(rooms.hostOf(code)).toBe('a')
+
+    // O convidado está na sala, mas a decisão não é dele.
+    expect(() => rooms.setDifficulty(code, 'b', 'profissional')).toThrow(RoomError)
+    expect(rooms.difficultyOf(code)).toBe('normal')
+
+    expect(rooms.setDifficulty(code, 'a', 'profissional').difficulty).toBe('profissional')
+  })
+
+  it('quem fica assume quando o anfitrião sai de vez', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.leaveBySocket('socket-a')
+
+    // Sem isso a dificuldade ficaria trancada no valor que ele deixou.
+    expect(rooms.hostOf(code)).toBe('b')
+    expect(rooms.setDifficulty(code, 'b', 'dificil').difficulty).toBe('dificil')
+  })
+
+  it('uma queda de conexão não transfere a sala', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.markDisconnected('socket-a')
+
+    // Ele continua dono enquanto a janela de retorno corre.
+    expect(rooms.hostOf(code)).toBe('a')
+    expect(() => rooms.setDifficulty(code, 'b', 'profissional')).toThrow(RoomError)
+
+    // E perde a sala só quando é removido de fato.
+    rooms.dropIfStillDisconnected(code, 'a')
+    expect(rooms.hostOf(code)).toBe('b')
+  })
+
+  it('na sala de demonstração o primeiro a entrar é o anfitrião', () => {
+    const rooms = new RoomStore({ openRooms: ['DEMO1'] })
+    rooms.join('DEMO1', 'socket-a', 'a', 'Ana')
+    rooms.join('DEMO1', 'socket-b', 'b', 'Beto')
+    expect(rooms.hostOf('DEMO1')).toBe('a')
+    expect(rooms.get('DEMO1')?.hostId).toBe('a')
+  })
+
+  it('quem volta depois de sair não retoma a sala', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.leaveBySocket('socket-a')
+    expect(rooms.hostOf(code)).toBe('b')
+
+    rooms.join(code, 'socket-a2', 'a', 'Ana')
+    expect(rooms.hostOf(code)).toBe('b')
   })
 
   it('o piso da chegada acompanha o nível da sala', () => {

@@ -136,7 +136,7 @@ describe('largada sincronizada pelo socket', () => {
     expect(paraAna.difficulty).toBe(server.rooms.get(code)?.difficulty)
   })
 
-  it('a dificuldade escolhida por um piloto chega ao outro', async () => {
+  it('a dificuldade escolhida pelo anfitrião chega ao outro', async () => {
     const { ana, beto, code } = await gridCompleto()
     const recebida = waitForRoom(beto, (room) => room.difficulty === 'profissional')
 
@@ -151,6 +151,21 @@ describe('largada sincronizada pelo socket', () => {
     expect(server.rooms.difficultyOf(code)).toBe('profissional')
   })
 
+  it('o convidado não troca a dificuldade da sala', async () => {
+    const { beto, code } = await gridCompleto()
+    expect(server.rooms.hostOf(code)).toBe('ana')
+
+    const resposta = await ask<RoomAck>(beto, 'room:set-difficulty', {
+      code,
+      playerId: 'beto',
+      difficulty: 'profissional',
+    })
+
+    expect(resposta.ok).toBe(false)
+    expect(resposta.error).toContain('criou a sala')
+    expect(server.rooms.difficultyOf(code)).toBe('normal')
+  })
+
   it('trocar de dificuldade desfaz as confirmações dos dois', async () => {
     const { ana, beto, code } = await gridCompleto()
     ana.emit('room:set-ready', { code, playerId: 'ana', ready: true })
@@ -158,7 +173,7 @@ describe('largada sincronizada pelo socket', () => {
     await waitForRoom(ana, (room) => room.status === 'countdown')
 
     // Com a largada marcada, a escolha não muda mais a prova.
-    await ask<RoomAck>(beto, 'room:set-difficulty', { code, playerId: 'beto', difficulty: 'dificil' })
+    await ask<RoomAck>(ana, 'room:set-difficulty', { code, playerId: 'ana', difficulty: 'dificil' })
     expect(server.rooms.difficultyOf(code)).toBe('normal')
   })
 

@@ -19,6 +19,7 @@ type LobbyProps = {
 
 function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeave, onError }: LobbyProps) {
   const me = room.players.find((player) => player.id === playerId)
+  const souAnfitriao = room.hostId === playerId
   const rival = room.players.find((player) => player.id !== playerId)
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${room.code}`
   const [copied, setCopied] = useState(false)
@@ -43,7 +44,7 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
    * pronto dos dois, e por isso o botão some depois que a contagem começa.
    */
   const escolherDificuldade = (difficulty: Difficulty) => {
-    if (difficulty === room.difficulty) return
+    if (difficulty === room.difficulty || !souAnfitriao) return
     socket.emit('room:set-difficulty', { code: room.code, playerId, difficulty }, (response: RoomResponse) => {
       if (response.ok && response.room) onRoomChange(response.room)
       else onError(response.error ?? 'Não foi possível trocar a dificuldade.')
@@ -131,7 +132,12 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                   <div className={`driver-slot ${player ? 'occupied' : ''} ${offline ? 'offline' : ''}`} key={position}>
                     <b>0{position + 1}</b>
                     <div>
-                      <span>{player ? (player.id === playerId ? 'VOCÊ' : 'RIVAL') : 'VAGA LIVRE'}</span>
+                      <span>
+                        {player ? (player.id === playerId ? 'VOCÊ' : 'RIVAL') : 'VAGA LIVRE'}
+                        {/* A regra da dificuldade fica visível: sem isso o
+                            seletor desligado do outro lado parece defeito. */}
+                        {player && player.id === room.hostId && <b className="host-tag">ANFITRIÃO</b>}
+                      </span>
                       <strong>{player?.name ?? 'Aguardando piloto'}</strong>
                     </div>
                     <i className={player?.ready ? 'ready' : ''}>
@@ -151,14 +157,17 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                     type="button"
                     className={room.difficulty === nivel ? 'on' : ''}
                     aria-pressed={room.difficulty === nivel}
-                    disabled={room.status === 'countdown' || connection !== 'connected'}
+                    disabled={!souAnfitriao || room.status === 'countdown' || connection !== 'connected'}
                     onClick={() => escolherDificuldade(nivel)}
                   >
                     {DIFFICULTY_LABELS[nivel]}
                   </button>
                 ))}
               </div>
-              <em>{DIFFICULTY_NOTES[room.difficulty]}</em>
+              <em>
+                {DIFFICULTY_NOTES[room.difficulty]}
+                {!souAnfitriao && ' Quem criou a sala escolhe.'}
+              </em>
             </div>
 
             {room.status === 'countdown' && remaining !== null ? (
