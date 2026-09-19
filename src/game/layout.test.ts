@@ -18,7 +18,14 @@ import {
   SLOPE_SEGMENT,
   type SceneryItem,
 } from './layout'
-import { roadProjection, ROAD_EDGE, SLOPE_RISE_SCALE, TRACK_LENGTH, VIEW_DISTANCE } from './track'
+import {
+  CAMERA_DEPTH,
+  roadProjection,
+  ROAD_EDGE,
+  SLOPE_RISE_SCALE,
+  TRACK_LENGTH,
+  VIEW_DISTANCE,
+} from './track'
 
 /** Sementes variadas, para nenhuma conclusão depender de um sorteio feliz. */
 const SEMENTES = [0, 1, 7, 42, 1_337, 99_991, 0x7fffffff, 0xdeadbeef]
@@ -373,47 +380,48 @@ describe('relevo', () => {
   })
 
   /**
-   * O invariante que sustenta todo o desenho do relevo.
+   * O invariante que sustenta o desenho do relevo.
    *
-   * Se a altura de tela deixar de cair de forma monótona com a distância, a
-   * pista se dobra sobre si mesma numa lomba: o trecho de trás da subida
-   * aparece acima da crista, e aí seria preciso recortar geometria escondida
-   * — árvores incluídas, que passariam a flutuar no céu. É este teste que
-   * permite `drawRoad` continuar desenhando do fundo para a frente sem
-   * recorte nenhum, e é ele que fixa o par SLOPE_LIMIT / SLOPE_RISE_SCALE.
+   * A pista *pode* se dobrar sobre si mesma numa lomba — com a perspectiva
+   * de verdade isso é inevitável se o relevo tiver amplitude. Quem trata é o
+   * recorte no desenho, que descarta a fatia caída atrás da crista. O que não
+   * pode acontecer é a crista engolir a pista: se metade das fatias sumisse,
+   * o piloto perderia de vista os obstáculos.
+   *
+   * Este teste refaz exatamente o laço do render e mede o quanto some.
    */
-  it('a pista nunca se dobra sobre si mesma', () => {
-    const telas: Array<[number, number]> = [
-      [360, 640],
-      [800, 450],
-      [1280, 720],
-      [375, 812],
-    ]
+  it('uma lomba nunca engole a pista', () => {
+    const FATIAS = 84
+    const escalaMinima = CAMERA_DEPTH / (CAMERA_DEPTH + VIEW_DISTANCE)
+    const distanciaDaFatia = (fracao: number) =>
+      CAMERA_DEPTH * (1 / (1 - fracao * (1 - escalaMinima)) - 1)
+
+    const telas = [640, 720, 1015]
+    let pior = 0
 
     for (const seed of SEMENTES) {
       const layout = createTrackLayout(seed)
-      for (const [largura, altura] of telas) {
-        for (let progresso = 0; progresso <= TRACK_LENGTH; progresso += 231) {
+      for (const altura of telas) {
+        for (let progresso = 0; progresso <= TRACK_LENGTH; progresso += 97) {
           const alturaAqui = layout.elevation(progresso)
-          let anterior = Infinity
-          for (let i = 0; i <= 84; i += 1) {
-            const d = (VIEW_DISTANCE * i) / 84
-            const { y, perspective } = roadProjection(d, largura, altura)
-            const rise = (layout.elevation(progresso + d) - alturaAqui) * altura * SLOPE_RISE_SCALE
-            const telaY = y - rise * perspective
-            if (anterior !== Infinity) expect(telaY).toBeLessThan(anterior)
-            anterior = telaY
+          const projetar = (d: number) => {
+            const { y, perspective } = roadProjection(d, 1_000, altura)
+            return y - (layout.elevation(progresso + d) - alturaAqui) * altura * SLOPE_RISE_SCALE * perspective
           }
+
+          let maxy = projetar(0)
+          let escondidas = 0
+          for (let j = 1; j <= FATIAS; j += 1) {
+            const y = projetar(distanciaDaFatia(j / FATIAS))
+            if (y >= maxy) escondidas += 1
+            else maxy = y
+          }
+          pior = Math.max(pior, escondidas / FATIAS)
         }
       }
     }
-  })
 
-  it('a escala de desenho respeita a folga que garante o invariante', () => {
-    // O termo perigoso da derivada é proporcional a escala × desnível, e
-    // precisa ficar abaixo da queda total da projeção, que é 0,63.
-    const desnivelMaximo = SLOPE_LIMIT * VIEW_DISTANCE
-    expect(SLOPE_RISE_SCALE * desnivelMaximo).toBeLessThan(0.63)
+    expect(pior).toBeLessThan(0.15)
   })
 })
 

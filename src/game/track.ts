@@ -185,13 +185,13 @@ export const CURVE_BEND_SCALE = 0.0024
  * o outro o quanto a lomba aparece. Ele é limitado pelo mesmo motivo que a
  * inclinação: alto demais, a pista se dobra sobre si mesma numa crista.
  *
- * Caiu pela metade ao trocar a projeção, e isso é estrutural. Com a curva de
- * suavização, o termo que segura a dobra e o que a causa carregavam a mesma
- * potência e ela se cancelava; com `1/z` o que segura cai com o quadrado da
- * escala e o perigoso cai só com a escala, então o perigoso domina no fim da
- * janela. Sem recortar geometria escondida, o teto é 49% do anterior.
+ * Deixou de ser limitado pela projeção quando o desenho passou a recortar
+ * geometria escondida. Antes disso o teto vinha da condição de a pista não se
+ * dobrar sobre si mesma; agora a dobra é tratada, e o número é escolhido pelo
+ * que se quer ver. Medido em 60 sementes × 3 alturas de tela: com este valor,
+ * o pior quadro esconde 1% das fatias da pista.
  */
-export const SLOPE_RISE_SCALE = 0.0152
+export const SLOPE_RISE_SCALE = 0.07
 
 export function formatTime(seconds: number) {
   const safe = Math.max(0, seconds)

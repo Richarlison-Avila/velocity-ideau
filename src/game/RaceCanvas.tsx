@@ -804,53 +804,90 @@ function RaceCanvas({
       return CAMERA_DEPTH * (1 / escala - 1)
     }
 
+    /**
+     * Quantas fatias a pista tem, e quais delas o recorte deixou visíveis.
+     *
+     * O vetor é reaproveitado entre quadros: ele é consultado pelo cenário,
+     * pelos obstáculos e pelo fantasma para saber se aquela profundidade está
+     * atrás de uma lomba.
+     */
+    const FATIAS = 84
+    const fatiaVisivel = new Uint8Array(FATIAS + 1)
+
+    /** Índice da fatia em que uma distância cai. */
+    const fatiaDe = (distanceAhead: number) => {
+      const escala = CAMERA_DEPTH / (CAMERA_DEPTH + Math.max(0, distanceAhead))
+      const fracao = (1 - escala) / (1 - escalaMinima)
+      return Math.min(FATIAS, Math.max(0, Math.round(fracao * FATIAS)))
+    }
+
+    /** Verdadeiro quando aquela profundidade está escondida atrás de uma lomba. */
+    const atrasDaLomba = (distanceAhead: number) => fatiaVisivel[fatiaDe(distanceAhead)] === 0
+
+    /** Faixas do tracejado central, em constante para o laço não alocar. */
+    const FAIXAS = [-0.33, 0.33]
+
     const drawRoad = () => {
-      const slices = 84
-      // A borda próxima de uma fatia é a borda distante da seguinte, então a
-      // geometria é calculada uma vez e reaproveitada: metade das contas de
-      // seno da pista desaparece.
-      let far = roadGeometry(distanciaDaFatia(1))
-      for (let i = 0; i < slices; i += 1) {
-        const nearDistance = distanciaDaFatia((slices - i - 1) / slices)
-        const near = roadGeometry(nearDistance)
+      fatiaVisivel.fill(0)
+      fatiaVisivel[0] = 1
+
+      // Do perto para o longe, guardando o ponto mais alto já desenhado. Uma
+      // fatia que cairia abaixo dele está atrás de uma lomba e some. Sem esse
+      // recorte a pista se desenha sobre si mesma na crista — e é ele que
+      // permite ao relevo ter amplitude de verdade, em vez de ficar limitado
+      // ao que a projeção aguenta sem dobrar.
+      //
+      // Como cada faixa ocupa a fatia entre a última desenhada e esta, e o
+      // recorte garante que elas nunca se sobrepõem, desenhar do perto para o
+      // longe não pinta uma por cima da outra.
+      let perto = roadGeometry(0)
+      let maxy = perto.y
+
+      for (let j = 1; j <= FATIAS; j += 1) {
+        const distancia = distanciaDaFatia(j / FATIAS)
+        const longe = roadGeometry(distancia)
+        if (longe.y >= maxy) continue
+        fatiaVisivel[j] = 1
+
         // A cada 12 m, e não 18: são 5,8 faixas por segundo em cruzeiro em
         // vez de 3,9. É a referência mais barata que existe para o olho medir
         // o avanço, e ela decide também o zebrado e o tracejado das pistas.
-        const stripe = Math.floor((race.progress + nearDistance) / 12) % 2 === 0
+        const stripe = Math.floor((race.progress + distancia) / 12) % 2 === 0
 
         ctx.fillStyle = stripe ? ambiente.gramaClara : ambiente.gramaEscura
-        ctx.fillRect(0, far.y, width, Math.max(1, near.y - far.y + 1))
+        ctx.fillRect(0, longe.y, width, Math.max(1, perto.y - longe.y + 1))
 
         ctx.fillStyle = stripe ? ambiente.asfaltoClaro : ambiente.asfaltoEscuro
         ctx.beginPath()
-        ctx.moveTo(far.center - far.roadWidth / 2, far.y)
-        ctx.lineTo(far.center + far.roadWidth / 2, far.y)
-        ctx.lineTo(near.center + near.roadWidth / 2, near.y)
-        ctx.lineTo(near.center - near.roadWidth / 2, near.y)
+        ctx.moveTo(longe.center - longe.roadWidth / 2, longe.y)
+        ctx.lineTo(longe.center + longe.roadWidth / 2, longe.y)
+        ctx.lineTo(perto.center + perto.roadWidth / 2, perto.y)
+        ctx.lineTo(perto.center - perto.roadWidth / 2, perto.y)
         ctx.closePath()
         ctx.fill()
 
         ctx.strokeStyle = stripe ? '#f6f7ee' : '#e84037'
-        ctx.lineWidth = Math.max(1, near.roadWidth * 0.018)
+        ctx.lineWidth = Math.max(1, perto.roadWidth * 0.018)
         ctx.beginPath()
-        ctx.moveTo(far.center - far.roadWidth / 2, far.y)
-        ctx.lineTo(near.center - near.roadWidth / 2, near.y)
-        ctx.moveTo(far.center + far.roadWidth / 2, far.y)
-        ctx.lineTo(near.center + near.roadWidth / 2, near.y)
+        ctx.moveTo(longe.center - longe.roadWidth / 2, longe.y)
+        ctx.lineTo(perto.center - perto.roadWidth / 2, perto.y)
+        ctx.moveTo(longe.center + longe.roadWidth / 2, longe.y)
+        ctx.lineTo(perto.center + perto.roadWidth / 2, perto.y)
         ctx.stroke()
 
         if (stripe) {
           ctx.strokeStyle = 'rgba(255,255,255,.5)'
-          ctx.lineWidth = Math.max(1, near.roadWidth * 0.008)
-          for (const lane of [-0.33, 0.33]) {
+          ctx.lineWidth = Math.max(1, perto.roadWidth * 0.008)
+          for (const lane of FAIXAS) {
             ctx.beginPath()
-            ctx.moveTo(far.center + far.roadWidth * lane, far.y)
-            ctx.lineTo(near.center + near.roadWidth * lane, near.y)
+            ctx.moveTo(longe.center + longe.roadWidth * lane, longe.y)
+            ctx.lineTo(perto.center + perto.roadWidth * lane, perto.y)
             ctx.stroke()
           }
         }
 
-        far = near
+        maxy = longe.y
+        perto = longe
       }
     }
 
@@ -918,6 +955,9 @@ function RaceCanvas({
         const referencia = projetado.roadWidth
         // Longe demais para render qualquer coisa legível: sairia um pixel sujo.
         if (referencia < 6) continue
+        // Atrás de uma lomba não há chão para apoiar nada, e um objeto
+        // desenhado aqui flutuaria no céu acima da crista.
+        if (atrasDaLomba(ahead)) continue
 
         // Névoa: o que está longe se dissolve no horizonte em vez de aparecer
         // nítido e minúsculo, que é justamente o que denuncia a projeção falsa.
@@ -1237,7 +1277,8 @@ function RaceCanvas({
       // Posição do fantasma neste quadro, já interpolada.
       const rivalSample = ghostRef.current?.sample(serverNow) ?? null
       const rivalAhead = rivalSample ? rivalSample.progress - race.progress : 0
-      const rivalVisible = Boolean(rivalSample) && rivalAhead > 0 && rivalAhead < VIEW_DISTANCE
+      const rivalVisible =
+        Boolean(rivalSample) && rivalAhead > 0 && rivalAhead < VIEW_DISTANCE && !atrasDaLomba(rivalAhead)
 
       // Os obstáculos já estão em ordem de distância, então basta percorrer do
       // fim para o começo — do mais distante para o mais próximo — sem montar
@@ -1247,6 +1288,7 @@ function RaceCanvas({
         const obstaculo = obstacles[indice]
         const ahead = obstaculo.distance - race.progress
         if (ahead <= 0 || ahead >= VIEW_DISTANCE) continue
+        if (atrasDaLomba(ahead)) continue
 
         if (!ghostDrawn && rivalAhead > ahead) {
           drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt)
@@ -1269,7 +1311,7 @@ function RaceCanvas({
         })
       }
 
-      if (TRACK_LENGTH - race.progress < VIEW_DISTANCE) {
+      if (TRACK_LENGTH - race.progress < VIEW_DISTANCE && !atrasDaLomba(TRACK_LENGTH - race.progress)) {
         const finish = roadGeometry(TRACK_LENGTH - race.progress)
         const cells = 12
         for (let i = 0; i < cells; i += 1) {
