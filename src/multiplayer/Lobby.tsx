@@ -1,5 +1,7 @@
 import { QRCodeSVG } from 'qrcode.react'
 import { useEffect, useState } from 'react'
+import { carById } from '../game/cars'
+import { carImageUrl } from '../game/carSprites'
 import { countdownAt } from '../game/countdown'
 import { DIFFICULTIES, DIFFICULTY_LABELS, DIFFICULTY_NOTES, type Difficulty } from '../game/rules'
 import { serverClock, type ClockState } from './clock'
@@ -15,9 +17,11 @@ type LobbyProps = {
   onRoomChange: (room: LobbyRoom) => void
   onLeave: () => void
   onError: (message: string) => void
+  /** Abre a garagem para trocar de carro sem sair da sala. */
+  onChangeCar: () => void
 }
 
-function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeave, onError }: LobbyProps) {
+function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeave, onError, onChangeCar }: LobbyProps) {
   const me = room.players.find((player) => player.id === playerId)
   const souAnfitriao = room.hostId === playerId
   const rival = room.players.find((player) => player.id !== playerId)
@@ -128,18 +132,39 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
               {[0, 1].map((position) => {
                 const player = room.players[position]
                 const offline = player && !player.connected
+                const carro = player ? carById(player.car) : null
+                const souEu = player?.id === playerId
                 return (
                   <div className={`driver-slot ${player ? 'occupied' : ''} ${offline ? 'offline' : ''}`} key={position}>
                     <b>0{position + 1}</b>
+                    {player ? <img className="slot-car" src={carImageUrl(player.car)} alt="" /> : <span />}
                     <div>
                       <span>
-                        {player ? (player.id === playerId ? 'VOCÊ' : 'RIVAL') : 'VAGA LIVRE'}
+                        {player ? (souEu ? 'VOCÊ' : 'RIVAL') : 'VAGA LIVRE'}
                         {/* A regra da dificuldade fica visível: sem isso o
                             seletor desligado do outro lado parece defeito. */}
                         {player && player.id === room.hostId && <b className="host-tag">ANFITRIÃO</b>}
                       </span>
                       <strong>{player?.name ?? 'Aguardando piloto'}</strong>
+                      {carro && (
+                        <em style={{ color: carro.accent }}>
+                          {carro.driver} · {carro.team} #{carro.number}
+                        </em>
+                      )}
                     </div>
+                    {souEu ? (
+                      // Da contagem em diante o carro fica travado: o rival já o viu no grid.
+                      <button
+                        type="button"
+                        className="slot-change"
+                        disabled={room.status === 'countdown' || connection !== 'connected'}
+                        onClick={onChangeCar}
+                      >
+                        TROCAR
+                      </button>
+                    ) : (
+                      <span className="slot-spacer" />
+                    )}
                     <i className={player?.ready ? 'ready' : ''}>
                       {offline ? 'SEM SINAL' : player?.ready ? 'PRONTO' : player ? 'NO GRID' : '—'}
                     </i>

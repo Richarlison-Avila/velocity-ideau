@@ -166,6 +166,21 @@ describe('largada sincronizada pelo socket', () => {
     expect(server.rooms.difficultyOf(code)).toBe('normal')
   })
 
+  it('o carro de cada piloto chega ao rival, inclusive a troca', async () => {
+    const ana = await connect()
+    const beto = await connect()
+    const criada = await ask<RoomAck>(ana, 'room:create', { name: 'Ana', playerId: 'ana', car: 'senna' })
+    const code = criada.room!.code
+    const entrou = await ask<RoomAck>(beto, 'room:join', { code, name: 'Beto', playerId: 'beto', car: 'verstappen' })
+    // É com este carro que cada um desenha o fantasma do outro.
+    expect(entrou.room!.players.map((player) => player.car)).toEqual(['senna', 'verstappen'])
+
+    const vista = waitForRoom(beto, (room) => room.players.find((player) => player.id === 'ana')?.car === 'schumacher')
+    const resposta = await ask<RoomAck>(ana, 'room:set-car', { code, playerId: 'ana', car: 'schumacher' })
+    expect(resposta.ok).toBe(true)
+    await vista
+  })
+
   it('trocar de dificuldade desfaz as confirmações dos dois', async () => {
     const { ana, beto, code } = await gridCompleto()
     ana.emit('room:set-ready', { code, playerId: 'ana', ready: true })

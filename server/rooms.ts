@@ -1,5 +1,6 @@
 // A validação da chegada precisa da mesma pista que o jogo desenha, então a
 // definição vem do módulo do jogo em vez de ser copiada para cá.
+import { toCarId, type CarId } from '../src/game/cars.js'
 import { rulesFor, toDifficulty, type Difficulty } from '../src/game/rules.js'
 import { speedForState } from '../src/game/simulation.js'
 import { LATERAL_LIMIT, TRACK_LENGTH } from '../src/game/track.js'
@@ -15,6 +16,13 @@ export type PublicPlayer = {
   finished: boolean
   /** Já pediu revanche. */
   rematch: boolean
+  /**
+   * Carro escolhido na garagem.
+   *
+   * Vai para o rival porque é com esta pintura que ele desenha o fantasma.
+   * Não entra em nenhuma validação: a física é a mesma para todos os carros.
+   */
+  car: CarId
 }
 
 export type PublicRoom = {
@@ -70,6 +78,7 @@ type Player = {
   telemetry: Telemetry | null
   finish: FinishEntry | null
   rematch: boolean
+  car: CarId
 }
 
 type RaceState = 'idle' | 'countdown' | 'racing' | 'finished'
@@ -208,7 +217,7 @@ export class RoomStore {
     return [...this.openRooms]
   }
 
-  create(socketId: string, playerId: string, rawName: string) {
+  create(socketId: string, playerId: string, rawName: string, car?: unknown) {
     const code = this.createCode()
     this.rooms.set(code, {
       code,
@@ -219,12 +228,12 @@ export class RoomStore {
       difficulty: 'normal',
       hostId: playerId,
       outcome: null,
-      players: [this.createPlayer(playerId, socketId, rawName)],
+      players: [this.createPlayer(playerId, socketId, rawName, car)],
     })
     return this.get(code)!
   }
 
-  join(codeInput: string, socketId: string, playerId: string, rawName: string) {
+  join(codeInput: string, socketId: string, playerId: string, rawName: string, car?: unknown) {
     const room = this.ensureOpenRoom(codeInput) ?? this.requireRoom(codeInput)
 
     const returning = room.players.find((player) => player.id === playerId)
@@ -232,12 +241,29 @@ export class RoomStore {
       returning.socketId = socketId
       returning.disconnectedAt = null
       returning.name = this.cleanName(rawName)
+      // Quem volta sem dizer o carro — um cliente antigo — mantém o que tinha.
+      if (car !== undefined && this.canChangeCar(room)) returning.car = toCarId(car)
       return this.toPublic(room)
     }
 
     if (room.players.length >= 2) throw new RoomError('ROOM_FULL', 'Esta sala já está cheia.')
-    room.players.push(this.createPlayer(playerId, socketId, rawName))
+    room.players.push(this.createPlayer(playerId, socketId, rawName, car))
     this.ensureHost(room)
+    return this.toPublic(room)
+  }
+
+  /**
+   * Troca o carro do piloto.
+   *
+   * Não mexe nas confirmações, ao contrário da dificuldade: a pintura não
+   * muda a prova de ninguém. Só fica travada da contagem até a bandeirada,
+   * para o rival ver até o fim o mesmo carro com que viu a largada.
+   */
+  setCar(codeInput: string, playerId: string, car: unknown) {
+    const room = this.requireRoom(codeInput)
+    const player = room.players.find((candidate) => candidate.id === playerId)
+    if (!player) throw new RoomError('NOT_IN_ROOM', 'Você não está nesta sala.')
+    if (this.canChangeCar(room)) player.car = toCarId(car)
     return this.toPublic(room)
   }
 
@@ -581,6 +607,10 @@ export class RoomStore {
     room.hostId = room.players[0]?.id ?? null
   }
 
+  private canChangeCar(room: Room) {
+    return room.state !== 'countdown' && room.state !== 'racing'
+  }
+
   private everyoneReady(room: Room) {
     return (
       room.players.length === 2 &&
@@ -614,7 +644,7 @@ export class RoomStore {
     return room
   }
 
-  private createPlayer(id: string, socketId: string, rawName: string): Player {
+  private createPlayer(id: string, socketId: string, rawName: string, car: unknown): Player {
     return {
       id,
       socketId,
@@ -624,6 +654,7 @@ export class RoomStore {
       telemetry: null,
       finish: null,
       rematch: false,
+      car: toCarId(car),
     }
   }
 
@@ -647,13 +678,14 @@ export class RoomStore {
   }
 
   private toPublic(room: Room): PublicRoom {
-    const players = room.players.map(({ id, name, ready, disconnectedAt, finish, rematch }) => ({
+    const players = room.players.map(({ id, name, ready, disconnectedAt, finish, rematch, car }) => ({
       id,
       name,
       ready,
       connected: disconnectedAt === null,
       finished: finish !== null,
       rematch,
+      car,
     }))
     const status: RoomStatus =
       room.state === 'finished'

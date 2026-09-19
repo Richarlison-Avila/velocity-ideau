@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_CAR } from '../src/game/cars.js'
 import { LATERAL_LIMIT, minRaceSeconds, RoomError, RoomStore, type Telemetry } from './rooms.js'
 
 /** Relógio controlado para testar agendamento e janela de reconexão. */
@@ -814,5 +815,95 @@ describe('dificuldade oficial da sala', () => {
 
     // A pista muda; a dificuldade combinada, não.
     expect(rooms.scheduleStart(code)?.difficulty).toBe('profissional')
+  })
+})
+
+describe('carro de cada piloto', () => {
+  const carros = (store: RoomStore, code: string) =>
+    Object.fromEntries(store.get(code)!.players.map((player) => [player.id, player.car]))
+
+  it('cada piloto entra com o carro que escolheu', () => {
+    const rooms = new RoomStore()
+    const { code } = rooms.create('socket-a', 'a', 'Ana', 'senna')
+    rooms.join(code, 'socket-b', 'b', 'Beto', 'verstappen')
+    // É estado do piloto, não da sala: cada um tem o seu.
+    expect(carros(rooms, code)).toEqual({ a: 'senna', b: 'verstappen' })
+  })
+
+  it('sem carro, ou com um que não existe, entra com o padrão', () => {
+    const rooms = new RoomStore()
+    const { code } = rooms.create('socket-a', 'a', 'Ana')
+    // Um cliente adulterado não faz o rival procurar uma imagem que não existe.
+    rooms.join(code, 'socket-b', 'b', 'Beto', '../../segredo')
+    expect(carros(rooms, code)).toEqual({ a: DEFAULT_CAR, b: DEFAULT_CAR })
+  })
+
+  it('trocar de carro não desfaz as confirmações', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+
+    // Ao contrário da dificuldade, a pintura não muda a prova de ninguém.
+    const depois = rooms.setCar(code, 'a', 'hamilton-ferrari')
+    expect(depois.status).toBe('ready')
+    expect(carros(rooms, code).a).toBe('hamilton-ferrari')
+  })
+
+  it('fica travado da contagem até a bandeirada', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const { code } = rooms.create('socket-a', 'a', 'Ana', 'senna')
+    rooms.join(code, 'socket-b', 'b', 'Beto', 'verstappen')
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+
+    // O rival viu este carro no grid e deve vê-lo até a chegada.
+    rooms.scheduleStart(code)
+    expect(carros(rooms, code).a).toBe('senna')
+    rooms.setCar(code, 'a', 'schumacher')
+    rooms.beginRace(code)
+    rooms.setCar(code, 'a', 'schumacher')
+    expect(carros(rooms, code).a).toBe('senna')
+
+    clock.advance(80_000)
+    rooms.recordFinish(code, 'a', { time: 70, topSpeed: 300, collisions: 0 })
+    rooms.recordFinish(code, 'b', { time: 72, topSpeed: 300, collisions: 0 })
+
+    // Com a corrida encerrada, a garagem volta a abrir.
+    expect(rooms.setCar(code, 'a', 'schumacher').players[0].car).toBe('schumacher')
+  })
+
+  it('recusa quem não está na sala', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    expect(() => rooms.setCar(code, 'intruso', 'senna')).toThrow(RoomError)
+  })
+
+  it('quem volta de uma queda mantém o carro, a menos que traga outro', () => {
+    const rooms = new RoomStore()
+    const { code } = rooms.create('socket-a', 'a', 'Ana', 'hamilton-mercedes')
+    rooms.markDisconnected('socket-a')
+
+    // Um cliente antigo volta sem dizer o carro: nada muda.
+    rooms.join(code, 'socket-a2', 'a', 'Ana')
+    expect(carros(rooms, code).a).toBe('hamilton-mercedes')
+
+    rooms.join(code, 'socket-a3', 'a', 'Ana', 'verstappen')
+    expect(carros(rooms, code).a).toBe('verstappen')
+  })
+
+  it('a reconexão no meio da prova não troca o carro', () => {
+    const rooms = new RoomStore()
+    const { code } = rooms.create('socket-a', 'a', 'Ana', 'senna')
+    rooms.join(code, 'socket-b', 'b', 'Beto', 'verstappen')
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    rooms.beginRace(code)
+
+    rooms.markDisconnected('socket-a')
+    rooms.join(code, 'socket-a2', 'a', 'Ana', 'schumacher')
+    expect(carros(rooms, code).a).toBe('senna')
   })
 })

@@ -10,6 +10,8 @@ import {
   type GhostSnapshot,
 } from './ghost'
 import { RaceAudio } from './audio'
+import { carById, type CarId } from './cars'
+import { carSprite, drawCarPaint, REAR_LIGHT_Y, type CarPaint } from './carSprites'
 import { createFeel, registerImpact, updateFeel } from './feel'
 import {
   createSceneryItem,
@@ -60,6 +62,10 @@ export type RaceResult = {
 
 type RaceCanvasProps = {
   pilotName: string
+  /** Carro escolhido na garagem. Só muda a pintura; a física é a mesma. */
+  car: CarId
+  /** Carro do rival, desenhado como fantasma. */
+  rivalCar?: CarId | null
   /** Instante oficial da largada, no relógio do servidor. */
   startAt: number
   /** Duração total da sequência de luzes enviada pelo servidor. */
@@ -312,6 +318,11 @@ function drawWheel(
  * A meia-largura do desenho é `CAR_SPRITE_HALF_WIDTH`, e daí saem o limite de
  * saída de pista e o alinhamento dos efeitos. Mexer na silhueta sem mexer
  * naquela constante faria o jogo cobrar uma coisa e mostrar outra.
+ *
+ * Com a pintura da garagem carregada, ela substitui o desenho vetorial na
+ * mesma pose e na mesma escala — a arte é ajustada àquela meia-largura em
+ * `carSprites.ts`. O vetorial fica para os primeiros quadros, enquanto a
+ * imagem não chega, e para uma rede que não a entregue.
  */
 function drawCar(
   ctx: CanvasRenderingContext2D,
@@ -320,6 +331,7 @@ function drawCar(
   scale: number,
   palette: CarPalette = PLAYER_PALETTE,
   pose: CarPose = POSE_NEUTRA,
+  pintura: CarPaint | null = null,
 ) {
   ctx.save()
   ctx.globalAlpha = palette.alpha
@@ -337,6 +349,26 @@ function drawCar(
   ctx.scale(scale * (1 + pose.squash * 0.5), scale * (1 - pose.squash))
 
   const esterco = pose.steer * 0.34
+
+  if (pintura) {
+    drawCarPaint(ctx, pintura, esterco)
+    // No boost a luz traseira acende e transborda, somando luz à pintura em
+    // vez de cobri-la.
+    if (pose.boost > 0.01) {
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.fillStyle = palette.light
+      ctx.globalAlpha = palette.alpha * pose.boost * 0.22
+      ctx.beginPath()
+      ctx.ellipse(0, REAR_LIGHT_Y, 5 + pose.boost * 3, 4.5 + pose.boost * 2, 0, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalAlpha = palette.alpha * pose.boost * 0.8
+      ctx.beginPath()
+      ctx.ellipse(0, REAR_LIGHT_Y, 1.8 + pose.boost, 2.4 + pose.boost, 0, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.restore()
+    return
+  }
 
   // Asa dianteira: mais estreita e mais longe, quase escondida pelo bico.
   ctx.fillStyle = palette.wings
@@ -466,6 +498,8 @@ function drawCar(
 
 function RaceCanvas({
   pilotName,
+  car,
+  rivalCar = null,
   startAt,
   countdownMs = DEFAULT_COUNTDOWN_MS,
   trackSeed,
@@ -488,6 +522,9 @@ function RaceCanvas({
   const startedRef = useRef(false)
   const doneRef = useRef(false)
   const ghostRef = useRef(ghost)
+  // Os carros entram por referência: o laço de quadro não é refeito por eles.
+  const carRef = useRef(car)
+  const rivalCarRef = useRef(rivalCar)
   const sendTelemetryRef = useRef(onTelemetry)
   const [telemetry, setTelemetry] = useState(initialTelemetry)
   const [rival, setRival] = useState<RivalHud | null>(null)
@@ -501,6 +538,8 @@ function RaceCanvas({
   clockRef.current = now ?? Date.now
   finishRef.current = onFinish
   ghostRef.current = ghost
+  carRef.current = car
+  rivalCarRef.current = rivalCar
   sendTelemetryRef.current = onTelemetry
 
   /**
@@ -694,8 +733,14 @@ function RaceCanvas({
       canvas.width = Math.floor(width * pixelRatio)
       canvas.height = Math.floor(height * pixelRatio)
       ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+      // Mudar o tamanho do canvas zera o contexto, e com ele a qualidade da
+      // redução: no padrão, a pintura do carro sai serrilhada ao encolher.
+      ctx.imageSmoothingQuality = 'high'
     }
     resize()
+    // Começa a baixar as pinturas durante a contagem, se o menu ainda não as trouxe.
+    carSprite(carRef.current)
+    if (rivalCarRef.current) carSprite(rivalCarRef.current)
 
     // A janela nem sempre muda de tamanho junto com a tela do jogo: em telas
     // divididas, ao girar o celular ou quando a barra do navegador some, só o
@@ -1098,7 +1143,10 @@ function RaceCanvas({
       poseDoFantasma.tilt = poseDoFantasma.steer * 0.075 * forcaDoMovimento
 
       paletaDoFantasma.alpha = GHOST_PALETTE.alpha * (faded ? 0.5 : 1)
-      drawCar(ctx, x, projected.y, scale, paletaDoFantasma, poseDoFantasma)
+      // A pintura do rival vem tingida de azul: mesmo com os dois no mesmo
+      // carro, o fantasma nunca se confunde com o próprio.
+      const pintura = rivalCarRef.current ? carSprite(rivalCarRef.current).fantasma : null
+      drawCar(ctx, x, projected.y, scale, paletaDoFantasma, poseDoFantasma, pintura)
     }
 
     /** Poeira, faíscas, rastro de boost e marcas de pneu, na projeção da pista. */
@@ -1415,6 +1463,7 @@ function RaceCanvas({
           Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH),
           PLAYER_PALETTE,
           poseDoJogador,
+          carSprite(carRef.current).jogador,
         )
       }
 
@@ -1489,7 +1538,11 @@ function RaceCanvas({
             <button className="abandon-button" onClick={onAbandon}>ABANDONAR</button>
           )}
         </div>
-        <div className="pilot-tag"><span>PILOTO</span>{pilotName}</div>
+        <div className="pilot-tag">
+          <span>PILOTO</span>
+          {pilotName}
+          <em style={{ color: carById(car).accent }}>{carById(car).team} #{carById(car).number}</em>
+        </div>
       </div>
 
       <section className="hud" aria-label="Telemetria">

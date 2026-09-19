@@ -81,6 +81,14 @@ Gera SVG para o slide, PNG para imprimir e o endereço em texto, na pasta `qrcod
 
 A tipografia fica dentro do projeto, em `public/fontes`, para o jogo funcionar em rede sem internet. Para atualizá-la: `npm run fontes`.
 
+### Carros
+
+As artes originais ficam em `arte/carros`, uma por carro, com o nome do identificador da garagem (`senna.png`, `verstappen.png`…). O jogo não as usa direto: chegam com fundo preto opaco e mais de 1 MB cada. `npm run carros` gera em `public/carros` a versão do jogo, com o fundo transparente, recortada e com cerca de um quarto do peso.
+
+Todas as pinturas foram feitas sobre o mesmo chassi, e o jogo conta com isso: recorta as rodas dianteiras para girarem com o volante e acende a luz traseira no boost em coordenadas fixas, descritas em `CAR_ART` (`src/game/cars.ts`). Para acrescentar um carro, desenhe sobre o mesmo molde, salve a arte, registre o carro em `CARS` e rode `npm run carros`. O script recusa uma arte que não encaixe no molde.
+
+A escolha é só de pintura. Todos os carros andam com a mesma física: o duelo mede quem dirige melhor, e um carro mais rápido decidiria a corrida antes da largada.
+
 ## Testes
 
 ```bash
@@ -118,10 +126,10 @@ npx vitest run server/demonstracao.test.ts
 Para testar o fantasma sem um segundo aparelho, entre em uma sala pelo navegador e rode:
 
 ```bash
-npm run piloto -- CODIGO --nome Rival --velocidade 250
+npm run piloto -- CODIGO --nome Rival --velocidade 250 --carro schumacher
 ```
 
-Ele entra na sala como segundo jogador, confirma presença, corre no ritmo pedido e envia telemetria pelo mesmo protocolo do navegador.
+Ele entra na sala como segundo jogador, confirma presença, corre no ritmo pedido e envia telemetria pelo mesmo protocolo do navegador. Sem `--carro`, corre com a Red Bull, diferente do carro padrão do navegador, para o fantasma mostrar a pintura do rival.
 
 ## Controles
 
@@ -178,6 +186,7 @@ A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resu
 - [x] Publicação em processo único, com Dockerfile e endereços da rede local
 - [x] Sala de demonstração que se cria sozinha
 - [x] Fontes servidas pelo projeto, sem depender de internet
+- [x] Garagem com cinco carros: a escolha vale no treino e no duelo, e o fantasma usa a pintura do rival
 - [x] QR code definitivo e roteiro do workshop
 
 ## Limitações conhecidas

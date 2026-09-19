@@ -1,3 +1,4 @@
+import type { CarId } from '../game/cars'
 import type { Difficulty } from '../game/rules'
 
 export type LobbyPlayer = {
@@ -9,6 +10,8 @@ export type LobbyPlayer = {
   finished: boolean
   /** Já pediu revanche. */
   rematch: boolean
+  /** Carro escolhido na garagem; é com ele que o rival desenha o fantasma. */
+  car: CarId
 }
 
 export type LobbyStatus = 'waiting' | 'ready' | 'countdown' | 'racing' | 'finished'

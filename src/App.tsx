@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { carById, DEFAULT_CAR, toCarId, type CarId } from './game/cars'
+import { carImageUrl } from './game/carSprites'
 import { DEFAULT_COUNTDOWN_MS } from './game/countdown'
 import { GhostTracker, type GhostSnapshot } from './game/ghost'
 import RaceCanvas, { type RaceResult } from './game/RaceCanvas'
@@ -8,6 +10,7 @@ import { serverClock, type ClockState } from './multiplayer/clock'
 import { identificadorDoPiloto } from './multiplayer/identity'
 import Lobby from './multiplayer/Lobby'
 import { socket } from './multiplayer/socket'
+import PilotSelect from './PilotSelect'
 import type {
   LobbyRoom,
   RaceCancelled,
@@ -17,7 +20,7 @@ import type {
   ScheduledRace,
 } from './multiplayer/types'
 
-type Screen = 'menu' | 'lobby' | 'race' | 'result'
+type Screen = 'menu' | 'garage' | 'lobby' | 'race' | 'result'
 type RaceSetup = {
   startAt: number
   countdownMs: number
@@ -61,6 +64,34 @@ function esquecer(chave: string) {
 const storedRoom = lerGuardado(ROOM_KEY)
 const storedName = lerGuardado(NAME_KEY) ?? 'Piloto'
 
+/**
+ * O carro, ao contrário da sala e do nome, fica guardado entre visitas: é uma
+ * preferência do piloto, não da partida. O que vier do armazenamento passa
+ * pela mesma validação do servidor — um id que saiu da garagem vira o padrão.
+ */
+const CAR_KEY = 'ghost-racer-car'
+
+function lerCarro(): CarId {
+  try {
+    return toCarId(localStorage.getItem(CAR_KEY))
+  } catch {
+    return DEFAULT_CAR
+  }
+}
+
+function guardarCarro(car: CarId) {
+  try {
+    localStorage.setItem(CAR_KEY, car)
+  } catch {
+    // Sem armazenamento a escolha vale só até recarregar a página.
+  }
+}
+
+const storedCar = lerCarro()
+
+/** A cor do carro vira variável de CSS para bordas e destaques. */
+const destaque = (car: CarId) => ({ '--accent': carById(car).accent }) as CSSProperties
+
 function App() {
   const [screen, setScreen] = useState<Screen>('menu')
   const [pilotName, setPilotName] = useState(storedName)
@@ -77,13 +108,18 @@ function App() {
   const [clock, setClock] = useState<ClockState>(serverClock.snapshot)
   /** Dificuldade do modo treino. No duelo quem manda é a sala. */
   const [soloDifficulty, setSoloDifficulty] = useState<Difficulty>('normal')
+  const [car, setCar] = useState<CarId>(storedCar)
+  /** De onde se chegou à garagem, que é para onde ela devolve. */
+  const [garageFrom, setGarageFrom] = useState<'menu' | 'lobby'>('menu')
 
   // Refs para o ciclo do socket, que não deve depender do estado da tela.
   const ghostRef = useRef(new GhostTracker())
   const roomCodeRef = useRef<string | null>(storedRoom)
   const pilotNameRef = useRef(pilotName)
+  const carRef = useRef(car)
   const screenRef = useRef(screen)
   pilotNameRef.current = pilotName
+  carRef.current = car
   screenRef.current = screen
 
   useEffect(() => serverClock.subscribe(setClock), [])
@@ -95,7 +131,8 @@ function App() {
       // Depois de uma queda, volta para a mesma sala com o mesmo identificador.
       const code = roomCodeRef.current
       if (!code) return
-      socket.emit('room:join', { code, name: pilotNameRef.current, playerId: storedPlayerId }, (response: RoomResponse) => {
+      const payload = { code, name: pilotNameRef.current, playerId: storedPlayerId, car: carRef.current }
+      socket.emit('room:join', payload, (response: RoomResponse) => {
         if (response.ok && response.room) {
           setRoom(response.room)
           setLobbyError('')
@@ -176,7 +213,9 @@ function App() {
     setLobbyNotice('')
     setResult(null)
     setOutcome(null)
-    setScreen((current) => (current === 'result' || current === 'lobby' ? 'race' : current))
+    // Quem estava na garagem, vindo do lobby, também vai para a largada: a
+    // confirmação dele continua valendo enquanto escolhe.
+    setScreen((current) => (current === 'result' || current === 'lobby' || current === 'garage' ? 'race' : current))
   }, [room?.startAt, room?.status, room?.countdownMs])
 
   const selectedName = () => {
@@ -198,7 +237,7 @@ function App() {
   }
 
   const createRoom = () => {
-    socket.emit('room:create', { name: selectedName(), playerId: storedPlayerId }, (response: RoomResponse) => {
+    socket.emit('room:create', { name: selectedName(), playerId: storedPlayerId, car }, (response: RoomResponse) => {
       if (response.ok && response.room) openRoom(response.room)
       else setLobbyError(response.error ?? 'Não foi possível criar a sala.')
     })
@@ -207,11 +246,39 @@ function App() {
   const enterRoom = () => {
     const code = joinCode.trim().toUpperCase()
     if (!code) return setLobbyError('Digite o código da sala.')
-    socket.emit('room:join', { code, name: selectedName(), playerId: storedPlayerId }, (response: RoomResponse) => {
+    socket.emit('room:join', { code, name: selectedName(), playerId: storedPlayerId, car }, (response: RoomResponse) => {
       if (response.ok && response.room) openRoom(response.room)
       else setLobbyError(response.error ?? 'Não foi possível entrar na sala.')
     })
   }
+
+  const openGarage = (from: 'menu' | 'lobby') => {
+    setGarageFrom(from)
+    setScreen('garage')
+  }
+
+  const leaveGarage = useCallback(() => {
+    setScreen(garageFrom === 'lobby' && roomCodeRef.current ? 'lobby' : 'menu')
+  }, [garageFrom])
+
+  const chooseCar = useCallback(
+    (next: CarId) => {
+      setCar(next)
+      carRef.current = next
+      guardarCarro(next)
+      // Na sala, o servidor precisa saber: é com este carro que o rival vai
+      // desenhar o fantasma.
+      const code = roomCodeRef.current
+      if (garageFrom === 'lobby' && code) {
+        socket.emit('room:set-car', { code, playerId: storedPlayerId, car: next }, (response: RoomResponse) => {
+          if (response.ok && response.room) setRoom(response.room)
+          else setLobbyNotice(response.error ?? 'Não foi possível trocar o carro.')
+        })
+      }
+      leaveGarage()
+    },
+    [garageFrom, leaveGarage],
+  )
 
   const startSoloRace = () => {
     selectedName()
@@ -280,6 +347,19 @@ function App() {
   const connectionNotice =
     connection === 'reconnecting' ? 'CONEXÃO INSTÁVEL — RECONECTANDO' : null
 
+  if (screen === 'garage') {
+    const rival = garageFrom === 'lobby' ? room?.players.find((player) => player.id !== storedPlayerId) : undefined
+    return (
+      <PilotSelect
+        selected={car}
+        rivalCar={rival?.car ?? null}
+        backLabel={garageFrom === 'lobby' ? 'VOLTAR AO LOBBY' : 'VOLTAR AO PADDOCK'}
+        onConfirm={chooseCar}
+        onBack={leaveGarage}
+      />
+    )
+  }
+
   if (screen === 'lobby' && room) {
     return (
       <Lobby
@@ -291,17 +371,22 @@ function App() {
         onRoomChange={setRoom}
         onLeave={leaveLobby}
         onError={setLobbyError}
+        onChangeCar={() => openGarage('lobby')}
       />
     )
   }
 
   if (screen === 'race' && raceSetup) {
     const online = raceSetup.mode === 'online'
+    const me = room?.players.find((player) => player.id === storedPlayerId)
     const rival = room?.players.find((player) => player.id !== storedPlayerId)
     return (
       <RaceCanvas
         key={`${raceSetup.mode}-${raceSetup.startAt}-${raceSetup.difficulty}-${raceKey}`}
         pilotName={pilotName}
+        // No duelo vale o carro que o servidor registrou: é o mesmo que o rival vê.
+        car={online ? (me?.car ?? car) : car}
+        rivalCar={online ? (rival?.car ?? null) : null}
         startAt={raceSetup.startAt}
         countdownMs={raceSetup.countdownMs}
         trackSeed={raceSetup.trackSeed}
@@ -353,24 +438,29 @@ function App() {
           {online && outcome ? (
             <>
               <div className="scoreboard">
-                {outcome.entries.map((entry, posicao) => (
-                  <div
-                    key={entry.playerId}
-                    className={`score-row ${entry.playerId === storedPlayerId ? 'me' : ''} ${
-                      entry.playerId === outcome.winnerId ? 'winner' : ''
-                    }`}
-                  >
-                    <b>P{posicao + 1}</b>
-                    <strong>{entry.name}</strong>
-                    <i>
-                      {entry.outcome === 'finished' && entry.time !== null
-                        ? formatTime(entry.time)
-                        : entry.outcome === 'abandoned'
-                          ? 'ABANDONOU'
-                          : 'NÃO COMPLETOU'}
-                    </i>
-                  </div>
-                ))}
+                {outcome.entries.map((entry, posicao) => {
+                  // Quem já deixou a sala não tem mais carro registrado.
+                  const carro = room?.players.find((player) => player.id === entry.playerId)?.car
+                  return (
+                    <div
+                      key={entry.playerId}
+                      className={`score-row ${entry.playerId === storedPlayerId ? 'me' : ''} ${
+                        entry.playerId === outcome.winnerId ? 'winner' : ''
+                      }`}
+                    >
+                      <b>P{posicao + 1}</b>
+                      {carro ? <img className="score-car" src={carImageUrl(carro)} alt="" /> : <span />}
+                      <strong>{entry.name}</strong>
+                      <i>
+                        {entry.outcome === 'finished' && entry.time !== null
+                          ? formatTime(entry.time)
+                          : entry.outcome === 'abandoned'
+                            ? 'ABANDONOU'
+                            : 'NÃO COMPLETOU'}
+                      </i>
+                    </div>
+                  )
+                })}
               </div>
               <p className="result-note">
                 {outcome.gap !== null
@@ -440,6 +530,15 @@ function App() {
         <div className="start-form">
           <label htmlFor="pilot-name">NOME DO PILOTO</label>
           <input id="pilot-name" value={draftName} maxLength={16} onChange={(event) => setDraftName(event.target.value)} placeholder="Digite seu nome" autoComplete="nickname" />
+          <button type="button" className="car-choice" style={destaque(car)} onClick={() => openGarage('menu')}>
+            <img src={carImageUrl(car)} alt="" />
+            <span>
+              <small>SEU CARRO</small>
+              <strong>{carById(car).driver}</strong>
+              <em>{carById(car).team} · #{carById(car).number}</em>
+            </span>
+            <span className="car-choice-action">ESCOLHER PILOTO ↗</span>
+          </button>
           <div className="multiplayer-actions">
             <button className="primary-button" onClick={createRoom} disabled={connection !== 'connected'}>CRIAR SALA <span>↗</span></button>
             <div className="join-control">

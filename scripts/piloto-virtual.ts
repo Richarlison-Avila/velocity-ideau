@@ -6,11 +6,12 @@
  * passa pelo servidor de verdade.
  *
  *   npm run piloto -- ABC12
- *   npm run piloto -- ABC12 --nome Rival --velocidade 260
+ *   npm run piloto -- ABC12 --nome Rival --velocidade 260 --carro schumacher
  */
 import { io, type Socket } from 'socket.io-client'
 // A pista e a curva de tração vêm do jogo: uma cópia aqui divergiria em
 // silêncio, e o fantasma arrancaria diferente do carro de verdade.
+import { CARS, carById, isCarId } from '../src/game/cars.js'
 import { rulesFor, type Difficulty } from '../src/game/rules.js'
 import { ACCELERATION_PEAK, ACCELERATION_SHAPE } from '../src/game/simulation.js'
 import { TRACK_LENGTH } from '../src/game/track.js'
@@ -52,6 +53,14 @@ if (!code || code.startsWith('--')) {
 const serverUrl = process.env.GAME_SERVER_URL ?? 'http://127.0.0.1:3001'
 const name = readOption('nome', 'Fantasma')
 const targetSpeed = Number(readOption('velocidade', '245'))
+// Por padrão, um carro diferente do padrão do navegador: com os dois iguais,
+// o teste não mostraria que o fantasma usa a pintura do rival.
+const carroPedido = readOption('carro', 'verstappen')
+if (!isCarId(carroPedido)) {
+  console.error(`Carro desconhecido: ${carroPedido}. Opções: ${CARS.map((car) => car.id).join(', ')}`)
+  process.exit(1)
+}
+const car = carroPedido
 /** Velocidade efetiva: o pedido, limitado ao cruzeiro da dificuldade da sala. */
 let ritmo = targetSpeed
 const playerId = `piloto-virtual-${Math.random().toString(36).slice(2, 8)}`
@@ -148,12 +157,12 @@ socket.on('connect', async () => {
   console.log(`Conectado a ${serverUrl}.`)
   await syncClock()
 
-  socket.emit('room:join', { code, name, playerId }, (response: RoomAck) => {
+  socket.emit('room:join', { code, name, playerId, car }, (response: RoomAck) => {
     if (!response.ok || !response.room) {
       console.error(`Não foi possível entrar na sala ${code}: ${response.error}`)
       process.exit(1)
     }
-    console.log(`Na sala ${code} como "${name}". Confirmando presença.`)
+    console.log(`Na sala ${code} como "${name}", com o carro de ${carById(car).driver}. Confirmando presença.`)
     socket.emit('room:set-ready', { code, playerId, ready: true })
   })
 })

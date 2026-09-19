@@ -10,6 +10,7 @@ vite.config.js
 vite.config.d.ts
 .DS_Store
 Thumbs.db
+desktop.ini
 .idea/
 .vscode/
 qrcode/

@@ -98,9 +98,9 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       },
     )
 
-    socket.on('room:create', (payload: { name: string; playerId: string }, ack: Ack) => {
+    socket.on('room:create', (payload: { name: string; playerId: string; car?: string }, ack: Ack) => {
       try {
-        const room = rooms.create(socket.id, payload.playerId, payload.name)
+        const room = rooms.create(socket.id, payload.playerId, payload.name, payload.car)
         socket.join(room.code)
         ack({ ok: true, room })
       } catch {
@@ -108,9 +108,9 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       }
     })
 
-    socket.on('room:join', (payload: { code: string; name: string; playerId: string }, ack: Ack) => {
+    socket.on('room:join', (payload: { code: string; name: string; playerId: string; car?: string }, ack: Ack) => {
       try {
-        const room = rooms.join(payload.code, socket.id, payload.playerId, payload.name)
+        const room = rooms.join(payload.code, socket.id, payload.playerId, payload.name, payload.car)
         socket.join(room.code)
 
         const key = graceKey(room.code, payload.playerId)
@@ -185,6 +185,16 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
         publish(room.code, room)
       } catch (error) {
         ack?.({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível trocar a dificuldade.' })
+      }
+    })
+
+    socket.on('room:set-car', (payload: { code: string; playerId: string; car: string }, ack?: Ack) => {
+      try {
+        const room = rooms.setCar(payload.code, payload.playerId, payload.car)
+        ack?.({ ok: true, room })
+        publish(room.code, room)
+      } catch (error) {
+        ack?.({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível trocar o carro.' })
       }
     })
 
