@@ -1,4 +1,4 @@
-import { VIEW_DISTANCE } from './track'
+import { CAR_HALF_LATERAL, VIEW_DISTANCE } from './track'
 
 /**
  * Efeitos da pista: poeira ao sair do asfalto, faíscas no impacto, rastro do
@@ -34,18 +34,24 @@ export const MAX_PARTICLES = 110
  * Afastamento lateral em que os efeitos nascem, medido a partir do centro do
  * carro. Precisa ser largo o bastante para a poeira aparecer ao lado da
  * carroceria: nascendo no centro, o próprio carro esconderia tudo.
+ *
+ * Derivado da meia-largura do carro, e não um número fixo. Era 0,17, e ao
+ * estreitar a pista a poeira passou a nascer dentro da silhueta — o mesmo
+ * tipo de constante solta que já tinha causado problema no limite de saída
+ * de pista e na posição lateral dos obstáculos.
  */
-export const WHEEL_OFFSET = 0.17
+export const WHEEL_OFFSET = CAR_HALF_LATERAL * 1.05
 
 /**
  * Recuo, em metros, entre o ponto onde o carro é desenhado e onde o efeito
  * nasce. Poeira e marcas saem de trás das rodas, não da frente do bico.
  *
- * Encolheu junto com a distância do carro à câmera: com a projeção mais
- * acentuada o carro é desenhado a 11 m, e um recuo de 9 m jogaria o rastro
- * quase em cima da câmera.
+ * Encolheu junto com a distância do carro à câmera. Com a perspectiva de
+ * verdade o carro é desenhado a 2,3 m dela, então o recuo tem de caber nesse
+ * espaço — qualquer valor maior jogaria o rastro atrás da câmera, onde ele
+ * simplesmente não existe.
  */
-export const TRAIL_SETBACK = 4
+export const TRAIL_SETBACK = 0.9
 
 export type SpawnOptions = {
   life?: number

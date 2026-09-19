@@ -136,7 +136,8 @@ describe('marcadores laterais', () => {
     // O mesmo índice sempre descreve a mesma coisa, venha de onde vier.
     const vaga = 122
     expect(vaga % 2).toBe(0)
-    expect(vaga * SCENERY_SPACING).toBe(1_220)
+    // O que importa não é o número em si, é a vaga par cair sobre um marcador.
+    expect((vaga * SCENERY_SPACING) % ROADSIDE_SPACING).toBe(0)
     expect(isTallMarker(vaga / 2)).toBe(isTallMarker(vaga / 2))
 
     // E ele continua sendo listado enquanto o carro se aproxima. A faixa sai

@@ -20,22 +20,40 @@ export const HORIZON_RATIO = 0.29
 export const BOTTOM_RATIO = 0.92
 export const CAR_SCREEN_RATIO = 0.82
 /**
- * Quanto a projeção comprime o longe em favor do perto.
+ * Distância, em metros, na qual a pista aparece em tamanho natural.
  *
- * Era 1,72, e com isso o fluxo na tela a 3 m era só 2,3 vezes o de 150 m — o
- * olho lê profundidade por essa razão, e 2,3 é pouco demais para a pista
- * parecer recuar em vez de deslizar. Com 3,2 a razão vai a 12, o fluxo junto
- * à câmera quase dobra de novo e os primeiros 20 metros passam a ocupar 16%
- * da tela em vez de 9,7%.
+ * É o parâmetro da perspectiva de verdade que substituiu a curva de
+ * suavização `(1 − d/alcance)^n`. Aquela curva espalhava a pista por uma
+ * faixa fina da tela: o fluxo a 3 m era só 1,4 vez o de 150 m, e o olho lê
+ * profundidade justamente por essa razão. Com `1/z` a razão vai a 116, e um
+ * objeto cresce 1,47× nos últimos sete metros em vez de 1,09×.
  *
- * O que torna esta constante barata: a escala no ponto onde o carro é
- * desenhado é fixa por construção — `CAR_SCREEN_RATIO` a define —, então
- * `CAR_HALF_LATERAL` e `OFF_ROAD_LIMIT` não se movem, e nada da geometria
- * competitiva muda. O invariante do relevo também não depende dela: o termo
- * perigoso e o termo que o segura carregam a mesma potência, e ela se
- * cancela na razão.
+ * Quanto menor este número, mais violenta a perspectiva. 12 m põe o carro a
+ * 2,3 m da câmera — um plano de perseguição, não de helicóptero.
  */
-export const PERSPECTIVE_POWER = 3.2
+export const CAMERA_DEPTH = 12
+
+/**
+ * Largura da pista na tela à distância zero, em fração da largura da tela.
+ *
+ * Com a perspectiva de verdade a pista junto à câmera fica larguíssima, e a
+ * 0,89 ela empurrava grama, marcadores e cenário para fora do quadro — o
+ * campo perto ficava vazio justamente onde mora a sensação de velocidade.
+ * Com 0,70 sobra margem para os marcadores varrerem a borda da tela, que é o
+ * elemento mais rápido da cena.
+ */
+export const ROAD_WIDTH_NEAR = 0.7
+
+/**
+ * Escala de tela no ponto onde o carro é desenhado.
+ *
+ * Sai de `CAR_SCREEN_RATIO` e é, por construção, independente da projeção.
+ * É o que mantém `CAR_HALF_LATERAL` e `OFF_ROAD_LIMIT` no lugar quando a
+ * projeção muda — e portanto o que impede uma troca de desenho de virar uma
+ * mudança de regra.
+ */
+export const CAR_SCREEN_SCALE = (CAR_SCREEN_RATIO - HORIZON_RATIO) / (BOTTOM_RATIO - HORIZON_RATIO)
+
 
 /**
  * Distância na pista que corresponde ao ponto onde o carro é desenhado.
@@ -43,13 +61,7 @@ export const PERSPECTIVE_POWER = 3.2
  * O carro fica fixo perto da base da tela enquanto o progresso corre por fora,
  * então os efeitos precisam nascer nesta distância para sair debaixo dele.
  */
-export const CAR_VIEW_DISTANCE =
-  VIEW_DISTANCE *
-  (1 -
-    Math.pow(
-      (CAR_SCREEN_RATIO - HORIZON_RATIO) / (BOTTOM_RATIO - HORIZON_RATIO),
-      1 / PERSPECTIVE_POWER,
-    ))
+export const CAR_VIEW_DISTANCE = CAMERA_DEPTH * (1 / CAR_SCREEN_SCALE - 1)
 
 /** Meia-largura do desenho do carro, na escala base do sprite. */
 export const CAR_SPRITE_HALF_WIDTH = 31
@@ -79,18 +91,21 @@ export const obstacles: Obstacle[] = [
 /**
  * Projeção de um ponto da pista na tela, sem considerar a curva.
  *
+ * Perspectiva de verdade: a escala cai com `1/z`, e não por uma curva de
+ * suavização. É o que faz o que está perto varrer a tela e o que está longe
+ * quase parar — a diferença entre uma pista que recua e uma que desliza.
+ *
  * Fica aqui, e não dentro do componente, para que o desenho e os efeitos usem
  * exatamente a mesma conta — e para poder ser conferida nos testes.
  */
 export function roadProjection(distanceAhead: number, width: number, height: number) {
-  const closeness = 1 - distanceAhead / VIEW_DISTANCE
-  const perspective = Math.pow(Math.max(0, closeness), PERSPECTIVE_POWER)
+  const perspective = CAMERA_DEPTH / (CAMERA_DEPTH + Math.max(0, distanceAhead))
   const horizon = height * HORIZON_RATIO
   const bottom = height * BOTTOM_RATIO
   return {
     perspective,
     y: horizon + perspective * (bottom - horizon),
-    roadWidth: width * (0.09 + perspective * 0.8),
+    roadWidth: width * ROAD_WIDTH_NEAR * perspective,
   }
 }
 
@@ -138,7 +153,7 @@ export const LATERAL_LIMIT = ROAD_EDGE + 0.16
  * quadro e outro. São percorridos junto com o cenário, no mesmo laço de
  * profundidade: cada vaga par do cenário cai sobre um marcador.
  */
-export const ROADSIDE_SPACING = 20
+export const ROADSIDE_SPACING = 12
 /** Ficam do lado de fora do asfalto, sem invadir a faixa jogável. */
 export const ROADSIDE_LATERAL = ROAD_EDGE + 0.14
 /** Um marcador alto a cada tantos, para dar ritmo à contagem. */
@@ -170,11 +185,13 @@ export const CURVE_BEND_SCALE = 0.0024
  * o outro o quanto a lomba aparece. Ele é limitado pelo mesmo motivo que a
  * inclinação: alto demais, a pista se dobra sobre si mesma numa crista.
  *
- * Dobrou junto com o encurtamento da distância de visão, pelo mesmo motivo da
- * curva — e a folga do invariante não mudou, porque o desnível dentro da
- * janela caiu na mesma proporção.
+ * Caiu pela metade ao trocar a projeção, e isso é estrutural. Com a curva de
+ * suavização, o termo que segura a dobra e o que a causa carregavam a mesma
+ * potência e ela se cancelava; com `1/z` o que segura cai com o quadrado da
+ * escala e o perigoso cai só com a escala, então o perigoso domina no fim da
+ * janela. Sem recortar geometria escondida, o teto é 49% do anterior.
  */
-export const SLOPE_RISE_SCALE = 0.0312
+export const SLOPE_RISE_SCALE = 0.0152
 
 export function formatTime(seconds: number) {
   const safe = Math.max(0, seconds)

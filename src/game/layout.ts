@@ -138,8 +138,13 @@ function clamp(value: number, min: number, max: number) {
  * É metade do espaçamento dos marcadores de distância, então toda vaga par
  * cai exatamente sobre um marcador. Isso deixa cenário e marcadores no mesmo
  * laço e na mesma ordem de profundidade, sem precisar intercalar duas listas.
+ *
+ * Caiu de 10 para 6 m com a perspectiva de verdade. Os primeiros 20 metros
+ * passaram a ocupar 40% da tela, e a cada 10 m sobravam duas vagas para
+ * preencher tudo isso — o campo perto ficava vazio justamente onde a
+ * velocidade aparece.
  */
-export const SCENERY_SPACING = 10
+export const SCENERY_SPACING = 6
 
 /** Quantas vagas formam um trecho com densidade e caráter próprios. */
 export const SCENERY_REGION = 12

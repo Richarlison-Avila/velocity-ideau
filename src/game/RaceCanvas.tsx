@@ -22,6 +22,7 @@ import {
 import { createRaceState, MAX_STEP_SECONDS, stepRace, type RaceInput } from './simulation'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
 import {
+  CAMERA_DEPTH,
   CAR_SPRITE_REFERENCE_WIDTH,
   CAR_VIEW_DISTANCE,
   CURVE_BEND_SCALE,
@@ -789,14 +790,28 @@ function RaceCanvas({
       ctx.fillRect(0, height * 0.38, width, height)
     }
 
+    /**
+     * Distância da fatia, distribuída por escala de tela e não por distância.
+     *
+     * Com `1/z`, 84 fatias uniformes em distância dariam uma primeira faixa
+     * ocupando 11% da altura da tela — e como a cor da listra é decidida por
+     * fatia, a faixa junto à câmera saltaria de uma vez só, pulsando. Espaçar
+     * por escala dá fatias de altura constante na tela.
+     */
+    const escalaMinima = CAMERA_DEPTH / (CAMERA_DEPTH + VIEW_DISTANCE)
+    const distanciaDaFatia = (fracao: number) => {
+      const escala = 1 - fracao * (1 - escalaMinima)
+      return CAMERA_DEPTH * (1 / escala - 1)
+    }
+
     const drawRoad = () => {
       const slices = 84
       // A borda próxima de uma fatia é a borda distante da seguinte, então a
       // geometria é calculada uma vez e reaproveitada: metade das contas de
       // seno da pista desaparece.
-      let far = roadGeometry(VIEW_DISTANCE)
+      let far = roadGeometry(distanciaDaFatia(1))
       for (let i = 0; i < slices; i += 1) {
-        const nearDistance = VIEW_DISTANCE * (1 - (i + 1) / slices)
+        const nearDistance = distanciaDaFatia((slices - i - 1) / slices)
         const near = roadGeometry(nearDistance)
         // A cada 12 m, e não 18: são 5,8 faixas por segundo em cruzeiro em
         // vez de 3,9. É a referência mais barata que existe para o olho medir
@@ -1054,7 +1069,9 @@ function RaceCanvas({
       const projected = roadGeometry(distanceAhead)
       const closeness = Math.max(0, 1 - distanceAhead / VIEW_DISTANCE)
       const size = 5 + Math.pow(closeness, 1.5) * 48
-      const x = projected.center + projected.roadWidth * lane * 0.39
+      // Pela mesma conta de todo o resto. Antes era um 0,39 solto aqui, e o
+      // obstáculo aparecia 8% mais para fora do que a colisão considerava.
+      const x = projected.center + lateralOffset(lane, projected.roadWidth)
       const y = projected.y
 
       ctx.save()
