@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { DEFAULT_COUNTDOWN_MS } from './game/countdown'
 import { GhostTracker, type GhostSnapshot } from './game/ghost'
 import RaceCanvas, { type RaceResult } from './game/RaceCanvas'
+import { DIFFICULTIES, DIFFICULTY_LABELS, DIFFICULTY_NOTES, type Difficulty } from './game/rules'
 import { formatTime } from './game/track'
 import { serverClock, type ClockState } from './multiplayer/clock'
 import { identificadorDoPiloto } from './multiplayer/identity'
@@ -17,7 +18,13 @@ import type {
 } from './multiplayer/types'
 
 type Screen = 'menu' | 'lobby' | 'race' | 'result'
-type RaceSetup = { startAt: number; countdownMs: number; mode: 'solo' | 'online' }
+type RaceSetup = {
+  startAt: number
+  countdownMs: number
+  trackSeed: number
+  difficulty: Difficulty
+  mode: 'solo' | 'online'
+}
 type Connection = 'connected' | 'reconnecting'
 
 const storedPlayerId = identificadorDoPiloto(sessionStorage, globalThis.crypto)
@@ -68,6 +75,8 @@ function App() {
   const [outcome, setOutcome] = useState<RaceOutcome | null>(null)
   const [connection, setConnection] = useState<Connection>(socket.connected ? 'connected' : 'reconnecting')
   const [clock, setClock] = useState<ClockState>(serverClock.snapshot)
+  /** Dificuldade do modo treino. No duelo quem manda é a sala. */
+  const [soloDifficulty, setSoloDifficulty] = useState<Difficulty>('normal')
 
   // Refs para o ciclo do socket, que não deve depender do estado da tela.
   const ghostRef = useRef(new GhostTracker())
@@ -154,7 +163,15 @@ function App() {
       if (current?.startAt === room.startAt && current.mode === 'online') return current
       // Cada largada começa com o fantasma zerado.
       ghostRef.current.reset()
-      return { startAt: room.startAt!, countdownMs: room.countdownMs, mode: 'online' }
+      // O traçado vem da sala: é o servidor que decide, e o mesmo número chega
+      // aos dois pilotos antes da contagem começar.
+      return {
+        startAt: room.startAt!,
+        countdownMs: room.countdownMs,
+        trackSeed: room.trackSeed,
+        difficulty: room.difficulty,
+        mode: 'online',
+      }
     })
     setLobbyNotice('')
     setResult(null)
@@ -199,7 +216,14 @@ function App() {
   const startSoloRace = () => {
     selectedName()
     setResult(null)
-    setRaceSetup({ startAt: Date.now() + DEFAULT_COUNTDOWN_MS, countdownMs: DEFAULT_COUNTDOWN_MS, mode: 'solo' })
+    // No treino não há com quem sincronizar: cada volta estreia um traçado.
+    setRaceSetup({
+      startAt: Date.now() + DEFAULT_COUNTDOWN_MS,
+      countdownMs: DEFAULT_COUNTDOWN_MS,
+      trackSeed: Math.floor(Math.random() * 0xffffffff),
+      difficulty: soloDifficulty,
+      mode: 'solo',
+    })
     setRaceKey((value) => value + 1)
     setScreen('race')
   }
@@ -276,10 +300,12 @@ function App() {
     const rival = room?.players.find((player) => player.id !== storedPlayerId)
     return (
       <RaceCanvas
-        key={`${raceSetup.mode}-${raceSetup.startAt}-${raceKey}`}
+        key={`${raceSetup.mode}-${raceSetup.startAt}-${raceSetup.difficulty}-${raceKey}`}
         pilotName={pilotName}
         startAt={raceSetup.startAt}
         countdownMs={raceSetup.countdownMs}
+        trackSeed={raceSetup.trackSeed}
+        difficulty={raceSetup.difficulty}
         now={online ? serverClock.now : undefined}
         mode={raceSetup.mode}
         connectionNotice={online ? connectionNotice : null}
@@ -423,6 +449,21 @@ function App() {
           </div>
           {connection !== 'connected' && <p className="form-notice">PROCURANDO O SERVIDOR DA PARTIDA…</p>}
           {lobbyError && <p className="form-error">{lobbyError}</p>}
+          <fieldset className="difficulty-picker">
+            <legend>DIFICULDADE</legend>
+            {DIFFICULTIES.map((nivel) => (
+              <button
+                key={nivel}
+                type="button"
+                className={soloDifficulty === nivel ? 'on' : ''}
+                aria-pressed={soloDifficulty === nivel}
+                onClick={() => setSoloDifficulty(nivel)}
+              >
+                {DIFFICULTY_LABELS[nivel]}
+              </button>
+            ))}
+          </fieldset>
+          <p className="difficulty-note">{DIFFICULTY_NOTES[soloDifficulty]}</p>
           <button className="solo-button" onClick={startSoloRace}>CORRER NO MODO TREINO</button>
         </div>
       </section>

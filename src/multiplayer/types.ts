@@ -1,3 +1,5 @@
+import type { Difficulty } from '../game/rules'
+
 export type LobbyPlayer = {
   id: string
   name: string
@@ -19,6 +21,12 @@ export type LobbyRoom = {
   startAt: number | null
   /** Duração total da sequência de luzes definida pelo servidor. */
   countdownMs: number
+  /** Semente oficial do traçado, igual para os dois pilotos. */
+  trackSeed: number
+  /** Dificuldade oficial da sala, igual para os dois pilotos. */
+  difficulty: Difficulty
+  /** Quem criou a sala. Só ele escolhe a dificuldade. */
+  hostId: string | null
 }
 
 export type RoomResponse = {
@@ -31,6 +39,10 @@ export type ScheduledRace = {
   code: string
   startAt: number
   countdownMs: number
+  /** Semente do traçado desta corrida. */
+  trackSeed: number
+  /** Dificuldade desta corrida. */
+  difficulty: Difficulty
   serverTime: number
 }
 

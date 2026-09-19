@@ -4,8 +4,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createGameServer, type GameServer } from './app.js'
 import type { PublicRoom, RaceOutcome } from './rooms.js'
 import { GhostTracker, INTERPOLATION_DELAY_MS, type GhostSnapshot } from '../src/game/ghost.js'
+import { createTrackLayout, curvatureLoad } from '../src/game/layout.js'
 import { noLimiteDoAsfalto, segurandoAFaixa, type Piloto } from '../src/game/piloto.js'
-import { createRaceState, stepRace } from '../src/game/simulation.js'
+import { DIFFICULTIES, type Difficulty } from '../src/game/rules.js'
+import { createRaceState, stepRace, type RaceContext } from '../src/game/simulation.js'
 import { TRACK_LENGTH } from '../src/game/track.js'
 
 /**
@@ -24,10 +26,11 @@ import { TRACK_LENGTH } from '../src/game/track.js'
 /**
  * Os dois pilotos da demonstração.
  *
- * Desde que a curva empurra o carro, uma corrida sem ninguém no volante
- * termina na grama e não representa a prova que o público vai ver. O piloto
- * atento com boost faz o papel de quem já pegou o jeito; o que só corrige na
- * borda do asfalto faz o papel do visitante que pegou o celular agora.
+ * Desde que a curva empurra o carro, uma prova sem ninguém no volante termina
+ * na grama e não representa o que o público vai ver. O piloto atento com boost
+ * faz o papel de quem já pegou o jeito; o que corrige só na borda do asfalto
+ * faz o papel do visitante que pegou o celular agora — e é ele que define o
+ * piso: se este completa a prova no tempo previsto, qualquer pessoa completa.
  */
 const ATENTO_COM_BOOST: Piloto = segurandoAFaixa(0, true)
 const INICIANTE: Piloto = noLimiteDoAsfalto()
@@ -36,17 +39,38 @@ let server: GameServer
 let port = 0
 const clients: Socket[] = []
 
-type Corrida = { tempo: number; topSpeed: number; colisoes: number }
+type Corrida = { tempo: number; topSpeed: number; colisoes: number; foraDaPista: number }
 
-/** Roda uma prova inteira com a física do jogo e devolve o desempenho. */
-function correr(piloto: Piloto): Corrida {
-  const state = createRaceState()
+/** Semente usada nas provas simuladas deste arquivo. */
+const SEMENTE_DA_DEMO = 20_250
+
+/**
+ * Roda uma prova inteira com a física do jogo e devolve o desempenho.
+ *
+ * Corre numa pista gerada de verdade, e não na pista reta que o contexto
+ * padrão representa: é a curva que decide se o tempo de prova previsto no
+ * plano continua valendo, e a demonstração do evento não acontece numa reta.
+ */
+function correr(piloto: Piloto, difficulty: Difficulty = 'normal', semente = SEMENTE_DA_DEMO): Corrida {
+  const layout = createTrackLayout(semente)
+  const state = createRaceState(difficulty)
+  const context: RaceContext = { curvature: 0, slipstream: 0 }
   let tempo = 0
+  let quadrosForaDaPista = 0
+  let quadros = 0
   while (!state.finished && tempo < 300) {
-    stepRace(state, piloto(state), 1 / 60)
+    context.curvature = curvatureLoad(layout.curvature(state.progress))
+    stepRace(state, piloto(state), 1 / 60, context)
     tempo += 1 / 60
+    quadros += 1
+    if (state.offRoad) quadrosForaDaPista += 1
   }
-  return { tempo, topSpeed: state.topSpeed, colisoes: state.collisions }
+  return {
+    tempo,
+    topSpeed: state.topSpeed,
+    colisoes: state.collisions,
+    foraDaPista: quadrosForaDaPista / Math.max(1, quadros),
+  }
 }
 
 async function subirServidor(countdownMs: number) {
@@ -211,5 +235,63 @@ describe('roteiro da demonstração', () => {
     expect(iniciante.tempo).toBeLessThan(90)
     // E um iniciante que não desvia de nada ainda consegue terminar.
     expect(iniciante.colisoes).toBeGreaterThan(0)
+  })
+
+  /**
+   * A curva entrou na física e o traçado é sorteado por corrida, então o tempo
+   * de prova passou a depender da semente. Esta é a garantia que impede uma
+   * pista sorteada de estourar a janela do plano — ou de deixar a demonstração
+   * curta demais — em qualquer nível.
+   */
+  it('cabe na janela do plano em qualquer semente e qualquer nível', () => {
+    for (const nivel of DIFFICULTIES) {
+      for (const semente of [1, 7, 42, 20_250, 99_999]) {
+        const prova = correr(INICIANTE, nivel, semente)
+        expect(
+          prova.tempo,
+          `nível ${nivel}, semente ${semente}: ${prova.tempo.toFixed(1)} s`,
+        ).toBeGreaterThan(60)
+        expect(
+          prova.tempo,
+          `nível ${nivel}, semente ${semente}: ${prova.tempo.toFixed(1)} s`,
+        ).toBeLessThan(90)
+        // Quem corrige na borda não deve passar a prova na grama: se isto
+        // falhar, a força da curva está cobrando mais do que o esterço paga.
+        expect(prova.foraDaPista, `nível ${nivel}, semente ${semente}`).toBeLessThan(0.1)
+      }
+    }
+  })
+
+  /**
+   * A curva age na prova inteira, e não só num trecho escolhido.
+   *
+   * Não se mede isso pelo tempo: um piloto que só segura o meio tem esterço
+   * sobrando e corrige a curva sem perder quase nada — a força cobra margem de
+   * comando, não segundos. O que se mede é o deslocamento: pedindo o centro da
+   * pista, o carro fica mais longe do centro num traçado com curvas do que num
+   * traçado reto. Se isto parar de valer, a curva voltou a ser enfeite.
+   */
+  it('a curva desloca o carro de onde o piloto aponta', () => {
+    const desvioMedio = (comCurva: boolean, semente: number) => {
+      const layout = createTrackLayout(semente)
+      const state = createRaceState()
+      const context: RaceContext = { curvature: 0, slipstream: 0 }
+      const piloto = segurandoAFaixa(0)
+      let soma = 0
+      let quadros = 0
+      while (!state.finished && quadros < 18_000) {
+        context.curvature = comCurva ? curvatureLoad(layout.curvature(state.progress)) : 0
+        stepRace(state, piloto(state), 1 / 60, context)
+        soma += Math.abs(state.lateral)
+        quadros += 1
+      }
+      return soma / quadros
+    }
+
+    for (const semente of [1, 7, 42, 20_250, 99_999]) {
+      const reta = desvioMedio(false, semente)
+      const curva = desvioMedio(true, semente)
+      expect(curva, `semente ${semente}`).toBeGreaterThan(reta * 2)
+    }
   })
 })

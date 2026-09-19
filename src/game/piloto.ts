@@ -6,12 +6,13 @@ import { OFF_ROAD_LIMIT } from './track.js'
 /**
  * Pilotos de referência.
  *
- * Desde que a curva passou a empurrar o carro, "não tocar em nada" deixou de
- * ser uma forma válida de percorrer a pista: o carro termina na grama. Os
- * testes que tratam de outra coisa — boost, penalidade, obstáculos, chegada —
- * precisam de alguém dirigindo, senão medem uma corrida que nenhum jogador
- * faria. A alternativa seria desligar a curva nos testes, o que testaria um
- * jogo que não existe.
+ * Em pista reta — que é o contexto padrão de `stepRace`, e o que os testes de
+ * boost, penalidade e obstáculos usam para isolar o que medem — um carro sem
+ * comando anda em linha reta e não precisa de piloto. Com a curva ativa, não:
+ * ela empurra o carro para fora, e "não tocar em nada" deixa de ser uma forma
+ * válida de percorrer a pista. Os testes que correm numa pista gerada de
+ * verdade precisam de alguém no volante, senão medem uma corrida que nenhum
+ * jogador faria.
  *
  * São deliberadamente simples e sem ambição de ritmo: servem para descrever
  * comportamentos de jogador nos testes, não para ser rápidos. É daqui que sai
@@ -38,8 +39,9 @@ export function segurandoAFaixa(faixa = 0, boost = false): Piloto {
  * Corrige só quando a curva já levou o carro para perto da grama.
  *
  * É o menor esforço que ainda conta como dirigir, e por isso é ele que define
- * o piso de dificuldade: se este piloto completa a prova no tempo previsto, um
- * iniciante de celular também completa.
+ * o piso de dificuldade: se este piloto completa a prova no tempo previsto em
+ * qualquer semente e qualquer nível, um iniciante de celular também completa.
+ * É essa a garantia que `demonstracao.test.ts` cobra.
  */
 export function noLimiteDoAsfalto(boost = false): Piloto {
   const borda = OFF_ROAD_LIMIT * 0.8

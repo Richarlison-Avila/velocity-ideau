@@ -13,7 +13,11 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY server ./server
-COPY src/game/track.ts ./src/game/track.ts
+# A pasta inteira, e não um arquivo escolhido a dedo: o servidor importa as
+# regras e a simulação do jogo, e estas importam outros módulos daqui. Listar
+# um por um já deixou a imagem sem `rules.ts` e sem `simulation.ts`, e a falha
+# só aparecia ao subir o contêiner, não na build.
+COPY src/game ./src/game
 COPY tsconfig.server.json ./
 EXPOSE 3001
 CMD ["npm", "start"]

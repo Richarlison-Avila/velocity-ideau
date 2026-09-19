@@ -4,32 +4,40 @@ Protótipo jogável do plano em `PLANO_DESENVOLVIMENTO.md`: corrida offline, lob
 
 ## Como se dirige
 
-A aceleração é automática. O piloto controla **direção** e **boost**, e são duas
-forças que disputam o mesmo comando:
+A aceleração é automática. O piloto controla **direção** e **boost** — e há três
+coisas disputando esse único comando.
 
-- **A curva empurra.** A força lateral sai da derivada da mesma função que
-  desenha a pista, cresce com o quadrado da velocidade e só escapa quando passa
-  da aderência do pneu. Na velocidade normal 41% do traçado pede correção e o
-  pior ponto consome 24% do esterço; com boost são 67% do traçado e 53% do
-  esterço. Somando boost e vácuo, a curva mais fechada pede mais esterço do que
-  o carro tem — ou seja, **a velocidade máxima só é utilizável nas retas**, e
-  isso não é uma regra escrita à parte, é consequência da física.
-- **O vácuo do rival rende.** Vindo atrás e alinhado com o adversário, o carro
-  ganha até 26 km/h, mais forte quanto mais perto. Ultrapassar custa esse ganho,
-  porque a esteira desaparece no instante em que o carro passa à frente. É o que
-  dá sentido mecânico à presença do outro piloto: sem isso uma corrida on-line
-  seriam duas provas solo sobrepostas.
+**A curva empurra.** A curvatura vem do traçado sorteado para a corrida, a mesma
+que está sendo desenhada na tela, e entra na física como força lateral: cresce
+com o quadrado da velocidade e só desloca o carro no que passa da aderência do
+pneu. Segurar a linha gasta esterço que deixa de estar disponível para escolher
+a faixa, e é essa disputa que faz a pista importar.
 
-Quem não dirige termina a prova, mas 25 segundos mais devagar e com mais da
-metade do tempo na grama. Quem apenas mantém o carro no asfalto faz cerca de
-70 segundos.
+| Nível | Aderência | Pede correção em | Pior curva consome do esterço |
+| --- | --- | --- | --- |
+| Normal | 0,18 | 40% do traçado | 64% em cruzeiro · **101%** com boost |
+| Difícil | 0,15 | 45% do traçado | 65% em cruzeiro · 99% com boost |
+| Profissional | 0,12 | 52% do traçado | 66% em cruzeiro · 97% com boost |
 
-### Controles
+Passar de 100% significa que ali o carro escapa mesmo com o volante todo virado:
+**a velocidade máxima só é utilizável nas retas**. Isso não é uma regra escrita à
+parte — é consequência de a curva cobrar o quadrado da velocidade. Para um piloto
+que precisa desviar de obstáculos enquanto segura a curva, o custo medido é de
+0,35 s no normal, 1,3 s no difícil e 2,1 s no profissional.
 
-| | Computador | Celular |
-| --- | --- | --- |
-| Direção | `A` / `D` ou setas | Botões nas laterais |
-| Boost | `Espaço` | Botão dedicado |
+**O vácuo do rival rende.** Vindo atrás e alinhado com o adversário, o carro ganha
+até 26 km/h no normal — cerca de 10% do cruzeiro nos três níveis —, mais forte
+quanto mais perto. Ultrapassar custa esse ganho, porque a esteira desaparece no
+instante em que o carro passa à frente. É o que dá sentido mecânico à presença do
+outro piloto: sem isso, uma corrida on-line seriam duas provas solo sobrepostas.
+Com pilotos de habilidade diferente o melhor continua ganhando; o vácuo só encosta
+os carros quando já estão empatados, que é justamente a disputa que se quer
+dramática.
+
+**O volante castiga quem o maltrata.** Uma correção de curva mexe pouco e some;
+zigue-zague sustentado acumula e cobra aderência. Os dois sistemas não brigam: uma
+correção firme e mantida não é punida, porque o que conta é o curso do volante, e
+não a posição do carro.
 
 ## Executar
 
@@ -81,17 +89,23 @@ npm test
 
 A suíte cobre a física da corrida, a sequência das cinco luzes, a estimativa de relógio, a interpolação do fantasma, as regras das salas e testes de integração que sobem o servidor real e conectam dois clientes Socket.IO — inclusive medindo o erro do fantasma com pacotes atrasados e perdidos.
 
-Dois testes merecem destaque porque são o que sustenta a curva física:
+Três testes merecem destaque:
 
-- **A curvatura é a derivada do deslocamento que o desenho usa**, conferida
-  numericamente ponto a ponto na pista inteira. Enquanto isso valer, é
-  impossível o jogo empurrar o carro para um lado e desenhar a curva para o
-  outro.
+- **A prova cabe entre 60 e 90 segundos em qualquer semente e qualquer nível**,
+  com a curva ativa e no ritmo de quem corrige só na borda do asfalto. Desde que
+  o traçado é sorteado por corrida e a curva cobra tempo, é este teste que
+  impede uma pista sorteada de estourar a janela do plano.
+- **A curva desloca o carro de onde o piloto aponta**, medido pelo desvio médio
+  em cinco sementes contra a mesma prova em pista reta. Não se mede isso pelo
+  tempo: quem só segura o meio tem esterço sobrando e corrige quase de graça —
+  a força cobra margem de comando, não segundos. Se este teste parar de valer, a
+  curva voltou a ser enfeite.
 - **O ritmo do fantasma na tela nunca passa da velocidade real do rival**, com
   rede boa, com pacotes fora de ordem e com perdas. A medição é em metros por
   segundo, e não metros por amostra, porque `setInterval` não entrega intervalos
   constantes — medir por amostra transformava atraso do temporizador em "salto
-  do fantasma".
+  do fantasma", e reprovava o teste em uma execução a cada três sem nada de
+  errado com o fantasma.
 
 O roteiro da apresentação é um teste de aceitação à parte, que percorre a demonstração inteira — dois pilotos na mesma sala, largada, corrida com a física real, fantasma, resultado e revanche:
 
@@ -128,7 +142,7 @@ Cada navegador envia dez medições por segundo (progresso, faixa, velocidade e 
 
 Quem recebe guarda as medições recentes e desenha o rival 160 ms no passado, interpolando entre duas medições conhecidas. Se a telemetria falhar, projeta o movimento por até 600 ms e então congela o carro, marcando-o como sem sinal. O progresso exibido nunca recua, então um pacote atrasado não puxa o fantasma para trás.
 
-O fantasma é apenas desenhado: a simulação da corrida (`stepRace`) não recebe nenhum dado do rival, então é impossível ele empurrar ou frear o carro do jogador.
+O rival não tem colisão: os carros se atravessam. Mas ele não é só desenho — a posição dele entra na simulação por um caminho só, e estreito: a força do vácuo, um número de 0 a 1 calculado da distância e do alinhamento. É isso que `stepRace` recebe do adversário, e nada mais. Ele não pode empurrar, frear nem desviar o carro do jogador; só permitir que quem vem atrás ande um pouco mais rápido.
 
 ## Quem decide o vencedor
 

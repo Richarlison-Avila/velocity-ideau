@@ -1,11 +1,59 @@
 export const TRACK_LENGTH = 4_800
-export const VIEW_DISTANCE = 430
+
+/**
+ * Até onde a câmera enxerga, em metros.
+ *
+ * Era 430 m, e isso espalhava a pista inteira por uma faixa fina da tela: os
+ * primeiros 20 metros ocupavam 5% dela, e o fluxo na tela era praticamente o
+ * mesmo a 3 e a 150 metros de distância — 126 contra 93 pixels por segundo.
+ * O olho lê profundidade pela *diferença* entre o perto e o longe, e com essa
+ * razão de 1,4 a pista desliza em vez de recuar.
+ *
+ * Aproximar o horizonte dobra o fluxo junto à câmera e melhora a razão para
+ * 2,3. Custa metade do tempo de leitura de um obstáculo — de 6,1 s para
+ * 3,1 s, ainda folgado para uma correção lateral, que leva 0,14 s.
+ */
+export const VIEW_DISTANCE = 215
 
 /** Proporções da projeção pseudo-3D, compartilhadas pelo desenho e pelos efeitos. */
 export const HORIZON_RATIO = 0.29
 export const BOTTOM_RATIO = 0.92
 export const CAR_SCREEN_RATIO = 0.82
-export const PERSPECTIVE_POWER = 1.72
+/**
+ * Distância, em metros, na qual a pista aparece em tamanho natural.
+ *
+ * É o parâmetro da perspectiva de verdade que substituiu a curva de
+ * suavização `(1 − d/alcance)^n`. Aquela curva espalhava a pista por uma
+ * faixa fina da tela: o fluxo a 3 m era só 1,4 vez o de 150 m, e o olho lê
+ * profundidade justamente por essa razão. Com `1/z` a razão vai a 116, e um
+ * objeto cresce 1,47× nos últimos sete metros em vez de 1,09×.
+ *
+ * Quanto menor este número, mais violenta a perspectiva. 12 m põe o carro a
+ * 2,3 m da câmera — um plano de perseguição, não de helicóptero.
+ */
+export const CAMERA_DEPTH = 12
+
+/**
+ * Largura da pista na tela à distância zero, em fração da largura da tela.
+ *
+ * Com a perspectiva de verdade a pista junto à câmera fica larguíssima, e a
+ * 0,89 ela empurrava grama, marcadores e cenário para fora do quadro — o
+ * campo perto ficava vazio justamente onde mora a sensação de velocidade.
+ * Com 0,70 sobra margem para os marcadores varrerem a borda da tela, que é o
+ * elemento mais rápido da cena.
+ */
+export const ROAD_WIDTH_NEAR = 0.7
+
+/**
+ * Escala de tela no ponto onde o carro é desenhado.
+ *
+ * Sai de `CAR_SCREEN_RATIO` e é, por construção, independente da projeção.
+ * É o que mantém `CAR_HALF_LATERAL` e `OFF_ROAD_LIMIT` no lugar quando a
+ * projeção muda — e portanto o que impede uma troca de desenho de virar uma
+ * mudança de regra.
+ */
+export const CAR_SCREEN_SCALE = (CAR_SCREEN_RATIO - HORIZON_RATIO) / (BOTTOM_RATIO - HORIZON_RATIO)
+
 
 /**
  * Distância na pista que corresponde ao ponto onde o carro é desenhado.
@@ -13,24 +61,44 @@ export const PERSPECTIVE_POWER = 1.72
  * O carro fica fixo perto da base da tela enquanto o progresso corre por fora,
  * então os efeitos precisam nascer nesta distância para sair debaixo dele.
  */
-export const CAR_VIEW_DISTANCE =
-  VIEW_DISTANCE *
-  (1 -
-    Math.pow(
-      (CAR_SCREEN_RATIO - HORIZON_RATIO) / (BOTTOM_RATIO - HORIZON_RATIO),
-      1 / PERSPECTIVE_POWER,
-    ))
+export const CAR_VIEW_DISTANCE = CAMERA_DEPTH * (1 / CAR_SCREEN_SCALE - 1)
 
 /** Meia-largura do desenho do carro, na escala base do sprite. */
 export const CAR_SPRITE_HALF_WIDTH = 31
 /** Largura de tela em que o sprite do carro é desenhado na escala 1. */
 export const CAR_SPRITE_REFERENCE_WIDTH = 620
 
+export type ObstacleKind = 'barrier' | 'debris' | 'pothole'
+
 export type Obstacle = {
   id: number
   distance: number
   lane: number
-  kind: 'barrier' | 'debris'
+  kind: ObstacleKind
+}
+
+/**
+ * Meia-largura da colisão, por tipo.
+ *
+ * O buraco é mais estreito que uma barreira: dá para raspar nele sem cair
+ * dentro. É o que permite colocá-lo na beirada sem trancar a passagem.
+ */
+export const HIT_HALF_WIDTH: Record<ObstacleKind, number> = {
+  barrier: 0.25,
+  debris: 0.25,
+  pothole: 0.17,
+}
+
+/**
+ * Fração da penalidade que cada tipo cobra.
+ *
+ * Cair num buraco é um tranco, não uma batida: custa pouco mais da metade do
+ * que custa acertar uma barreira de concreto.
+ */
+export const HIT_PENALTY_SHARE: Record<ObstacleKind, number> = {
+  barrier: 1,
+  debris: 1,
+  pothole: 0.55,
 }
 
 export const obstacles: Obstacle[] = [
@@ -49,18 +117,21 @@ export const obstacles: Obstacle[] = [
 /**
  * Projeção de um ponto da pista na tela, sem considerar a curva.
  *
+ * Perspectiva de verdade: a escala cai com `1/z`, e não por uma curva de
+ * suavização. É o que faz o que está perto varrer a tela e o que está longe
+ * quase parar — a diferença entre uma pista que recua e uma que desliza.
+ *
  * Fica aqui, e não dentro do componente, para que o desenho e os efeitos usem
  * exatamente a mesma conta — e para poder ser conferida nos testes.
  */
 export function roadProjection(distanceAhead: number, width: number, height: number) {
-  const closeness = 1 - distanceAhead / VIEW_DISTANCE
-  const perspective = Math.pow(Math.max(0, closeness), PERSPECTIVE_POWER)
+  const perspective = CAMERA_DEPTH / (CAMERA_DEPTH + Math.max(0, distanceAhead))
   const horizon = height * HORIZON_RATIO
   const bottom = height * BOTTOM_RATIO
   return {
     perspective,
     y: horizon + perspective * (bottom - horizon),
-    roadWidth: width * (0.09 + perspective * 0.8),
+    roadWidth: width * ROAD_WIDTH_NEAR * perspective,
   }
 }
 
@@ -105,88 +176,48 @@ export const LATERAL_LIMIT = ROAD_EDGE + 0.16
  * São a principal referência de velocidade: passam perto da câmera e varrem a
  * tela muito mais rápido que a pista ao longe. Ficam em distâncias absolutas
  * e múltiplas do espaçamento, então nunca piscam nem mudam de lugar entre um
- * quadro e outro. O render percorre os índices direto, sem montar lista.
+ * quadro e outro. São percorridos junto com o cenário, no mesmo laço de
+ * profundidade: cada vaga par do cenário cai sobre um marcador.
  */
-export const ROADSIDE_SPACING = 20
+export const ROADSIDE_SPACING = 12
 /** Ficam do lado de fora do asfalto, sem invadir a faixa jogável. */
 export const ROADSIDE_LATERAL = ROAD_EDGE + 0.14
 /** Um marcador alto a cada tantos, para dar ritmo à contagem. */
 export const ROADSIDE_TALL_EVERY = 5
-
-/** Primeiro marcador ainda à frente da câmera. */
-export function firstRoadsideIndex(progress: number) {
-  return Math.ceil(progress / ROADSIDE_SPACING)
-}
-
-/** Último marcador dentro do campo de visão. */
-export function lastRoadsideIndex(progress: number) {
-  return Math.floor((progress + VIEW_DISTANCE) / ROADSIDE_SPACING)
-}
 
 export function isTallMarker(index: number) {
   return index % ROADSIDE_TALL_EVERY === 0
 }
 
 /**
- * Harmônicos do traçado.
+ * Conversão do deslocamento da linha central, em metros, para pixels de
+ * curvatura na tela.
  *
- * Ficam em um lugar só porque três coisas dependem deles e não podem
- * divergir: o deslocamento do centro da pista, que o desenho usa; a taxa de
- * curva, de onde a simulação tira a força lateral; e a normalização dessa
- * taxa. Antes os seis números estavam escritos à mão dentro de `trackCurve`,
- * e qualquer ajuste no traçado teria que ser repetido na derivada — com o
- * risco de a pista desenhada deixar de ser a pista que empurra o carro.
+ * O traçado é gerado em metros por `layout.ts`; este é o único número que
+ * decide o quanto isso aparece. Com o rumo máximo de 0,42 rad, a linha do
+ * horizonte chega a cerca de 23% da largura da tela fora do centro — visível,
+ * sem jogar a pista para fora do quadro.
+ *
+ * Dobrou junto com o encurtamento da distância de visão: com a janela pela
+ * metade, o desvio acumulado dentro dela também cai pela metade. Sem a
+ * compensação, aproximar o horizonte teria endireitado as curvas de brinde.
  */
-const CURVE_HARMONICS = [
-  { amplitude: 0.46, wavelength: 310, phase: 0 },
-  { amplitude: 0.35, wavelength: 790, phase: 0.8 },
-  { amplitude: 0.18, wavelength: 1450, phase: 0 },
-]
-
-/** Deslocamento do centro da pista na distância indicada. */
-export function trackCurve(distance: number) {
-  let offset = 0
-  // Laço indexado, e não `for...of`: esta função é chamada 85 vezes por quadro
-  // pelo desenho da pista.
-  for (let i = 0; i < CURVE_HARMONICS.length; i += 1) {
-    const { amplitude, wavelength, phase } = CURVE_HARMONICS[i]
-    offset += Math.sin(distance / wavelength + phase) * amplitude
-  }
-  return offset
-}
+export const CURVE_BEND_SCALE = 0.0024
 
 /**
- * Taxa de curva: derivada do deslocamento do centro em relação à distância.
+ * Conversão da altura da linha central, em metros, para pixels na tela.
  *
- * É o que o piloto sente como "a pista está virando", e não `trackCurve`, que
- * é apenas onde o centro está. Num ponto de deslocamento máximo a pista está
- * momentaneamente reta — a derivada é zero ali, e é isso que a força lateral
- * precisa saber.
- */
-export function curveRate(distance: number) {
-  let rate = 0
-  for (let i = 0; i < CURVE_HARMONICS.length; i += 1) {
-    const { amplitude, wavelength, phase } = CURVE_HARMONICS[i]
-    rate += (Math.cos(distance / wavelength + phase) * amplitude) / wavelength
-  }
-  return rate
-}
-
-/** Maior taxa possível: todos os cossenos valendo 1 no mesmo ponto. */
-export const MAX_CURVE_RATE = CURVE_HARMONICS.reduce(
-  (total, { amplitude, wavelength }) => total + amplitude / wavelength,
-  0,
-)
-
-/**
- * Curvatura normalizada, de -1 (virando à esquerda) a 1 (à direita).
+ * O par deste número é `CURVE_BEND_SCALE`: um decide o quanto a curva aparece,
+ * o outro o quanto a lomba aparece. Ele é limitado pelo mesmo motivo que a
+ * inclinação: alto demais, a pista se dobra sobre si mesma numa crista.
  *
- * A simulação trabalha nesta escala para que a força lateral seja ajustável
- * por um número legível, independente dos comprimentos de onda do traçado.
+ * Deixou de ser limitado pela projeção quando o desenho passou a recortar
+ * geometria escondida. Antes disso o teto vinha da condição de a pista não se
+ * dobrar sobre si mesma; agora a dobra é tratada, e o número é escolhido pelo
+ * que se quer ver. Medido em 60 sementes × 3 alturas de tela: com este valor,
+ * o pior quadro esconde 1% das fatias da pista.
  */
-export function trackCurvature(distance: number) {
-  return curveRate(distance) / MAX_CURVE_RATE
-}
+export const SLOPE_RISE_SCALE = 0.07
 
 export function formatTime(seconds: number) {
   const safe = Math.max(0, seconds)
@@ -194,38 +225,3 @@ export function formatTime(seconds: number) {
   const remaining = safe - minutes * 60
   return `${minutes}:${remaining.toFixed(3).padStart(6, '0')}`
 }
-
-/**
- * Ganho máximo de velocidade ao correr no vácuo do rival, em km/h.
- *
- * Fica junto das outras velocidades porque é uma delas: o vácuo não é um
- * estado novo do carro, é um acréscimo ao alvo de velocidade. Mora aqui, e não
- * no módulo do vácuo, porque o servidor importa apenas este arquivo para
- * validar a chegada e precisa conhecer o teto real do carro.
- */
-export const SLIPSTREAM_BONUS = 26
-
-/**
- * Velocidade alvo do carro no estado informado.
- *
- * `slipstream` vai de 0 a 1 e só acrescenta nos estados livres: na grama e
- * durante a penalidade o carro está sendo punido, e o vácuo não anula punição.
- */
-export function speedForState(offRoad: boolean, penalty: number, boosting: boolean, slipstream = 0) {
-  if (offRoad) return 132
-  if (penalty > 0) return 172
-  // `Math.min` e `Math.max` propagam NaN. Como a força do vácuo é derivada da
-  // posição do rival, que chega pela rede, um valor corrompido apagaria a
-  // velocidade do próprio carro — por isso a faixa é conferida, não presumida.
-  const forca = Number.isFinite(slipstream) ? Math.max(0, Math.min(1, slipstream)) : 0
-  return (boosting ? 314 : 252) + forca * SLIPSTREAM_BONUS
-}
-
-/**
- * Maior velocidade que o carro pode atingir: boost com vácuo cheio.
- *
- * O servidor usa este teto para saber qual é o tempo de prova mais rápido
- * fisicamente possível. Antes ele usava a velocidade do boost puro, o que
- * passaria a rejeitar uma chegada legítima obtida no vácuo.
- */
-export const MAX_RACE_SPEED = speedForState(false, 0, true, 1)

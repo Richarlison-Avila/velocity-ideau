@@ -1,5 +1,5 @@
-import type { RaceInput, RaceState } from './simulation.js'
-import { MAX_RACE_SPEED, OFF_ROAD_LIMIT } from './track.js'
+import { ACCELERATION_PEAK, STEER_TAU, type RaceState } from './simulation.js'
+import { OFF_ROAD_LIMIT } from './track.js'
 
 /**
  * Intensidades contínuas para a apresentação.
@@ -13,22 +13,31 @@ import { MAX_RACE_SPEED, OFF_ROAD_LIMIT } from './track.js'
  * modifica, e nada que ele produz volta para a decisão da corrida.
  */
 
-/** Velocidade máxima que o carro alcança, usada para normalizar. */
-export const MAX_SPEED = MAX_RACE_SPEED
+/**
+ * Aceleração de referência, em km/h por segundo.
+ *
+ * É a própria aceleração de arrancada do carro, e não um número escolhido à
+ * parte: assim a saída da largada satura o indicador em 1 justamente no
+ * momento mais dramático, e o boost passa disso.
+ */
+export const ACCEL_REFERENCE = ACCELERATION_PEAK
 
 /**
- * Aceleração de referência, em km/h por segundo. A arrancada da largada passa
- * disso, então `accel` satura em 1 justamente no momento mais dramático.
+ * Giro de volante por segundo que satura o indicador de esforço.
+ *
+ * Sai da inércia do volante: com ela, largar o volante do batente ao centro
+ * gira a esta velocidade.
  */
-export const ACCEL_REFERENCE = 240
+export const STEER_RATE_REFERENCE = 1 / STEER_TAU
 
 /** Constantes de tempo da suavização, em segundos. */
 const TAU = {
   accel: 0.16,
-  steer: 0.12,
   boost: 0.18,
   offRoad: 0.14,
   impact: 0.42,
+  steerRate: 0.2,
+  strain: 0.3,
   slipstream: 0.22,
   corner: 0.2,
 }
@@ -38,8 +47,12 @@ export type FeelState = {
   speed: number
   /** Aceleração de -1 a 1, suavizada. Positiva ao ganhar velocidade. */
   accel: number
-  /** Esterço aparente de -1 a 1, com leve atraso em relação ao comando. */
+  /** Posição do volante, de -1 a 1. Lida da simulação, não suavizada de novo. */
   steer: number
+  /** O quanto o volante está sendo girado agora, de 0 a 1. */
+  steerRate: number
+  /** Esforço lateral acumulado, de 0 a 1. Chega a 1 na perda máxima de aderência. */
+  strain: number
   /** O quanto o boost está atuando, de 0 a 1. */
   boost: number
   /** Sobe a 1 no impacto e decai. */
@@ -52,6 +65,8 @@ export type FeelState = {
   corner: number
   /** Velocidade do quadro anterior, para derivar a aceleração. */
   previousSpeed: number
+  /** Volante do quadro anterior, para derivar o quanto ele está girando. */
+  previousSteer: number
 }
 
 export function createFeel(): FeelState {
@@ -59,12 +74,15 @@ export function createFeel(): FeelState {
     speed: 0,
     accel: 0,
     steer: 0,
+    steerRate: 0,
+    strain: 0,
     boost: 0,
     impact: 0,
     offRoad: 0,
     slipstream: 0,
     corner: 0,
     previousSpeed: 0,
+    previousSteer: 0,
   }
 }
 
@@ -84,18 +102,28 @@ function clamp(value: number, min: number, max: number) {
 }
 
 /** Atualiza as intensidades a partir do estado da corrida. */
-export function updateFeel(feel: FeelState, race: RaceState, input: RaceInput, dt: number) {
+export function updateFeel(feel: FeelState, race: RaceState, dt: number) {
   const step = Math.max(0, dt)
   if (step === 0) return feel
 
-  feel.speed = clamp(race.speed / MAX_SPEED, 0, 1)
+  // Normalizada pelo teto da própria dificuldade: em profissional o carro é
+  // mais rápido, e o indicador continua chegando a 1 no mesmo lugar da escala.
+  feel.speed = clamp(race.speed / race.rules.boostSpeed, 0, 1)
 
   const bruto = (race.speed - feel.previousSpeed) / step / ACCEL_REFERENCE
   feel.previousSpeed = race.speed
   feel.accel = approach(feel.accel, clamp(bruto, -1, 1), TAU.accel, step)
 
-  const comando = Number(input.right) - Number(input.left)
-  feel.steer = approach(feel.steer, comando, TAU.steer, step)
+  // O volante já tem inércia dentro da simulação: aqui só lemos o valor. Uma
+  // segunda suavização seria uma segunda verdade, e a carroceria acabaria
+  // inclinando para um lado enquanto o carro anda para o outro.
+  const giro = Math.abs(race.steerInput - feel.previousSteer) / step
+  feel.previousSteer = race.steerInput
+  feel.steer = race.steerInput
+  feel.steerRate = approach(feel.steerRate, clamp(giro / STEER_RATE_REFERENCE, 0, 1), TAU.steerRate, step)
+
+  // Esforço lateral: sai da aderência que a simulação já calculou.
+  feel.strain = approach(feel.strain, clamp((1 - race.grip) / race.rules.maxGripLoss, 0, 1), TAU.strain, step)
 
   feel.boost = approach(feel.boost, race.boosting ? 1 : 0, TAU.boost, step)
 

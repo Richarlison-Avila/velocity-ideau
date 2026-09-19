@@ -1,6 +1,8 @@
 // A validação da chegada precisa da mesma pista que o jogo desenha, então a
 // definição vem do módulo do jogo em vez de ser copiada para cá.
-import { LATERAL_LIMIT, MAX_RACE_SPEED, TRACK_LENGTH } from '../src/game/track.js'
+import { rulesFor, toDifficulty, type Difficulty } from '../src/game/rules.js'
+import { speedForState } from '../src/game/simulation.js'
+import { LATERAL_LIMIT, TRACK_LENGTH } from '../src/game/track.js'
 
 export type RoomStatus = 'waiting' | 'ready' | 'countdown' | 'racing' | 'finished'
 
@@ -23,6 +25,29 @@ export type PublicRoom = {
   startAt: number | null
   /** Duração total da sequência de luzes, usada pelos clientes. */
   countdownMs: number
+  /**
+   * Semente oficial do traçado desta corrida.
+   *
+   * A curva e o cenário são gerados a partir dela, então os dois pilotos
+   * precisam receber exatamente o mesmo número — senão cada um correria em uma
+   * pista diferente. Quem manda é o servidor: o cliente nunca sorteia.
+   */
+  trackSeed: number
+  /**
+   * Dificuldade oficial da sala.
+   *
+   * Vale para os dois pilotos e decide a física da prova, então é estado do
+   * servidor como o horário da largada. Um cliente que simulasse com regras
+   * próprias estaria correndo outra corrida.
+   */
+  difficulty: Difficulty
+  /**
+   * Quem criou a sala e decide a dificuldade.
+   *
+   * Vai para os clientes porque a interface precisa saber de quem é a
+   * escolha — mostrar um seletor a quem não manda nele seria mentir.
+   */
+  hostId: string | null
 }
 
 export type RivalState = 'racing' | 'finished'
@@ -55,6 +80,12 @@ type Room = {
   createdAt: number
   state: RaceState
   startAt: number | null
+  /** Semente do traçado desta corrida, renovada a cada nova largada. */
+  trackSeed: number
+  /** Dificuldade escolhida no lobby, congelada quando a contagem começa. */
+  difficulty: Difficulty
+  /** Quem criou a sala. Passa adiante se ele sair. */
+  hostId: string | null
   /** Resultado oficial da última corrida, idêntico para os dois pilotos. */
   outcome: RaceOutcome | null
 }
@@ -67,7 +98,7 @@ export type RoomUpdate = {
 }
 
 export class RoomError extends Error {
-  constructor(public code: 'ROOM_NOT_FOUND' | 'ROOM_FULL' | 'NOT_IN_ROOM', message: string) {
+  constructor(public code: 'ROOM_NOT_FOUND' | 'ROOM_FULL' | 'NOT_IN_ROOM' | 'NOT_HOST', message: string) {
     super(message)
   }
 }
@@ -91,14 +122,25 @@ export { LATERAL_LIMIT } from '../src/game/track.js'
 export const CLOCK_TOLERANCE_MS = 5_000
 
 /**
- * Tempo mínimo fisicamente possível para a prova: a pista inteira na
- * velocidade máxima do carro. Qualquer chegada mais rápida é impossível.
+ * Tempo mínimo fisicamente possível para a prova, por dificuldade: a pista
+ * inteira na velocidade máxima daquele nível. Qualquer chegada mais rápida é
+ * impossível.
  *
- * O teto vem de `MAX_RACE_SPEED`, que já inclui o ganho do vácuo. Usar aqui a
- * velocidade do boost puro rejeitaria como impossível uma volta rápida obtida
- * legitimamente na esteira do rival.
+ * Precisa ser por dificuldade, e não um número só. Com o teto do nível mais
+ * rápido, uma chegada impossível no normal passaria; com o teto do mais
+ * lento, uma chegada legítima no profissional seria recusada.
+ *
+ * O teto inclui o vácuo. Sem ele, uma volta rápida feita legitimamente na
+ * esteira do rival seria recusada como impossível — e é justamente o piloto
+ * que colou no adversário a prova inteira quem tem mais chance de chegar perto
+ * deste piso.
  */
-export const MIN_RACE_SECONDS = TRACK_LENGTH / (MAX_RACE_SPEED / 3.6)
+export function minRaceSeconds(difficulty: Difficulty) {
+  return TRACK_LENGTH / (speedForState(false, 0, true, rulesFor(difficulty), 1) / 3.6)
+}
+
+/** Tempo mínimo do nível de referência, mantido para quem não passa a sala. */
+export const MIN_RACE_SECONDS = minRaceSeconds('normal')
 
 /** Folga para a viagem do aviso de chegada até o servidor. */
 export const FINISH_TOLERANCE_SECONDS = 2
@@ -143,6 +185,8 @@ export type RoomStoreOptions = {
    * apresentador abrir o jogo, para o QR code do slide sempre funcionar.
    */
   openRooms?: string[]
+  /** Sorteio da semente do traçado. Os testes injetam uma sequência previsível. */
+  nextSeed?: () => number
 }
 
 export class RoomStore {
@@ -150,11 +194,13 @@ export class RoomStore {
   private now: () => number
   private countdownMs: number
   private openRooms: Set<string>
+  private nextSeed: () => number
 
   constructor(options: RoomStoreOptions = {}) {
     this.now = options.now ?? (() => Date.now())
     this.countdownMs = options.countdownMs ?? COUNTDOWN_MS
     this.openRooms = new Set((options.openRooms ?? []).map((code) => code.trim().toUpperCase()).filter(Boolean))
+    this.nextSeed = options.nextSeed ?? (() => Math.floor(Math.random() * 0xffffffff))
   }
 
   /** Códigos que sempre aceitam entrada, mesmo sem ninguém dentro. */
@@ -169,6 +215,9 @@ export class RoomStore {
       createdAt: this.now(),
       state: 'idle',
       startAt: null,
+      trackSeed: this.nextSeed(),
+      difficulty: 'normal',
+      hostId: playerId,
       outcome: null,
       players: [this.createPlayer(playerId, socketId, rawName)],
     })
@@ -188,6 +237,7 @@ export class RoomStore {
 
     if (room.players.length >= 2) throw new RoomError('ROOM_FULL', 'Esta sala já está cheia.')
     room.players.push(this.createPlayer(playerId, socketId, rawName))
+    this.ensureHost(room)
     return this.toPublic(room)
   }
 
@@ -204,12 +254,56 @@ export class RoomStore {
     return this.toPublic(room)
   }
 
+  /**
+   * Troca a dificuldade da sala.
+   *
+   * Só antes da contagem: mudar a regra com a largada já marcada seria trocar
+   * a prova debaixo de quem já confirmou. E confirmar de novo é obrigatório —
+   * a escolha volta a zero para os dois, porque ninguém deve largar numa
+   * dificuldade que não viu.
+   */
+  setDifficulty(codeInput: string, playerId: string, difficulty: unknown) {
+    const room = this.requireRoom(codeInput)
+    if (!room.players.some((candidate) => candidate.id === playerId)) {
+      throw new RoomError('NOT_IN_ROOM', 'Você não está nesta sala.')
+    }
+    // Só quem criou a sala escolhe. Com os dois podendo trocar, a decisão
+    // viraria um cabo de guerra e ninguém saberia em que prova vai largar.
+    if (room.hostId !== playerId) {
+      throw new RoomError('NOT_HOST', 'Só quem criou a sala escolhe a dificuldade.')
+    }
+    if (room.state === 'countdown' || room.state === 'racing') return this.toPublic(room)
+
+    const escolhida = toDifficulty(difficulty)
+    if (escolhida === room.difficulty) return this.toPublic(room)
+
+    if (room.state === 'finished') this.resetRace(room)
+    room.difficulty = escolhida
+    for (const candidate of room.players) candidate.ready = false
+    return this.toPublic(room)
+  }
+
+  /** Quem manda na sala agora. */
+  hostOf(codeInput: string) {
+    return this.rooms.get(this.normalize(codeInput))?.hostId ?? null
+  }
+
+  /** Dificuldade oficial da sala, para o servidor validar a chegada. */
+  difficultyOf(codeInput: string): Difficulty {
+    return this.rooms.get(this.normalize(codeInput))?.difficulty ?? 'normal'
+  }
+
   /** Define o instante oficial da largada. Retorna null se a sala ainda não puder largar. */
   scheduleStart(codeInput: string) {
     const room = this.requireRoom(codeInput)
     if (room.state !== 'idle' || !this.everyoneReady(room)) return null
     room.state = 'countdown'
     room.startAt = this.now() + this.countdownMs
+    // Cada largada estreia um traçado. Como a semente é renovada aqui, e só
+    // aqui, ela fica congelada durante a contagem, a corrida e qualquer
+    // reconexão no meio da prova — e a revanche, que passa por este mesmo
+    // caminho, ganha uma pista nova para os dois ao mesmo tempo.
+    room.trackSeed = this.nextSeed()
     return this.toPublic(room)
   }
 
@@ -286,11 +380,14 @@ export class RoomStore {
     const player = room.players.find((candidate) => candidate.id === playerId)
     if (!player || player.finish) return null
 
+    // O piso vem da dificuldade da própria sala: no profissional o carro é
+    // mais rápido, e um tempo legítimo lá seria recusado pelo piso do normal.
+    const minimo = minRaceSeconds(room.difficulty)
     const elapsed = (this.now() - room.startAt) / 1000
-    if (elapsed < MIN_RACE_SECONDS) return null
+    if (elapsed < minimo) return null
 
     const reported = Number.isFinite(report.time) ? report.time : elapsed
-    const floor = Math.max(MIN_RACE_SECONDS, elapsed - FINISH_TOLERANCE_SECONDS)
+    const floor = Math.max(minimo, elapsed - FINISH_TOLERANCE_SECONDS)
     player.finish = {
       playerId,
       name: player.name,
@@ -423,6 +520,7 @@ export class RoomStore {
       this.rooms.delete(code)
       return { code, room: null, cancelledCountdown }
     }
+    this.ensureHost(room)
     if (room.state !== 'idle') this.resetRace(room)
     return { code, room: this.toPublic(room), cancelledCountdown }
   }
@@ -471,6 +569,18 @@ export class RoomStore {
     }
   }
 
+  /**
+   * Garante que a sala sempre tenha um anfitrião presente.
+   *
+   * Se o criador sai de vez, quem ficou assume — sem isso a dificuldade
+   * ficaria trancada no valor que ele deixou. Uma queda de conexão não
+   * transfere nada: ele continua dono enquanto a janela de retorno correr.
+   */
+  private ensureHost(room: Room) {
+    if (room.players.some((player) => player.id === room.hostId)) return
+    room.hostId = room.players[0]?.id ?? null
+  }
+
   private everyoneReady(room: Room) {
     return (
       room.players.length === 2 &&
@@ -487,6 +597,10 @@ export class RoomStore {
       createdAt: this.now(),
       state: 'idle',
       startAt: null,
+      trackSeed: this.nextSeed(),
+      difficulty: 'normal',
+      // A sala de demonstração nasce vazia: o primeiro a entrar é o anfitrião.
+      hostId: null,
       outcome: null,
       players: [],
     }
@@ -551,6 +665,15 @@ export class RoomStore {
             : this.everyoneReady(room)
               ? 'ready'
               : 'waiting'
-    return { code: room.code, players, status, startAt: room.startAt, countdownMs: this.countdownMs }
+    return {
+      code: room.code,
+      players,
+      status,
+      startAt: room.startAt,
+      countdownMs: this.countdownMs,
+      trackSeed: room.trackSeed,
+      difficulty: room.difficulty,
+      hostId: room.hostId,
+    }
   }
 }

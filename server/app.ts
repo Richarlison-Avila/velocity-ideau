@@ -74,6 +74,8 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       code,
       startAt: scheduled.startAt,
       countdownMs: scheduled.countdownMs,
+      trackSeed: scheduled.trackSeed,
+      difficulty: scheduled.difficulty,
       serverTime: Date.now(),
     })
 
@@ -123,10 +125,14 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
 
         // Quem volta durante a contagem ou a corrida recebe o instante oficial.
         if (room.startAt && (room.status === 'countdown' || room.status === 'racing')) {
+          // A semente vai junto: quem volta precisa reconstruir exatamente a
+          // mesma pista em que o rival continua correndo.
           socket.emit('race:scheduled', {
             code: room.code,
             startAt: room.startAt,
             countdownMs: room.countdownMs,
+            trackSeed: room.trackSeed,
+            difficulty: room.difficulty,
             serverTime: Date.now(),
           })
           // E também a última posição conhecida do rival, para o fantasma voltar na hora.
@@ -169,6 +175,16 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
         scheduleIfReady(room.code)
       } catch (error) {
         ack?.({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível pedir revanche.' })
+      }
+    })
+
+    socket.on('room:set-difficulty', (payload: { code: string; playerId: string; difficulty: string }, ack?: Ack) => {
+      try {
+        const room = rooms.setDifficulty(payload.code, payload.playerId, payload.difficulty)
+        ack?.({ ok: true, room })
+        publish(room.code, room)
+      } catch (error) {
+        ack?.({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível trocar a dificuldade.' })
       }
     })
 

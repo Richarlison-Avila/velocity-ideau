@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { CAR_HALF_WIDTH, EmissionRate, MAX_PARTICLES, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET } from './particles'
-import { CAR_SCREEN_RATIO, CAR_VIEW_DISTANCE, lateralOffset, roadProjection, VIEW_DISTANCE } from './track'
+import { EmissionRate, MAX_PARTICLES, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET } from './particles'
+import {
+  CAR_SCREEN_RATIO,
+  CAR_SPRITE_HALF_WIDTH,
+  CAR_VIEW_DISTANCE,
+  lateralOffset,
+  roadProjection,
+  VIEW_DISTANCE,
+} from './track'
 
 describe('efeitos da pista', () => {
   it('guarda a partícula na distância onde nasceu', () => {
@@ -72,8 +79,10 @@ describe('efeitos da pista', () => {
   it('a partícula nasce onde o carro aparece na tela', () => {
     // O carro é desenhado perto da base, o que corresponde a uma distância
     // curta à frente da câmera: é dali que a poeira precisa sair.
-    expect(CAR_VIEW_DISTANCE).toBeGreaterThan(20)
-    expect(CAR_VIEW_DISTANCE).toBeLessThan(60)
+    // Derivado da janela, e não um número fixo: o carro fica perto da base
+    // da tela, o que corresponde a uma fração curta do campo de visão.
+    expect(CAR_VIEW_DISTANCE).toBeGreaterThan(0)
+    expect(CAR_VIEW_DISTANCE).toBeLessThan(VIEW_DISTANCE * 0.15)
 
     const campo = new ParticleField()
     campo.spawn('dust', 1_000 + CAR_VIEW_DISTANCE, 0)
@@ -91,8 +100,10 @@ describe('efeitos da pista', () => {
     const { roadWidth } = roadProjection(CAR_VIEW_DISTANCE - TRAIL_SETBACK, largura, 450)
     const deslocamento = Math.abs(lateralOffset(WHEEL_OFFSET, roadWidth))
 
-    // O carro ocupa CAR_HALF_WIDTH pixels para cada lado na escala base.
-    expect(deslocamento).toBeGreaterThan(CAR_HALF_WIDTH)
+    // O carro ocupa meia largura de sprite para cada lado na escala base. A
+    // medida vem de track.ts, que é quem define a geometria: uma cópia aqui
+    // divergiria em silêncio no dia em que o desenho do carro mudasse.
+    expect(deslocamento).toBeGreaterThan(CAR_SPRITE_HALF_WIDTH)
     // E não tanto a ponto de a poeira sair do asfalto.
     expect(deslocamento).toBeLessThan(roadWidth / 2)
   })

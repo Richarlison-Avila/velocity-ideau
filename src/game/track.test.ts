@@ -1,27 +1,25 @@
 import { describe, expect, it } from 'vitest'
+import { firstSceneryIndex, lastSceneryIndex, SCENERY_SPACING } from './layout'
 import {
   CAR_HALF_LATERAL,
   CAR_SCREEN_RATIO,
   CAR_VIEW_DISTANCE,
-  firstRoadsideIndex,
   formatTime,
   isTallMarker,
   LATERAL_LIMIT,
-  lastRoadsideIndex,
   lateralOffset,
   OFF_ROAD_LIMIT,
   roadProjection,
   ROADSIDE_LATERAL,
   ROADSIDE_SPACING,
   ROAD_EDGE,
-  MAX_CURVE_RATE,
-  MAX_RACE_SPEED,
-  SLIPSTREAM_BONUS,
-  speedForState,
-  trackCurvature,
-  trackCurve,
   VIEW_DISTANCE,
 } from './track'
+import { rulesFor } from './rules'
+import { speedForState } from './simulation'
+
+/** Regras do nível de referência. */
+const REGRAS = rulesFor('normal')
 
 describe('regras básicas da corrida', () => {
   it('formata o cronômetro', () => {
@@ -29,11 +27,11 @@ describe('regras básicas da corrida', () => {
   })
 
   it('prioriza a redução de velocidade fora da pista', () => {
-    expect(speedForState(true, 0, true)).toBe(132)
+    expect(speedForState(true, 0, true, REGRAS)).toBe(132)
   })
 
   it('aplica boost quando o carro está livre', () => {
-    expect(speedForState(false, 0, true)).toBe(314)
+    expect(speedForState(false, 0, true, REGRAS)).toBe(314)
   })
 })
 
@@ -82,13 +80,29 @@ describe('alinhamento entre o que o jogo desenha e o que ele cobra', () => {
     expect(noMaximo.x + LARGURA * 0.06).toBeLessThan(LARGURA)
   })
 
-  it('carro e obstáculo na mesma faixa aparecem na mesma coluna da tela', () => {
+  it('carro e obstáculo na mesma faixa convergem para a mesma coluna', () => {
+    // Este teste comparava `naTela(faixa, CAR_VIEW_DISTANCE)` consigo mesmo e
+    // passava sempre. Agora ele acompanha o obstáculo se aproximando: a
+    // coluna dele precisa convergir para a do carro, e não cruzá-la.
     for (const faixa of [-0.52, -0.1, 0, 0.42, 0.56]) {
       const carro = naTela(faixa, CAR_VIEW_DISTANCE)
-      // O obstáculo é desenhado com a mesma conta, só que na distância dele.
-      const obstaculo = naTela(faixa, CAR_VIEW_DISTANCE)
-      expect(obstaculo.x).toBeCloseTo(carro.x, 9)
+      let anterior = Infinity
+      for (const distancia of [180, 120, 80, 50, 30, CAR_VIEW_DISTANCE]) {
+        const obstaculo = naTela(faixa, distancia)
+        const erro = Math.abs(obstaculo.x - carro.x)
+        expect(erro).toBeLessThanOrEqual(anterior + 1e-9)
+        anterior = erro
+      }
+      expect(anterior).toBeCloseTo(0, 9)
     }
+  })
+
+  it('o carro é desenhado perto da câmera, não a meio quarteirão dela', () => {
+    // Com a projeção anterior o carro ficava 41 m à frente da câmera, e a
+    // colisão — que dispara quando o obstáculo alcança a câmera — chegava
+    // meio segundo depois de o obstáculo passar visualmente pelo carro.
+    const atrasoEmSegundos = CAR_VIEW_DISTANCE / (speedForState(false, 0, false, REGRAS) / 3.6)
+    expect(atrasoEmSegundos).toBeLessThan(0.35)
   })
 
   it('a faixa jogável continua acomodando todos os obstáculos', () => {
@@ -103,37 +117,42 @@ describe('marcadores laterais', () => {
     expect(ROADSIDE_LATERAL).toBeGreaterThan(LATERAL_LIMIT - 0.1)
   })
 
-  it('só considera o que está à frente e dentro do campo de visão', () => {
-    const progresso = 1_234
-    const primeiro = firstRoadsideIndex(progresso)
-    const ultimo = lastRoadsideIndex(progresso)
+  it('cada marcador cai exatamente sobre uma vaga par do cenário', () => {
+    // É o que permite desenhar cenário e marcadores no mesmo laço, em uma só
+    // ordem de profundidade. Se este número mudar, o laço passa a mentir.
+    expect(ROADSIDE_SPACING).toBe(SCENERY_SPACING * 2)
 
-    expect(primeiro * ROADSIDE_SPACING).toBeGreaterThanOrEqual(progresso)
-    expect(ultimo * ROADSIDE_SPACING).toBeLessThanOrEqual(progresso + VIEW_DISTANCE)
-    expect((primeiro - 1) * ROADSIDE_SPACING).toBeLessThan(progresso)
+    for (let vaga = 0; vaga < 40; vaga += 2) {
+      expect((vaga * SCENERY_SPACING) % ROADSIDE_SPACING).toBe(0)
+    }
   })
 
   it('mantém uma quantidade estável na tela', () => {
     for (let progresso = 0; progresso < 4_800; progresso += 37) {
-      const quantos = lastRoadsideIndex(progresso) - firstRoadsideIndex(progresso) + 1
-      expect(quantos).toBeGreaterThanOrEqual(Math.floor(VIEW_DISTANCE / ROADSIDE_SPACING))
-      expect(quantos).toBeLessThanOrEqual(Math.ceil(VIEW_DISTANCE / ROADSIDE_SPACING) + 1)
+      const vagas = lastSceneryIndex(progresso) - firstSceneryIndex(progresso) + 1
+      const marcadores = Math.floor(vagas / 2)
+      expect(marcadores).toBeGreaterThanOrEqual(Math.floor(VIEW_DISTANCE / ROADSIDE_SPACING) - 1)
+      expect(marcadores).toBeLessThanOrEqual(Math.ceil(VIEW_DISTANCE / ROADSIDE_SPACING) + 1)
     }
   })
 
   it('um marcador não muda de lugar nem de tipo entre quadros', () => {
     // O mesmo índice sempre descreve a mesma coisa, venha de onde vier.
-    const indice = 61
-    expect(isTallMarker(indice)).toBe(isTallMarker(indice))
-    expect(indice * ROADSIDE_SPACING).toBe(1_220)
+    const vaga = 122
+    expect(vaga % 2).toBe(0)
+    // O que importa não é o número em si, é a vaga par cair sobre um marcador.
+    expect((vaga * SCENERY_SPACING) % ROADSIDE_SPACING).toBe(0)
+    expect(isTallMarker(vaga / 2)).toBe(isTallMarker(vaga / 2))
 
-    // E ele continua sendo listado enquanto o carro se aproxima.
-    for (const progresso of [1_000, 1_100, 1_200, 1_219]) {
-      expect(firstRoadsideIndex(progresso)).toBeLessThanOrEqual(indice)
-      expect(lastRoadsideIndex(progresso)).toBeGreaterThanOrEqual(indice)
+    // E ele continua sendo listado enquanto o carro se aproxima. A faixa sai
+    // das constantes: fixá-la à mão quebra sempre que a janela muda.
+    const onde = vaga * SCENERY_SPACING
+    for (const progresso of [onde - VIEW_DISTANCE + 1, onde - 120, onde - 40, onde - 1]) {
+      expect(firstSceneryIndex(progresso)).toBeLessThanOrEqual(vaga)
+      expect(lastSceneryIndex(progresso)).toBeGreaterThanOrEqual(vaga)
     }
     // Depois de passar, some.
-    expect(firstRoadsideIndex(1_221)).toBeGreaterThan(indice)
+    expect(firstSceneryIndex(1_221)).toBeGreaterThan(vaga)
   })
 
   it('o marcador alto aparece no ritmo combinado', () => {
@@ -143,78 +162,8 @@ describe('marcadores laterais', () => {
   })
 
   it('passam mais vezes por segundo do que as faixas da pista', () => {
-    const metrosPorSegundo = speedForState(false, 0, false) / 3.6
+    const metrosPorSegundo = speedForState(false, 0, false, REGRAS) / 3.6
     const marcadoresPorSegundo = (metrosPorSegundo / ROADSIDE_SPACING) * 2 // dois lados
     expect(marcadoresPorSegundo).toBeGreaterThan(metrosPorSegundo / 18)
-  })
-})
-
-describe('curvatura do traçado', () => {
-  /**
-   * A garantia que sustenta a curva física: a força lateral sai da derivada
-   * da mesma função que desenha a pista. Enquanto isso valer, é impossível o
-   * jogo empurrar o carro para um lado e desenhar a curva para o outro.
-   */
-  it('a curvatura é a derivada do deslocamento que o desenho usa', () => {
-    const h = 0.01
-    for (let distancia = 0; distancia <= 4_800; distancia += 37) {
-      const derivadaNumerica = (trackCurve(distancia + h) - trackCurve(distancia - h)) / (2 * h)
-      expect(trackCurvature(distancia) * MAX_CURVE_RATE).toBeCloseTo(derivadaNumerica, 9)
-    }
-  })
-
-  it('fica entre -1 e 1 em toda a pista, e usa a maior parte dessa faixa', () => {
-    let maior = 0
-    for (let distancia = 0; distancia <= 4_800; distancia += 1) {
-      const curvatura = trackCurvature(distancia)
-      expect(Math.abs(curvatura)).toBeLessThanOrEqual(1)
-      maior = Math.max(maior, Math.abs(curvatura))
-    }
-    // Um traçado que nunca chegasse perto do limite teria curvas decorativas.
-    expect(maior).toBeGreaterThan(0.9)
-  })
-
-  it('muda de sinal: a pista tem curvas para os dois lados', () => {
-    const amostras: number[] = []
-    for (let distancia = 0; distancia <= 4_800; distancia += 25) amostras.push(trackCurvature(distancia))
-    expect(amostras.some((curvatura) => curvatura > 0.5)).toBe(true)
-    expect(amostras.some((curvatura) => curvatura < -0.5)).toBe(true)
-  })
-
-  it('no ponto de deslocamento máximo a pista está momentaneamente reta', () => {
-    // Procura o pico do deslocamento e confere que a curvatura zera ali.
-    let pico = 0
-    let distanciaDoPico = 0
-    for (let distancia = 0; distancia <= 1_000; distancia += 0.5) {
-      if (trackCurve(distancia) > pico) {
-        pico = trackCurve(distancia)
-        distanciaDoPico = distancia
-      }
-    }
-    expect(Math.abs(trackCurvature(distanciaDoPico))).toBeLessThan(0.01)
-  })
-})
-
-describe('velocidade com vácuo', () => {
-  it('o vácuo acrescenta até o bônus previsto, proporcional à força', () => {
-    expect(speedForState(false, 0, false, 0)).toBe(252)
-    expect(speedForState(false, 0, false, 1)).toBe(252 + SLIPSTREAM_BONUS)
-    expect(speedForState(false, 0, false, 0.5)).toBe(252 + SLIPSTREAM_BONUS / 2)
-  })
-
-  it('não anula punição: na grama e na penalidade o vácuo não vale', () => {
-    expect(speedForState(true, 0, false, 1)).toBe(speedForState(true, 0, false, 0))
-    expect(speedForState(false, 1, false, 1)).toBe(speedForState(false, 1, false, 0))
-  })
-
-  it('valores fora da faixa não quebram a conta', () => {
-    expect(speedForState(false, 0, false, -5)).toBe(252)
-    expect(speedForState(false, 0, false, 99)).toBe(252 + SLIPSTREAM_BONUS)
-    expect(speedForState(false, 0, false, Number.NaN)).toBe(252)
-  })
-
-  it('o teto do carro considera o vácuo, senão o servidor recusaria volta boa', () => {
-    expect(MAX_RACE_SPEED).toBe(speedForState(false, 0, true, 1))
-    expect(MAX_RACE_SPEED).toBeGreaterThan(speedForState(false, 0, true))
   })
 })
