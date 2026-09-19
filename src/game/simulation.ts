@@ -1,7 +1,7 @@
 // A extensão .js é exigida pelo Node, que roda este módulo no servidor durante
 // os testes de aceitação. O Vite resolve para o arquivo .ts normalmente.
 import { rulesFor, type Difficulty, type RaceRules } from './rules.js'
-import { LATERAL_LIMIT, OFF_ROAD_LIMIT, TRACK_LENGTH } from './track.js'
+import { HIT_HALF_WIDTH, HIT_PENALTY_SHARE, LATERAL_LIMIT, OFF_ROAD_LIMIT, TRACK_LENGTH } from './track.js'
 
 // Os limites laterais são geometria da pista, e ficam definidos junto dela para
 // o desenho, a simulação e o servidor nunca divergirem.
@@ -237,11 +237,16 @@ export function stepRace(state: RaceState, input: RaceInput, dt: number): RaceEv
   for (const obstacle of state.rules.obstacles) {
     const delta = obstacle.distance - state.progress
     if (delta <= -5 || delta >= 8) continue
-    if (Math.abs(state.lateral - obstacle.lane) >= 0.25) continue
+    if (Math.abs(state.lateral - obstacle.lane) >= HIT_HALF_WIDTH[obstacle.kind]) continue
     if (state.hitObstacles.has(obstacle.id)) continue
     state.hitObstacles.add(obstacle.id)
     state.collisions += 1
-    state.penalty = state.rules.penaltySeconds
+    // Nunca encurta uma penalidade em curso: cair num buraco logo depois de
+    // bater numa barreira não pode virar alívio.
+    state.penalty = Math.max(
+      state.penalty,
+      state.rules.penaltySeconds * HIT_PENALTY_SHARE[obstacle.kind],
+    )
     events.push({ type: 'collision', obstacleId: obstacle.id })
   }
 

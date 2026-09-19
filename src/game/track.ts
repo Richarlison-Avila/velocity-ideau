@@ -68,11 +68,37 @@ export const CAR_SPRITE_HALF_WIDTH = 31
 /** Largura de tela em que o sprite do carro é desenhado na escala 1. */
 export const CAR_SPRITE_REFERENCE_WIDTH = 620
 
+export type ObstacleKind = 'barrier' | 'debris' | 'pothole'
+
 export type Obstacle = {
   id: number
   distance: number
   lane: number
-  kind: 'barrier' | 'debris'
+  kind: ObstacleKind
+}
+
+/**
+ * Meia-largura da colisão, por tipo.
+ *
+ * O buraco é mais estreito que uma barreira: dá para raspar nele sem cair
+ * dentro. É o que permite colocá-lo na beirada sem trancar a passagem.
+ */
+export const HIT_HALF_WIDTH: Record<ObstacleKind, number> = {
+  barrier: 0.25,
+  debris: 0.25,
+  pothole: 0.17,
+}
+
+/**
+ * Fração da penalidade que cada tipo cobra.
+ *
+ * Cair num buraco é um tranco, não uma batida: custa pouco mais da metade do
+ * que custa acertar uma barreira de concreto.
+ */
+export const HIT_PENALTY_SHARE: Record<ObstacleKind, number> = {
+  barrier: 1,
+  debris: 1,
+  pothole: 0.55,
 }
 
 export const obstacles: Obstacle[] = [

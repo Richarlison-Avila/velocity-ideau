@@ -31,6 +31,7 @@ import {
   isTallMarker,
   lateralOffset,
   roadProjection,
+  type ObstacleKind,
   HORIZON_RATIO,
   ROADSIDE_LATERAL,
   ROADSIDE_SPACING,
@@ -1118,7 +1119,7 @@ function RaceCanvas({
       ctx.restore()
     }
 
-    const drawObstacle = (distanceAhead: number, lane: number, kind: 'barrier' | 'debris') => {
+    const drawObstacle = (distanceAhead: number, lane: number, kind: ObstacleKind) => {
       const projected = roadGeometry(distanceAhead)
       const closeness = Math.max(0, 1 - distanceAhead / VIEW_DISTANCE)
       const size = 5 + Math.pow(closeness, 1.5) * 48
@@ -1129,7 +1130,19 @@ function RaceCanvas({
 
       ctx.save()
       ctx.translate(x, y)
-      if (kind === 'barrier') {
+      if (kind === 'pothole') {
+        // O buraco é do asfalto, não um objeto sobre ele: fica deitado no
+        // chão, sem altura. A borda clara do lado de cá é o que o faz ler
+        // como afundamento e não como mancha.
+        ctx.fillStyle = 'rgba(210,214,206,.5)'
+        ctx.beginPath()
+        ctx.ellipse(0, -size * 0.02, size * 0.5, size * 0.19, 0, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.fillStyle = '#15171b'
+        ctx.beginPath()
+        ctx.ellipse(0, -size * 0.05, size * 0.46, size * 0.16, 0, 0, Math.PI * 2)
+        ctx.fill()
+      } else if (kind === 'barrier') {
         ctx.fillStyle = '#eef1f2'
         roundedRect(ctx, -size * 0.65, -size * 0.42, size * 1.3, size * 0.48, size * 0.08)
         ctx.fill()
