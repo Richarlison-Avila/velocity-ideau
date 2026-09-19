@@ -882,14 +882,18 @@ function RaceCanvas({
         ctx.stroke()
 
         if (stripe) {
+          // As duas faixas da mesma fatia entram no mesmo traço: mesma cor,
+          // mesma espessura e nunca se tocam, então o resultado é idêntico —
+          // com metade das chamadas de traço, que são a operação mais cara
+          // do quadro a 2,1 µs cada.
           ctx.strokeStyle = 'rgba(255,255,255,.5)'
           ctx.lineWidth = Math.max(1, perto.roadWidth * 0.008)
+          ctx.beginPath()
           for (const lane of FAIXAS) {
-            ctx.beginPath()
             ctx.moveTo(longe.center + longe.roadWidth * lane, longe.y)
             ctx.lineTo(perto.center + perto.roadWidth * lane, perto.y)
-            ctx.stroke()
           }
+          ctx.stroke()
         }
 
         maxy = longe.y
@@ -970,7 +974,9 @@ function RaceCanvas({
         const nitidez = Math.min(1, 0.16 + projetado.perspective * 2.6)
         const perto = projetado.perspective > 0.16
 
-        ctx.save()
+        // A única coisa que muda de estado aqui é a opacidade, e ela é
+        // reescrita em toda fatia — guardar e devolver o contexto inteiro a
+        // cada uma seria pagar caro por nada. É reposta uma vez no fim.
         ctx.globalAlpha = nitidez
 
         for (const lado of LADOS) {
@@ -1051,9 +1057,10 @@ function RaceCanvas({
             ctx.fillRect(x - largura, projetado.y - altura, largura * 2, Math.max(1, altura * 0.22))
           }
         }
-
-        ctx.restore()
       }
+
+      // Opacidade reposta uma vez, e não 36 vezes por quadro.
+      ctx.globalAlpha = 1
     }
 
     /**
