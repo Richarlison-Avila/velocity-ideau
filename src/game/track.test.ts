@@ -13,9 +13,13 @@ import {
   ROADSIDE_LATERAL,
   ROADSIDE_SPACING,
   ROAD_EDGE,
-  speedForState,
   VIEW_DISTANCE,
 } from './track'
+import { rulesFor } from './rules'
+import { speedForState } from './simulation'
+
+/** Regras do nível de referência. */
+const REGRAS = rulesFor('normal')
 
 describe('regras básicas da corrida', () => {
   it('formata o cronômetro', () => {
@@ -23,11 +27,11 @@ describe('regras básicas da corrida', () => {
   })
 
   it('prioriza a redução de velocidade fora da pista', () => {
-    expect(speedForState(true, 0, true)).toBe(132)
+    expect(speedForState(true, 0, true, REGRAS)).toBe(132)
   })
 
   it('aplica boost quando o carro está livre', () => {
-    expect(speedForState(false, 0, true)).toBe(314)
+    expect(speedForState(false, 0, true, REGRAS)).toBe(314)
   })
 })
 
@@ -97,7 +101,7 @@ describe('alinhamento entre o que o jogo desenha e o que ele cobra', () => {
     // Com a projeção anterior o carro ficava 41 m à frente da câmera, e a
     // colisão — que dispara quando o obstáculo alcança a câmera — chegava
     // meio segundo depois de o obstáculo passar visualmente pelo carro.
-    const atrasoEmSegundos = CAR_VIEW_DISTANCE / (speedForState(false, 0, false) / 3.6)
+    const atrasoEmSegundos = CAR_VIEW_DISTANCE / (speedForState(false, 0, false, REGRAS) / 3.6)
     expect(atrasoEmSegundos).toBeLessThan(0.35)
   })
 
@@ -158,7 +162,7 @@ describe('marcadores laterais', () => {
   })
 
   it('passam mais vezes por segundo do que as faixas da pista', () => {
-    const metrosPorSegundo = speedForState(false, 0, false) / 3.6
+    const metrosPorSegundo = speedForState(false, 0, false, REGRAS) / 3.6
     const marcadoresPorSegundo = (metrosPorSegundo / ROADSIDE_SPACING) * 2 // dois lados
     expect(marcadoresPorSegundo).toBeGreaterThan(metrosPorSegundo / 18)
   })

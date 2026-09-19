@@ -199,10 +199,3 @@ export function formatTime(seconds: number) {
   const remaining = safe - minutes * 60
   return `${minutes}:${remaining.toFixed(3).padStart(6, '0')}`
 }
-
-export function speedForState(offRoad: boolean, penalty: number, boosting: boolean) {
-  if (offRoad) return 132
-  if (penalty > 0) return 172
-  if (boosting) return 314
-  return 252
-}

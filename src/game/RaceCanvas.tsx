@@ -19,6 +19,7 @@ import {
   SCENERY_SPACING,
   type Flora,
 } from './layout'
+import { DIFFICULTY_LABELS, type Difficulty } from './rules'
 import { createRaceState, MAX_STEP_SECONDS, stepRace, type RaceInput } from './simulation'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
 import {
@@ -29,7 +30,6 @@ import {
   formatTime,
   isTallMarker,
   lateralOffset,
-  obstacles,
   roadProjection,
   HORIZON_RATIO,
   ROADSIDE_LATERAL,
@@ -60,6 +60,11 @@ type RaceCanvasProps = {
    * localmente no treino: a curva e o cenário saem inteiramente dela.
    */
   trackSeed: number
+  /**
+   * Dificuldade oficial da corrida. Vem do servidor no duelo e é escolhida no
+   * menu no treino: toda a física sai dela.
+   */
+  difficulty: Difficulty
   /** Relógio sincronizado. No modo treino é o relógio local. */
   now?: () => number
   mode?: 'solo' | 'online'
@@ -452,6 +457,7 @@ function RaceCanvas({
   startAt,
   countdownMs = DEFAULT_COUNTDOWN_MS,
   trackSeed,
+  difficulty,
   now,
   mode = 'solo',
   connectionNotice = null,
@@ -466,7 +472,7 @@ function RaceCanvas({
   const inputRef = useRef<RaceInput>({ left: false, right: false, boost: false })
   const clockRef = useRef(now ?? Date.now)
   const finishRef = useRef(onFinish)
-  const raceRef = useRef(createRaceState())
+  const raceRef = useRef(createRaceState(difficulty))
   const startedRef = useRef(false)
   const doneRef = useRef(false)
   const ghostRef = useRef(ghost)
@@ -586,7 +592,7 @@ function RaceCanvas({
    * aparelhos mesmo que um deles esteja com a tela em segundo plano.
    */
   useEffect(() => {
-    raceRef.current = createRaceState()
+    raceRef.current = createRaceState(difficulty)
     startedRef.current = false
     doneRef.current = false
     setPhase('countdown')
@@ -624,7 +630,7 @@ function RaceCanvas({
     return () => {
       if (timer) window.clearInterval(timer)
     }
-  }, [beep, countdownMs, startAt])
+  }, [beep, countdownMs, difficulty, startAt])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -1284,8 +1290,9 @@ function RaceCanvas({
       // fim para o começo — do mais distante para o mais próximo — sem montar
       // lista nova a cada quadro. O fantasma entra na ordem de profundidade.
       let ghostDrawn = !rivalVisible
-      for (let indice = obstacles.length - 1; indice >= 0; indice -= 1) {
-        const obstaculo = obstacles[indice]
+      const pedras = race.rules.obstacles
+      for (let indice = pedras.length - 1; indice >= 0; indice -= 1) {
+        const obstaculo = pedras[indice]
         const ahead = obstaculo.distance - race.progress
         if (ahead <= 0 || ahead >= VIEW_DISTANCE) continue
         if (atrasDaLomba(ahead)) continue
@@ -1375,7 +1382,7 @@ function RaceCanvas({
       document.removeEventListener('visibilitychange', resumeClock)
       for (const timer of flashTimers) window.clearTimeout(timer)
     }
-  }, [beep, countdownMs, startAt, trackSeed])
+  }, [beep, countdownMs, difficulty, startAt, trackSeed])
 
   /**
    * Envio da telemetria.
@@ -1434,6 +1441,7 @@ function RaceCanvas({
         <div className="position-block">
           <span>{mode === 'online' && rival ? 'POSIÇÃO' : 'MODO'}</span>
           <strong>{mode === 'online' ? (rival?.position ?? 'DUELO') : 'SOLO'}</strong>
+          <em className="difficulty-tag">{DIFFICULTY_LABELS[difficulty]}</em>
         </div>
         <div className="timer-block">
           <span>TEMPO DE CORRIDA</span>

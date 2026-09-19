@@ -13,6 +13,7 @@ type Scheduled = {
   startAt: number
   countdownMs: number
   trackSeed: number
+  difficulty: string
   serverTime: number
 }
 
@@ -130,6 +131,35 @@ describe('largada sincronizada pelo socket', () => {
     // A pista também é uma só: a mesma semente chega aos dois aparelhos.
     expect(paraAna.trackSeed).toBe(paraBeto.trackSeed)
     expect(paraAna.trackSeed).toBe(server.rooms.get(code)?.trackSeed)
+    // E a dificuldade idem: é ela que decide a física dos dois lados.
+    expect(paraAna.difficulty).toBe(paraBeto.difficulty)
+    expect(paraAna.difficulty).toBe(server.rooms.get(code)?.difficulty)
+  })
+
+  it('a dificuldade escolhida por um piloto chega ao outro', async () => {
+    const { ana, beto, code } = await gridCompleto()
+    const recebida = waitForRoom(beto, (room) => room.difficulty === 'profissional')
+
+    const resposta = await ask<RoomAck>(ana, 'room:set-difficulty', {
+      code,
+      playerId: 'ana',
+      difficulty: 'profissional',
+    })
+
+    expect(resposta.ok).toBe(true)
+    expect((await recebida).difficulty).toBe('profissional')
+    expect(server.rooms.difficultyOf(code)).toBe('profissional')
+  })
+
+  it('trocar de dificuldade desfaz as confirmações dos dois', async () => {
+    const { ana, beto, code } = await gridCompleto()
+    ana.emit('room:set-ready', { code, playerId: 'ana', ready: true })
+    beto.emit('room:set-ready', { code, playerId: 'beto', ready: true })
+    await waitForRoom(ana, (room) => room.status === 'countdown')
+
+    // Com a largada marcada, a escolha não muda mais a prova.
+    await ask<RoomAck>(beto, 'room:set-difficulty', { code, playerId: 'beto', difficulty: 'dificil' })
+    expect(server.rooms.difficultyOf(code)).toBe('normal')
   })
 
   it('só agenda depois que os dois confirmam', async () => {

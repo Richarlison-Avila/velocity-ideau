@@ -1,18 +1,23 @@
 import { describe, expect, it } from 'vitest'
+import { rulesFor } from './rules'
 import {
-  AGITATION_DEADBAND,
   createRaceState,
   gripFor,
   LATERAL_LIMIT,
-  MAX_GRIP_LOSS,
   OFF_ROAD_LIMIT,
-  PENALTY_SECONDS,
+  speedForState,
   stepRace,
   type RaceEvent,
   type RaceInput,
   type RaceState,
 } from './simulation'
-import { obstacles, speedForState, TRACK_LENGTH } from './track'
+import { obstacles, TRACK_LENGTH } from './track'
+
+/** Regras do nível de referência: é sobre elas que esta suíte fala. */
+const REGRAS = rulesFor('normal')
+const AGITATION_DEADBAND = REGRAS.agitationDeadband
+const MAX_GRIP_LOSS = REGRAS.maxGripLoss
+const PENALTY_SECONDS = REGRAS.penaltySeconds
 
 const PARADO: RaceInput = { left: false, right: false, boost: false }
 const SO_BOOST: RaceInput = { left: false, right: false, boost: true }
@@ -20,7 +25,7 @@ const DIREITA: RaceInput = { left: false, right: true, boost: false }
 const ESQUERDA: RaceInput = { left: true, right: false, boost: false }
 
 /** Velocidade de cruzeiro em pista livre, sem boost. */
-const CRUZEIRO = speedForState(false, 0, false)
+const CRUZEIRO = speedForState(false, 0, false, REGRAS)
 
 /**
  * Marca todos os obstáculos como já atingidos.
@@ -292,7 +297,7 @@ describe('curva de aceleração', () => {
 
     avancar(state, SO_BOOST, 2)
     expect(state.speed).toBeGreaterThan(comUmSegundo)
-    expect(state.speed).toBeLessThanOrEqual(speedForState(false, 0, true))
+    expect(state.speed).toBeLessThanOrEqual(speedForState(false, 0, true, REGRAS))
 
     // Ao soltar, a queda é contínua: passa por valores intermediários.
     const descida: number[] = []
@@ -316,7 +321,7 @@ describe('perdas de velocidade', () => {
     const eventos = avancar(state, PARADO, 0.2)
     expect(eventos.some((event) => event.type === 'collision')).toBe(true)
     // Em dois décimos de segundo a maior parte da queda já aconteceu.
-    expect(antes - state.speed).toBeGreaterThan((antes - speedForState(false, 1, false)) * 0.7)
+    expect(antes - state.speed).toBeGreaterThan((antes - speedForState(false, 1, false, REGRAS)) * 0.7)
   })
 
   it('a grama tira mais velocidade quanto mais fundo o carro entra', () => {
@@ -423,11 +428,11 @@ describe('esforço lateral', () => {
   }
 
   it('a aderência só começa a cair depois da zona morta', () => {
-    expect(gripFor(0)).toBe(1)
-    expect(gripFor(AGITATION_DEADBAND)).toBe(1)
-    expect(gripFor(AGITATION_DEADBAND + 0.5)).toBeLessThan(1)
+    expect(gripFor(0, REGRAS)).toBe(1)
+    expect(gripFor(AGITATION_DEADBAND, REGRAS)).toBe(1)
+    expect(gripFor(AGITATION_DEADBAND + 0.5, REGRAS)).toBeLessThan(1)
     // E nunca passa da perda máxima, por mais que o piloto insista.
-    expect(gripFor(1_000)).toBeCloseTo(1 - MAX_GRIP_LOSS, 9)
+    expect(gripFor(1_000, REGRAS)).toBeCloseTo(1 - MAX_GRIP_LOSS, 9)
   })
 
   it('o zigue-zague sustentado custa tempo de prova', () => {

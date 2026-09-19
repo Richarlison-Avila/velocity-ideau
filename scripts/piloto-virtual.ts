@@ -11,6 +11,7 @@
 import { io, type Socket } from 'socket.io-client'
 // A pista e a curva de tração vêm do jogo: uma cópia aqui divergiria em
 // silêncio, e o fantasma arrancaria diferente do carro de verdade.
+import { rulesFor, type Difficulty } from '../src/game/rules.js'
 import { ACCELERATION_PEAK, ACCELERATION_SHAPE } from '../src/game/simulation.js'
 import { TRACK_LENGTH } from '../src/game/track.js'
 
@@ -29,6 +30,8 @@ type Scheduled = {
   countdownMs: number
   /** Semente oficial do traçado, a mesma que o navegador recebe. */
   trackSeed: number
+  /** Dificuldade oficial da sala. */
+  difficulty: Difficulty
   serverTime: number
 }
 
@@ -49,6 +52,8 @@ if (!code || code.startsWith('--')) {
 const serverUrl = process.env.GAME_SERVER_URL ?? 'http://127.0.0.1:3001'
 const name = readOption('nome', 'Fantasma')
 const targetSpeed = Number(readOption('velocidade', '245'))
+/** Velocidade efetiva: o pedido, limitado ao cruzeiro da dificuldade da sala. */
+let ritmo = targetSpeed
 const playerId = `piloto-virtual-${Math.random().toString(36).slice(2, 8)}`
 
 const socket: Socket = io(serverUrl, { transports: ['websocket'], forceNew: true })
@@ -114,9 +119,9 @@ function race(startAt: number) {
     lastTick = clock
     if (dt === 0) return
     // Mesma curva de tração do jogo: arrancada forte que cede perto do teto.
-    if (speed < targetSpeed) {
-      const fracao = speed / targetSpeed
-      speed = Math.min(targetSpeed, speed + ACCELERATION_PEAK * (1 - Math.pow(fracao, ACCELERATION_SHAPE)) * dt)
+    if (speed < ritmo) {
+      const fracao = speed / ritmo
+      speed = Math.min(ritmo, speed + ACCELERATION_PEAK * (1 - Math.pow(fracao, ACCELERATION_SHAPE)) * dt)
     }
     progress = Math.min(TRACK_LENGTH, progress + (speed / 3.6) * dt)
     const lateral = Math.sin(elapsed / 2.6) * 0.55
@@ -127,7 +132,7 @@ function race(startAt: number) {
       send('finished', lateral)
       console.log(`Chegada em ${elapsed.toFixed(3)} s.`)
       // O servidor é quem decide o vencedor: avisamos a chegada e esperamos.
-      socket.emit('race:finish', { code, playerId, time: elapsed, topSpeed: targetSpeed, collisions: 0 })
+      socket.emit('race:finish', { code, playerId, time: elapsed, topSpeed: ritmo, collisions: 0 })
       return
     }
 
@@ -179,7 +184,10 @@ socket.on('race:scheduled', (payload: Scheduled) => {
   const faltando = payload.startAt - serverNow()
   console.log(`Largada agendada para daqui a ${Math.round(faltando)} ms.`)
   // Impresso para conferir a olho que os dois lados receberam a mesma pista.
-  console.log(`Traçado desta corrida: semente ${payload.trackSeed}.`)
+  console.log(`Traçado desta corrida: semente ${payload.trackSeed}, dificuldade ${payload.difficulty}.`)
+  // O ritmo acompanha o nível da sala, senão o fantasma correria numa prova
+  // diferente da do rival — e chegaria antes ou depois sem explicação.
+  ritmo = Math.min(targetSpeed, rulesFor(payload.difficulty).cruiseSpeed)
   race(payload.startAt)
 })
 

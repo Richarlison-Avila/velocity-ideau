@@ -1,6 +1,7 @@
 // A extensão .js é exigida pelo Node, que roda este módulo no servidor durante
 // os testes de aceitação. O Vite resolve para o arquivo .ts normalmente.
-import { LATERAL_LIMIT, obstacles, OFF_ROAD_LIMIT, speedForState, TRACK_LENGTH } from './track.js'
+import { rulesFor, type Difficulty, type RaceRules } from './rules.js'
+import { LATERAL_LIMIT, OFF_ROAD_LIMIT, TRACK_LENGTH } from './track.js'
 
 // Os limites laterais são geometria da pista, e ficam definidos junto dela para
 // o desenho, a simulação e o servidor nunca divergirem.
@@ -38,12 +39,19 @@ export type RaceState = {
   grip: number
   finished: boolean
   hitObstacles: Set<number>
+  /**
+   * Regras da corrida, fixadas na largada.
+   *
+   * Viajam dentro do estado de propósito: a dificuldade é decidida pela sala
+   * antes da prova começar e não muda no meio dela. Quem simula não precisa
+   * receber a dificuldade por fora, e não há como um trecho do código usar um
+   * conjunto de regras e outro trecho usar outro.
+   */
+  rules: RaceRules
 }
 
 export type RaceEvent = { type: 'collision'; obstacleId: number } | { type: 'finish' }
 
-/** Duração fixa da penalidade após um impacto, em segundos. */
-export const PENALTY_SECONDS = 1.65
 /** Maior passo de simulação aceito, protege contra abas em segundo plano. */
 export const MAX_STEP_SECONDS = 0.05
 /** Carga mínima para voltar a usar o boost depois de esgotá-lo. */
@@ -104,24 +112,16 @@ export const STEER_TAU = 0.1
 export const AGITATION_TAU = 1
 
 /**
- * Agitação tolerada sem qualquer perda.
+ * Faixa de agitação entre a primeira perda e a perda máxima.
  *
- * Uma correção de curva — virar, ajustar e voltar — fica abaixo disto. Só o
- * zigue-zague sustentado passa, que é exatamente o que se quer punir.
+ * A zona morta e a perda máxima mudam com a dificuldade; a largura da rampa
+ * entre elas não, para o volante responder com a mesma forma nos três níveis.
  */
-export const AGITATION_DEADBAND = 2.4
-
-/** Faixa de agitação entre a primeira perda e a perda máxima. */
 export const AGITATION_RANGE = 3.4
 
-/** Perda máxima de aderência por esforço lateral. */
-export const MAX_GRIP_LOSS = 0.17
-
-/** Perda adicional conforme o carro se embrenha na grama. */
-export const OFF_ROAD_DEPTH_LOSS = 0.25
-
-export function createRaceState(): RaceState {
+export function createRaceState(difficulty: Difficulty = 'normal'): RaceState {
   return {
+    rules: rulesFor(difficulty),
     progress: 0,
     lateral: 0,
     speed: 0,
@@ -141,9 +141,9 @@ export function createRaceState(): RaceState {
 }
 
 /** Aderência disponível para uma dada agitação do volante. */
-export function gripFor(agitation: number) {
-  const excesso = (agitation - AGITATION_DEADBAND) / AGITATION_RANGE
-  return 1 - clamp(excesso, 0, 1) * MAX_GRIP_LOSS
+export function gripFor(agitation: number, rules: RaceRules) {
+  const excesso = (agitation - rules.agitationDeadband) / AGITATION_RANGE
+  return 1 - clamp(excesso, 0, 1) * rules.maxGripLoss
 }
 
 /**
@@ -154,10 +154,23 @@ export function gripFor(agitation: number) {
  * quanto vem maltratando o volante.
  */
 export function targetSpeedFor(state: RaceState) {
-  const base = speedForState(state.offRoad, state.penalty, state.boosting)
+  const base = speedForState(state.offRoad, state.penalty, state.boosting, state.rules)
   if (!state.offRoad) return base * state.grip
   const profundidade = clamp((Math.abs(state.lateral) - OFF_ROAD_LIMIT) / (LATERAL_LIMIT - OFF_ROAD_LIMIT), 0, 1)
-  return base * (1 - profundidade * OFF_ROAD_DEPTH_LOSS) * state.grip
+  return base * (1 - profundidade * state.rules.offRoadDepthLoss) * state.grip
+}
+
+/**
+ * Velocidade que o carro persegue em cada estado, para um conjunto de regras.
+ *
+ * É o contrato que o servidor usa para saber o tempo mínimo plausível da
+ * prova, e por isso mora junto das regras e não dentro do laço de simulação.
+ */
+export function speedForState(offRoad: boolean, penalty: number, boosting: boolean, rules: RaceRules) {
+  if (offRoad) return rules.offRoadSpeed
+  if (penalty > 0) return rules.penaltySpeed
+  if (boosting) return rules.boostSpeed
+  return rules.cruiseSpeed
 }
 
 /**
@@ -184,7 +197,7 @@ export function stepRace(state: RaceState, input: RaceInput, dt: number): RaceEv
     const antesDoGiro = state.steerInput
     state.steerInput += (comando - antesDoGiro) * (1 - Math.exp(-h / STEER_TAU))
     state.agitation = state.agitation * Math.exp(-h / AGITATION_TAU) + Math.abs(state.steerInput - antesDoGiro)
-    state.grip = gripFor(state.agitation)
+    state.grip = gripFor(state.agitation, state.rules)
 
     state.lateral = clamp(
       state.lateral + state.steerInput * h * (STEER_RATE + state.speed / 520),
@@ -195,7 +208,11 @@ export function stepRace(state: RaceState, input: RaceInput, dt: number): RaceEv
 
     if (state.boostLocked && state.boost >= BOOST_UNLOCK) state.boostLocked = false
     state.boosting = input.boost && state.boost > 0 && !state.boostLocked && !state.offRoad && state.penalty <= 0
-    state.boost = clamp(state.boost + (state.boosting ? -25 : 5.5) * h, 0, 100)
+    state.boost = clamp(
+      state.boost + (state.boosting ? -state.rules.boostDrain : state.rules.boostRecharge) * h,
+      0,
+      100,
+    )
     if (state.boost <= 0) state.boostLocked = true
     state.penalty = Math.max(0, state.penalty - h)
 
@@ -217,14 +234,14 @@ export function stepRace(state: RaceState, input: RaceInput, dt: number): RaceEv
 
   state.topSpeed = Math.max(state.topSpeed, state.speed)
 
-  for (const obstacle of obstacles) {
+  for (const obstacle of state.rules.obstacles) {
     const delta = obstacle.distance - state.progress
     if (delta <= -5 || delta >= 8) continue
     if (Math.abs(state.lateral - obstacle.lane) >= 0.25) continue
     if (state.hitObstacles.has(obstacle.id)) continue
     state.hitObstacles.add(obstacle.id)
     state.collisions += 1
-    state.penalty = PENALTY_SECONDS
+    state.penalty = state.rules.penaltySeconds
     events.push({ type: 'collision', obstacleId: obstacle.id })
   }
 

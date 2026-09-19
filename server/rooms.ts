@@ -1,6 +1,8 @@
 // A validação da chegada precisa da mesma pista que o jogo desenha, então a
 // definição vem do módulo do jogo em vez de ser copiada para cá.
-import { LATERAL_LIMIT, speedForState, TRACK_LENGTH } from '../src/game/track.js'
+import { rulesFor, toDifficulty, type Difficulty } from '../src/game/rules.js'
+import { speedForState } from '../src/game/simulation.js'
+import { LATERAL_LIMIT, TRACK_LENGTH } from '../src/game/track.js'
 
 export type RoomStatus = 'waiting' | 'ready' | 'countdown' | 'racing' | 'finished'
 
@@ -31,6 +33,14 @@ export type PublicRoom = {
    * pista diferente. Quem manda é o servidor: o cliente nunca sorteia.
    */
   trackSeed: number
+  /**
+   * Dificuldade oficial da sala.
+   *
+   * Vale para os dois pilotos e decide a física da prova, então é estado do
+   * servidor como o horário da largada. Um cliente que simulasse com regras
+   * próprias estaria correndo outra corrida.
+   */
+  difficulty: Difficulty
 }
 
 export type RivalState = 'racing' | 'finished'
@@ -65,6 +75,8 @@ type Room = {
   startAt: number | null
   /** Semente do traçado desta corrida, renovada a cada nova largada. */
   trackSeed: number
+  /** Dificuldade escolhida no lobby, congelada quando a contagem começa. */
+  difficulty: Difficulty
   /** Resultado oficial da última corrida, idêntico para os dois pilotos. */
   outcome: RaceOutcome | null
 }
@@ -101,10 +113,20 @@ export { LATERAL_LIMIT } from '../src/game/track.js'
 export const CLOCK_TOLERANCE_MS = 5_000
 
 /**
- * Tempo mínimo fisicamente possível para a prova: a pista inteira na
- * velocidade máxima do carro. Qualquer chegada mais rápida é impossível.
+ * Tempo mínimo fisicamente possível para a prova, por dificuldade: a pista
+ * inteira na velocidade máxima daquele nível. Qualquer chegada mais rápida é
+ * impossível.
+ *
+ * Precisa ser por dificuldade, e não um número só. Com o teto do nível mais
+ * rápido, uma chegada impossível no normal passaria; com o teto do mais
+ * lento, uma chegada legítima no profissional seria recusada.
  */
-export const MIN_RACE_SECONDS = TRACK_LENGTH / (speedForState(false, 0, true) / 3.6)
+export function minRaceSeconds(difficulty: Difficulty) {
+  return TRACK_LENGTH / (speedForState(false, 0, true, rulesFor(difficulty)) / 3.6)
+}
+
+/** Tempo mínimo do nível de referência, mantido para quem não passa a sala. */
+export const MIN_RACE_SECONDS = minRaceSeconds('normal')
 
 /** Folga para a viagem do aviso de chegada até o servidor. */
 export const FINISH_TOLERANCE_SECONDS = 2
@@ -180,6 +202,7 @@ export class RoomStore {
       state: 'idle',
       startAt: null,
       trackSeed: this.nextSeed(),
+      difficulty: 'normal',
       outcome: null,
       players: [this.createPlayer(playerId, socketId, rawName)],
     })
@@ -213,6 +236,35 @@ export class RoomStore {
     player.ready = ready
     if (room.state === 'countdown' && !this.everyoneReady(room)) this.resetRace(room)
     return this.toPublic(room)
+  }
+
+  /**
+   * Troca a dificuldade da sala.
+   *
+   * Só antes da contagem: mudar a regra com a largada já marcada seria trocar
+   * a prova debaixo de quem já confirmou. E confirmar de novo é obrigatório —
+   * a escolha volta a zero para os dois, porque ninguém deve largar numa
+   * dificuldade que não viu.
+   */
+  setDifficulty(codeInput: string, playerId: string, difficulty: unknown) {
+    const room = this.requireRoom(codeInput)
+    if (!room.players.some((candidate) => candidate.id === playerId)) {
+      throw new RoomError('NOT_IN_ROOM', 'Você não está nesta sala.')
+    }
+    if (room.state === 'countdown' || room.state === 'racing') return this.toPublic(room)
+
+    const escolhida = toDifficulty(difficulty)
+    if (escolhida === room.difficulty) return this.toPublic(room)
+
+    if (room.state === 'finished') this.resetRace(room)
+    room.difficulty = escolhida
+    for (const candidate of room.players) candidate.ready = false
+    return this.toPublic(room)
+  }
+
+  /** Dificuldade oficial da sala, para o servidor validar a chegada. */
+  difficultyOf(codeInput: string): Difficulty {
+    return this.rooms.get(this.normalize(codeInput))?.difficulty ?? 'normal'
   }
 
   /** Define o instante oficial da largada. Retorna null se a sala ainda não puder largar. */
@@ -302,11 +354,14 @@ export class RoomStore {
     const player = room.players.find((candidate) => candidate.id === playerId)
     if (!player || player.finish) return null
 
+    // O piso vem da dificuldade da própria sala: no profissional o carro é
+    // mais rápido, e um tempo legítimo lá seria recusado pelo piso do normal.
+    const minimo = minRaceSeconds(room.difficulty)
     const elapsed = (this.now() - room.startAt) / 1000
-    if (elapsed < MIN_RACE_SECONDS) return null
+    if (elapsed < minimo) return null
 
     const reported = Number.isFinite(report.time) ? report.time : elapsed
-    const floor = Math.max(MIN_RACE_SECONDS, elapsed - FINISH_TOLERANCE_SECONDS)
+    const floor = Math.max(minimo, elapsed - FINISH_TOLERANCE_SECONDS)
     player.finish = {
       playerId,
       name: player.name,
@@ -504,6 +559,7 @@ export class RoomStore {
       state: 'idle',
       startAt: null,
       trackSeed: this.nextSeed(),
+      difficulty: 'normal',
       outcome: null,
       players: [],
     }
@@ -575,6 +631,7 @@ export class RoomStore {
       startAt: room.startAt,
       countdownMs: this.countdownMs,
       trackSeed: room.trackSeed,
+      difficulty: room.difficulty,
     }
   }
 }

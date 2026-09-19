@@ -1,6 +1,7 @@
 import { QRCodeSVG } from 'qrcode.react'
 import { useEffect, useState } from 'react'
 import { countdownAt } from '../game/countdown'
+import { DIFFICULTIES, DIFFICULTY_LABELS, DIFFICULTY_NOTES, type Difficulty } from '../game/rules'
 import { serverClock, type ClockState } from './clock'
 import { socket } from './socket'
 import type { LobbyRoom, RoomResponse } from './types'
@@ -35,6 +36,19 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
     const timer = window.setInterval(tick, 100)
     return () => window.clearInterval(timer)
   }, [room.status, room.startAt, room.countdownMs])
+
+  /**
+   * Trocar a dificuldade vale para a sala inteira e desfaz as confirmações —
+   * ninguém deve largar num nível que não viu. Por isso o servidor zera o
+   * pronto dos dois, e por isso o botão some depois que a contagem começa.
+   */
+  const escolherDificuldade = (difficulty: Difficulty) => {
+    if (difficulty === room.difficulty) return
+    socket.emit('room:set-difficulty', { code: room.code, playerId, difficulty }, (response: RoomResponse) => {
+      if (response.ok && response.room) onRoomChange(response.room)
+      else onError(response.error ?? 'Não foi possível trocar a dificuldade.')
+    })
+  }
 
   const toggleReady = () => {
     socket.emit('room:set-ready', { code: room.code, playerId, ready: !me?.ready }, (response: RoomResponse) => {
@@ -126,6 +140,25 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                   </div>
                 )
               })}
+            </div>
+
+            <div className="lobby-difficulty">
+              <span>DIFICULDADE DA SALA</span>
+              <div className="difficulty-picker" role="group" aria-label="Dificuldade da sala">
+                {DIFFICULTIES.map((nivel) => (
+                  <button
+                    key={nivel}
+                    type="button"
+                    className={room.difficulty === nivel ? 'on' : ''}
+                    aria-pressed={room.difficulty === nivel}
+                    disabled={room.status === 'countdown' || connection !== 'connected'}
+                    onClick={() => escolherDificuldade(nivel)}
+                  >
+                    {DIFFICULTY_LABELS[nivel]}
+                  </button>
+                ))}
+              </div>
+              <em>{DIFFICULTY_NOTES[room.difficulty]}</em>
             </div>
 
             {room.status === 'countdown' && remaining !== null ? (

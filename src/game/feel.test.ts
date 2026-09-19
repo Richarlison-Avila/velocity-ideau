@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { approach, createFeel, MAX_SPEED, registerImpact, updateFeel } from './feel'
-import { createRaceState, MAX_GRIP_LOSS, stepRace, type RaceInput } from './simulation'
-import { speedForState } from './track'
+import { approach, createFeel, registerImpact, updateFeel } from './feel'
+import { rulesFor } from './rules'
+import { createRaceState, speedForState, stepRace, type RaceInput } from './simulation'
+
+const REGRAS = rulesFor('normal')
+const MAX_SPEED = REGRAS.boostSpeed
+const MAX_GRIP_LOSS = REGRAS.maxGripLoss
 
 const PARADO: RaceInput = { left: false, right: false, boost: false }
 const BOOST: RaceInput = { left: false, right: false, boost: true }
@@ -217,6 +221,6 @@ describe('intensidades da apresentação', () => {
       expect(velocidade).toBeCloseTo(velocidades[0], 4)
     }
     // E durante a subida, não só no fim.
-    expect(velocidades[0]).toBeLessThan(speedForState(false, 0, false))
+    expect(velocidades[0]).toBeLessThan(speedForState(false, 0, false, REGRAS))
   })
 })

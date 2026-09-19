@@ -1,5 +1,5 @@
-import { ACCELERATION_PEAK, MAX_GRIP_LOSS, STEER_TAU, type RaceState } from './simulation.js'
-import { OFF_ROAD_LIMIT, speedForState } from './track.js'
+import { ACCELERATION_PEAK, STEER_TAU, type RaceState } from './simulation.js'
+import { OFF_ROAD_LIMIT } from './track.js'
 
 /**
  * Intensidades contínuas para a apresentação.
@@ -12,9 +12,6 @@ import { OFF_ROAD_LIMIT, speedForState } from './track.js'
  * Este módulo não é uma segunda simulação: ele só lê o `RaceState` e nunca o
  * modifica, e nada que ele produz volta para a decisão da corrida.
  */
-
-/** Velocidade máxima que o carro alcança, usada para normalizar. */
-export const MAX_SPEED = speedForState(false, 0, true)
 
 /**
  * Aceleração de referência, em km/h por segundo.
@@ -101,7 +98,9 @@ export function updateFeel(feel: FeelState, race: RaceState, dt: number) {
   const step = Math.max(0, dt)
   if (step === 0) return feel
 
-  feel.speed = clamp(race.speed / MAX_SPEED, 0, 1)
+  // Normalizada pelo teto da própria dificuldade: em profissional o carro é
+  // mais rápido, e o indicador continua chegando a 1 no mesmo lugar da escala.
+  feel.speed = clamp(race.speed / race.rules.boostSpeed, 0, 1)
 
   const bruto = (race.speed - feel.previousSpeed) / step / ACCEL_REFERENCE
   feel.previousSpeed = race.speed
@@ -116,7 +115,7 @@ export function updateFeel(feel: FeelState, race: RaceState, dt: number) {
   feel.steerRate = approach(feel.steerRate, clamp(giro / STEER_RATE_REFERENCE, 0, 1), TAU.steerRate, step)
 
   // Esforço lateral: sai da aderência que a simulação já calculou.
-  feel.strain = approach(feel.strain, clamp((1 - race.grip) / MAX_GRIP_LOSS, 0, 1), TAU.strain, step)
+  feel.strain = approach(feel.strain, clamp((1 - race.grip) / race.rules.maxGripLoss, 0, 1), TAU.strain, step)
 
   feel.boost = approach(feel.boost, race.boosting ? 1 : 0, TAU.boost, step)
 

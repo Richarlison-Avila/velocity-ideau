@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { LATERAL_LIMIT, RoomError, RoomStore, type Telemetry } from './rooms.js'
+import { LATERAL_LIMIT, minRaceSeconds, RoomError, RoomStore, type Telemetry } from './rooms.js'
 
 /** Relógio controlado para testar agendamento e janela de reconexão. */
 function createClock(start = 1_000_000) {
@@ -646,5 +646,119 @@ describe('semente oficial do traçado', () => {
     const room = rooms.join('DEMO1', 'socket-a', 'a', 'Ana')
     expect(Number.isFinite(room.trackSeed)).toBe(true)
     expect(room.trackSeed).toBe(1)
+  })
+})
+
+describe('dificuldade oficial da sala', () => {
+  it('a sala nasce no nível de referência', () => {
+    const rooms = new RoomStore()
+    expect(rooms.create('socket-a', 'a', 'Ana').difficulty).toBe('normal')
+  })
+
+  it('a escolha vale para os dois pilotos', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    const depois = rooms.setDifficulty(code, 'b', 'profissional')
+    expect(depois.difficulty).toBe('profissional')
+    // Qualquer leitura posterior devolve o mesmo: é estado da sala, não do piloto.
+    expect(rooms.get(code)?.difficulty).toBe('profissional')
+    expect(rooms.difficultyOf(code)).toBe('profissional')
+  })
+
+  it('trocar de nível desfaz as confirmações', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    expect(rooms.setReady(code, 'b', true).status).toBe('ready')
+
+    // Ninguém deve largar numa dificuldade que não viu.
+    const depois = rooms.setDifficulty(code, 'a', 'dificil')
+    expect(depois.status).toBe('waiting')
+    expect(depois.players.every((player) => !player.ready)).toBe(true)
+  })
+
+  it('confirmar de novo no mesmo nível não desfaz nada', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    expect(rooms.setDifficulty(code, 'a', 'normal').status).toBe('ready')
+  })
+
+  it('um nível desconhecido cai no padrão em vez de passar', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setDifficulty(code, 'a', 'profissional')
+    // Um cliente adulterado não instala uma regra que não existe.
+    expect(rooms.setDifficulty(code, 'a', 'impossivel').difficulty).toBe('normal')
+  })
+
+  it('não muda com a largada marcada nem durante a corrida', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setDifficulty(code, 'a', 'dificil')
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+
+    expect(rooms.setDifficulty(code, 'b', 'profissional').difficulty).toBe('dificil')
+    rooms.beginRace(code)
+    expect(rooms.setDifficulty(code, 'b', 'profissional').difficulty).toBe('dificil')
+  })
+
+  it('recusa quem não está na sala', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    expect(() => rooms.setDifficulty(code, 'intruso', 'profissional')).toThrow(RoomError)
+  })
+
+  it('o piso da chegada acompanha o nível da sala', () => {
+    // No profissional o carro é mais rápido: um tempo legítimo lá seria
+    // recusado pelo piso do normal.
+    expect(minRaceSeconds('profissional')).toBeLessThan(minRaceSeconds('dificil'))
+    expect(minRaceSeconds('dificil')).toBeLessThan(minRaceSeconds('normal'))
+
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setDifficulty(code, 'a', 'profissional')
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    rooms.beginRace(code)
+
+    // O relógio precisa passar da contagem antes de a prova começar a contar.
+    const minimo = Math.round(minRaceSeconds('profissional') * 1_000)
+
+    // Tempo impossível até para o profissional: recusado.
+    clock.advance(5_400 + minimo - 2_000)
+    expect(rooms.recordFinish(code, 'a', { time: 10, topSpeed: 362, collisions: 0 })).toBeNull()
+
+    // E logo acima do piso daquele nível: aceito.
+    clock.advance(4_000)
+    const registrada = rooms.recordFinish(code, 'a', { time: 55, topSpeed: 362, collisions: 0 })
+    expect(registrada).not.toBeNull()
+  })
+
+  it('a revanche mantém o nível escolhido', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setDifficulty(code, 'a', 'profissional')
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    rooms.beginRace(code)
+    clock.advance(80_000)
+
+    const relatorio = { time: 70, topSpeed: 362, collisions: 1 }
+    rooms.recordFinish(code, 'a', relatorio)
+    rooms.recordFinish(code, 'b', { ...relatorio, time: 72 })
+    rooms.requestRematch(code, 'a')
+    rooms.requestRematch(code, 'b')
+
+    // A pista muda; a dificuldade combinada, não.
+    expect(rooms.scheduleStart(code)?.difficulty).toBe('profissional')
   })
 })

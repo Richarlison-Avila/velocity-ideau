@@ -75,6 +75,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       startAt: scheduled.startAt,
       countdownMs: scheduled.countdownMs,
       trackSeed: scheduled.trackSeed,
+      difficulty: scheduled.difficulty,
       serverTime: Date.now(),
     })
 
@@ -131,6 +132,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
             startAt: room.startAt,
             countdownMs: room.countdownMs,
             trackSeed: room.trackSeed,
+            difficulty: room.difficulty,
             serverTime: Date.now(),
           })
           // E também a última posição conhecida do rival, para o fantasma voltar na hora.
@@ -173,6 +175,16 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
         scheduleIfReady(room.code)
       } catch (error) {
         ack?.({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível pedir revanche.' })
+      }
+    })
+
+    socket.on('room:set-difficulty', (payload: { code: string; playerId: string; difficulty: string }, ack?: Ack) => {
+      try {
+        const room = rooms.setDifficulty(payload.code, payload.playerId, payload.difficulty)
+        ack?.({ ok: true, room })
+        publish(room.code, room)
+      } catch (error) {
+        ack?.({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível trocar a dificuldade.' })
       }
     })
 
