@@ -9,7 +9,7 @@ import {
   type Difficulty,
 } from './rules'
 import { createRaceState, speedForState, stepRace, type RaceInput, type RaceState } from './simulation'
-import { OFF_ROAD_LIMIT, TRACK_LENGTH, VIEW_DISTANCE } from './track'
+import { HIT_HALF_WIDTH, OFF_ROAD_LIMIT, TRACK_LENGTH, VIEW_DISTANCE } from './track'
 
 const PARADO: RaceInput = { left: false, right: false, boost: false }
 const dt = 1 / 60
@@ -77,7 +77,9 @@ describe('contrato da dificuldade', () => {
     expect(regras.cruiseSpeed).toBe(252)
     expect(regras.boostSpeed).toBe(314)
     expect(regras.penaltySeconds).toBeCloseTo(1.65, 6)
-    expect(regras.obstacles).toHaveLength(10)
+    // As dez barreiras e destroços originais seguem intactos; os buracos
+    // vieram depois, para fechar as beiradas, e são de outro tipo.
+    expect(regras.obstacles.filter((o) => o.kind !== 'pothole')).toHaveLength(10)
   })
 
   it('cada nível aperta o anterior em todas as frentes', () => {
@@ -159,6 +161,46 @@ describe('o profissional continua jogável', () => {
       // Meio segundo de sobra depois do movimento físico já cobre um tempo de
       // reação humano; abaixo disso a prova deixaria de ser jogável.
       expect(piorSobra).toBeGreaterThan(0.5)
+    }
+  })
+
+  /**
+   * O buraco que o jogo tinha: nenhum obstáculo passava de |0,56|, e a pista
+   * jogável vai até 1,153. Sobrava um corredor contínuo de 0,380 de largura
+   * em cada beirada — 32% da pista — onde nada nunca encostava, igual nos
+   * três níveis. Encostar na guia deixava o profissional tão vazio quanto uma
+   * pista limpa, e os 19 obstáculos extras dele não mudavam nada.
+   */
+  it('não existe linha permanentemente segura', () => {
+    for (const nivel of DIFFICULTIES) {
+      const lista = rulesFor(nivel).obstacles
+
+      let seguras = 0
+      let corredor = 0
+      let atual = 0
+      for (let lateral = -OFF_ROAD_LIMIT; lateral <= OFF_ROAD_LIMIT; lateral += 0.005) {
+        const livre = lista.every((o) => Math.abs(lateral - o.lane) >= HIT_HALF_WIDTH[o.kind])
+        if (livre) {
+          seguras += 1
+          atual += 0.005
+          corredor = Math.max(corredor, atual)
+        } else {
+          atual = 0
+        }
+      }
+
+      // Uma fresta é aceitável — ela exige precisão e qualquer deriva joga o
+      // carro na grama. Um corredor é outra coisa: dá para morar nele.
+      expect(corredor).toBeLessThan(0.1)
+      expect((seguras * 0.005) / (2 * OFF_ROAD_LIMIT)).toBeLessThan(0.05)
+    }
+  })
+
+  it('as duas beiradas são ameaçadas, não só uma', () => {
+    for (const nivel of DIFFICULTIES) {
+      const beirada = rulesFor(nivel).obstacles.filter((o) => Math.abs(o.lane) > 0.7)
+      expect(beirada.some((o) => o.lane > 0)).toBe(true)
+      expect(beirada.some((o) => o.lane < 0)).toBe(true)
     }
   })
 

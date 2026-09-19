@@ -74,6 +74,37 @@ const EXTRA_DIFICIL: Obstacle[] = [
   { id: 109, distance: 4_330, lane: 0.3, kind: 'debris' },
 ]
 
+/**
+ * Buracos que fecham as beiradas da pista.
+ *
+ * Todos os obstáculos do projeto moravam em |faixa| ≤ 0,56, enquanto a pista
+ * jogável vai até 1,153. Sobrava um corredor contínuo de 0,380 de largura em
+ * cada beirada onde nada nunca encostava — 32% da pista — e ele era idêntico
+ * nos três níveis: encostar na guia deixava o profissional tão vazio quanto
+ * uma pista limpa.
+ *
+ * Estes ficam por volta de |0,95|, no meio daquele corredor, e entram nos
+ * três níveis. Alternam de lado para que nenhuma das duas beiradas seja a
+ * fácil.
+ *
+ * A posição não é escolhida pelo espaço livre, e sim pelo tempo de desvio: um
+ * buraco na beirada seguido de um obstáculo no centro do outro lado obriga a
+ * atravessar a pista inteira. Cada um cai no meio de um vão de 220 m ou mais,
+ * que é o que mantém a folga acima do meio segundo exigido em teste — e o
+ * último aproveita a reta final, depois do derradeiro obstáculo.
+ */
+const BURACOS: Obstacle[] = [
+  { id: 301, distance: 830, lane: 0.95, kind: 'pothole' },
+  { id: 302, distance: 1_260, lane: -0.95, kind: 'pothole' },
+  { id: 303, distance: 1_725, lane: 0.92, kind: 'pothole' },
+  { id: 304, distance: 2_185, lane: -0.98, kind: 'pothole' },
+  { id: 305, distance: 2_650, lane: 0.95, kind: 'pothole' },
+  { id: 306, distance: 3_095, lane: -0.92, kind: 'pothole' },
+  { id: 307, distance: 3_560, lane: 0.98, kind: 'pothole' },
+  { id: 308, distance: 4_010, lane: -0.95, kind: 'pothole' },
+  { id: 309, distance: 4_740, lane: 0.9, kind: 'pothole' },
+]
+
 /** Obstáculos que só o profissional enfrenta, por cima dos do difícil. */
 const EXTRA_PROFISSIONAL: Obstacle[] = [
   { id: 201, distance: 630, lane: -0.14, kind: 'debris' },
@@ -105,7 +136,7 @@ const REGRAS: Record<Difficulty, RaceRules> = {
     offRoadDepthLoss: 0.25,
     boostDrain: 25,
     boostRecharge: 5.5,
-    obstacles,
+    obstacles: ordenar([...obstacles, ...BURACOS]),
   },
   dificil: {
     difficulty: 'dificil',
@@ -119,7 +150,7 @@ const REGRAS: Record<Difficulty, RaceRules> = {
     offRoadDepthLoss: 0.32,
     boostDrain: 29,
     boostRecharge: 4.9,
-    obstacles: ordenar([...obstacles, ...EXTRA_DIFICIL]),
+    obstacles: ordenar([...obstacles, ...BURACOS, ...EXTRA_DIFICIL]),
   },
   profissional: {
     difficulty: 'profissional',
@@ -133,7 +164,7 @@ const REGRAS: Record<Difficulty, RaceRules> = {
     offRoadDepthLoss: 0.4,
     boostDrain: 33,
     boostRecharge: 4.3,
-    obstacles: ordenar([...obstacles, ...EXTRA_DIFICIL, ...EXTRA_PROFISSIONAL]),
+    obstacles: ordenar([...obstacles, ...BURACOS, ...EXTRA_DIFICIL, ...EXTRA_PROFISSIONAL]),
   },
 }
 
