@@ -1,6 +1,6 @@
 // A validação da chegada precisa da mesma pista que o jogo desenha, então a
 // definição vem do módulo do jogo em vez de ser copiada para cá.
-import { LATERAL_LIMIT, speedForState, TRACK_LENGTH } from '../src/game/track.js'
+import { LATERAL_LIMIT, MAX_RACE_SPEED, TRACK_LENGTH } from '../src/game/track.js'
 
 export type RoomStatus = 'waiting' | 'ready' | 'countdown' | 'racing' | 'finished'
 
@@ -93,8 +93,12 @@ export const CLOCK_TOLERANCE_MS = 5_000
 /**
  * Tempo mínimo fisicamente possível para a prova: a pista inteira na
  * velocidade máxima do carro. Qualquer chegada mais rápida é impossível.
+ *
+ * O teto vem de `MAX_RACE_SPEED`, que já inclui o ganho do vácuo. Usar aqui a
+ * velocidade do boost puro rejeitaria como impossível uma volta rápida obtida
+ * legitimamente na esteira do rival.
  */
-export const MIN_RACE_SECONDS = TRACK_LENGTH / (speedForState(false, 0, true) / 3.6)
+export const MIN_RACE_SECONDS = TRACK_LENGTH / (MAX_RACE_SPEED / 3.6)
 
 /** Folga para a viagem do aviso de chegada até o servidor. */
 export const FINISH_TOLERANCE_SECONDS = 2

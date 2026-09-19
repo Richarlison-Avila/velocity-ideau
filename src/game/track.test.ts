@@ -14,7 +14,12 @@ import {
   ROADSIDE_LATERAL,
   ROADSIDE_SPACING,
   ROAD_EDGE,
+  MAX_CURVE_RATE,
+  MAX_RACE_SPEED,
+  SLIPSTREAM_BONUS,
   speedForState,
+  trackCurvature,
+  trackCurve,
   VIEW_DISTANCE,
 } from './track'
 
@@ -141,5 +146,75 @@ describe('marcadores laterais', () => {
     const metrosPorSegundo = speedForState(false, 0, false) / 3.6
     const marcadoresPorSegundo = (metrosPorSegundo / ROADSIDE_SPACING) * 2 // dois lados
     expect(marcadoresPorSegundo).toBeGreaterThan(metrosPorSegundo / 18)
+  })
+})
+
+describe('curvatura do traçado', () => {
+  /**
+   * A garantia que sustenta a curva física: a força lateral sai da derivada
+   * da mesma função que desenha a pista. Enquanto isso valer, é impossível o
+   * jogo empurrar o carro para um lado e desenhar a curva para o outro.
+   */
+  it('a curvatura é a derivada do deslocamento que o desenho usa', () => {
+    const h = 0.01
+    for (let distancia = 0; distancia <= 4_800; distancia += 37) {
+      const derivadaNumerica = (trackCurve(distancia + h) - trackCurve(distancia - h)) / (2 * h)
+      expect(trackCurvature(distancia) * MAX_CURVE_RATE).toBeCloseTo(derivadaNumerica, 9)
+    }
+  })
+
+  it('fica entre -1 e 1 em toda a pista, e usa a maior parte dessa faixa', () => {
+    let maior = 0
+    for (let distancia = 0; distancia <= 4_800; distancia += 1) {
+      const curvatura = trackCurvature(distancia)
+      expect(Math.abs(curvatura)).toBeLessThanOrEqual(1)
+      maior = Math.max(maior, Math.abs(curvatura))
+    }
+    // Um traçado que nunca chegasse perto do limite teria curvas decorativas.
+    expect(maior).toBeGreaterThan(0.9)
+  })
+
+  it('muda de sinal: a pista tem curvas para os dois lados', () => {
+    const amostras: number[] = []
+    for (let distancia = 0; distancia <= 4_800; distancia += 25) amostras.push(trackCurvature(distancia))
+    expect(amostras.some((curvatura) => curvatura > 0.5)).toBe(true)
+    expect(amostras.some((curvatura) => curvatura < -0.5)).toBe(true)
+  })
+
+  it('no ponto de deslocamento máximo a pista está momentaneamente reta', () => {
+    // Procura o pico do deslocamento e confere que a curvatura zera ali.
+    let pico = 0
+    let distanciaDoPico = 0
+    for (let distancia = 0; distancia <= 1_000; distancia += 0.5) {
+      if (trackCurve(distancia) > pico) {
+        pico = trackCurve(distancia)
+        distanciaDoPico = distancia
+      }
+    }
+    expect(Math.abs(trackCurvature(distanciaDoPico))).toBeLessThan(0.01)
+  })
+})
+
+describe('velocidade com vácuo', () => {
+  it('o vácuo acrescenta até o bônus previsto, proporcional à força', () => {
+    expect(speedForState(false, 0, false, 0)).toBe(252)
+    expect(speedForState(false, 0, false, 1)).toBe(252 + SLIPSTREAM_BONUS)
+    expect(speedForState(false, 0, false, 0.5)).toBe(252 + SLIPSTREAM_BONUS / 2)
+  })
+
+  it('não anula punição: na grama e na penalidade o vácuo não vale', () => {
+    expect(speedForState(true, 0, false, 1)).toBe(speedForState(true, 0, false, 0))
+    expect(speedForState(false, 1, false, 1)).toBe(speedForState(false, 1, false, 0))
+  })
+
+  it('valores fora da faixa não quebram a conta', () => {
+    expect(speedForState(false, 0, false, -5)).toBe(252)
+    expect(speedForState(false, 0, false, 99)).toBe(252 + SLIPSTREAM_BONUS)
+    expect(speedForState(false, 0, false, Number.NaN)).toBe(252)
+  })
+
+  it('o teto do carro considera o vácuo, senão o servidor recusaria volta boa', () => {
+    expect(MAX_RACE_SPEED).toBe(speedForState(false, 0, true, 1))
+    expect(MAX_RACE_SPEED).toBeGreaterThan(speedForState(false, 0, true))
   })
 })

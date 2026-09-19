@@ -127,12 +127,65 @@ export function isTallMarker(index: number) {
   return index % ROADSIDE_TALL_EVERY === 0
 }
 
+/**
+ * Harmônicos do traçado.
+ *
+ * Ficam em um lugar só porque três coisas dependem deles e não podem
+ * divergir: o deslocamento do centro da pista, que o desenho usa; a taxa de
+ * curva, de onde a simulação tira a força lateral; e a normalização dessa
+ * taxa. Antes os seis números estavam escritos à mão dentro de `trackCurve`,
+ * e qualquer ajuste no traçado teria que ser repetido na derivada — com o
+ * risco de a pista desenhada deixar de ser a pista que empurra o carro.
+ */
+const CURVE_HARMONICS = [
+  { amplitude: 0.46, wavelength: 310, phase: 0 },
+  { amplitude: 0.35, wavelength: 790, phase: 0.8 },
+  { amplitude: 0.18, wavelength: 1450, phase: 0 },
+]
+
+/** Deslocamento do centro da pista na distância indicada. */
 export function trackCurve(distance: number) {
-  return (
-    Math.sin(distance / 310) * 0.46 +
-    Math.sin(distance / 790 + 0.8) * 0.35 +
-    Math.sin(distance / 1450) * 0.18
-  )
+  let offset = 0
+  // Laço indexado, e não `for...of`: esta função é chamada 85 vezes por quadro
+  // pelo desenho da pista.
+  for (let i = 0; i < CURVE_HARMONICS.length; i += 1) {
+    const { amplitude, wavelength, phase } = CURVE_HARMONICS[i]
+    offset += Math.sin(distance / wavelength + phase) * amplitude
+  }
+  return offset
+}
+
+/**
+ * Taxa de curva: derivada do deslocamento do centro em relação à distância.
+ *
+ * É o que o piloto sente como "a pista está virando", e não `trackCurve`, que
+ * é apenas onde o centro está. Num ponto de deslocamento máximo a pista está
+ * momentaneamente reta — a derivada é zero ali, e é isso que a força lateral
+ * precisa saber.
+ */
+export function curveRate(distance: number) {
+  let rate = 0
+  for (let i = 0; i < CURVE_HARMONICS.length; i += 1) {
+    const { amplitude, wavelength, phase } = CURVE_HARMONICS[i]
+    rate += (Math.cos(distance / wavelength + phase) * amplitude) / wavelength
+  }
+  return rate
+}
+
+/** Maior taxa possível: todos os cossenos valendo 1 no mesmo ponto. */
+export const MAX_CURVE_RATE = CURVE_HARMONICS.reduce(
+  (total, { amplitude, wavelength }) => total + amplitude / wavelength,
+  0,
+)
+
+/**
+ * Curvatura normalizada, de -1 (virando à esquerda) a 1 (à direita).
+ *
+ * A simulação trabalha nesta escala para que a força lateral seja ajustável
+ * por um número legível, independente dos comprimentos de onda do traçado.
+ */
+export function trackCurvature(distance: number) {
+  return curveRate(distance) / MAX_CURVE_RATE
 }
 
 export function formatTime(seconds: number) {
@@ -142,9 +195,37 @@ export function formatTime(seconds: number) {
   return `${minutes}:${remaining.toFixed(3).padStart(6, '0')}`
 }
 
-export function speedForState(offRoad: boolean, penalty: number, boosting: boolean) {
+/**
+ * Ganho máximo de velocidade ao correr no vácuo do rival, em km/h.
+ *
+ * Fica junto das outras velocidades porque é uma delas: o vácuo não é um
+ * estado novo do carro, é um acréscimo ao alvo de velocidade. Mora aqui, e não
+ * no módulo do vácuo, porque o servidor importa apenas este arquivo para
+ * validar a chegada e precisa conhecer o teto real do carro.
+ */
+export const SLIPSTREAM_BONUS = 26
+
+/**
+ * Velocidade alvo do carro no estado informado.
+ *
+ * `slipstream` vai de 0 a 1 e só acrescenta nos estados livres: na grama e
+ * durante a penalidade o carro está sendo punido, e o vácuo não anula punição.
+ */
+export function speedForState(offRoad: boolean, penalty: number, boosting: boolean, slipstream = 0) {
   if (offRoad) return 132
   if (penalty > 0) return 172
-  if (boosting) return 314
-  return 252
+  // `Math.min` e `Math.max` propagam NaN. Como a força do vácuo é derivada da
+  // posição do rival, que chega pela rede, um valor corrompido apagaria a
+  // velocidade do próprio carro — por isso a faixa é conferida, não presumida.
+  const forca = Number.isFinite(slipstream) ? Math.max(0, Math.min(1, slipstream)) : 0
+  return (boosting ? 314 : 252) + forca * SLIPSTREAM_BONUS
 }
+
+/**
+ * Maior velocidade que o carro pode atingir: boost com vácuo cheio.
+ *
+ * O servidor usa este teto para saber qual é o tempo de prova mais rápido
+ * fisicamente possível. Antes ele usava a velocidade do boost puro, o que
+ * passaria a rejeitar uma chegada legítima obtida no vácuo.
+ */
+export const MAX_RACE_SPEED = speedForState(false, 0, true, 1)

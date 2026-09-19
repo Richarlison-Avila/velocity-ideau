@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { approach, createFeel, MAX_SPEED, registerImpact, updateFeel } from './feel'
+import { segurandoAFaixa } from './piloto'
 import { createRaceState, stepRace, type RaceInput } from './simulation'
 
 const PARADO: RaceInput = { left: false, right: false, boost: false }
@@ -90,16 +91,22 @@ describe('intensidades da apresentação', () => {
   it('o boost sobe e desce sem degrau', () => {
     const race = createRaceState()
     const feel = createFeel()
+    // Com alguém no volante: o boost desliga fora da pista, e um carro que
+    // ninguém corrige acaba na grama antes de o medidor chegar ao topo.
+    const acelerando = segurandoAFaixa(0, true)
+    const soltando = segurandoAFaixa(0)
     for (let t = 0; t < 3; t += 1 / 60) {
-      stepRace(race, BOOST, 1 / 60)
-      updateFeel(feel, race, BOOST, 1 / 60)
+      const comando = acelerando(race)
+      stepRace(race, comando, 1 / 60)
+      updateFeel(feel, race, comando, 1 / 60)
     }
     expect(feel.boost).toBeGreaterThan(0.95)
 
     const meio: number[] = []
     for (let t = 0; t < 1; t += 1 / 60) {
-      stepRace(race, PARADO, 1 / 60)
-      updateFeel(feel, race, PARADO, 1 / 60)
+      const comando = soltando(race)
+      stepRace(race, comando, 1 / 60)
+      updateFeel(feel, race, comando, 1 / 60)
       meio.push(feel.boost)
     }
     // Passa por valores intermediários em vez de zerar de uma vez.

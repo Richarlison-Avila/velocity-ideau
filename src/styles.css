@@ -112,6 +112,12 @@ button { cursor: pointer; }
 .boost-meter.empty .boost-track i { background: #5d666f; box-shadow: none; }
 .boost-meter.empty .boost-copy b { color: #8d959d; }
 
+/* Medidor do vácuo: fica logo acima do boost, com verde próprio para não ser
+   confundido nem com o boost (ciano) nem com o progresso (laranja). */
+.slipstream-meter { position: absolute; z-index: 3; right: 24px; bottom: 76px; width: 190px; }
+.slipstream-meter .boost-copy b { color: #45e7ad; }
+.slipstream-meter .boost-track i { background: #45e7ad; box-shadow: 0 0 16px #45e7ad; }
+
 .warning, .impact { position: absolute; z-index: 5; top: 27%; left: 50%; transform: translateX(-50%); padding: 8px 14px; background: rgba(255,65,35,.88); color: #fff; font: 800 12px 'Barlow Condensed', sans-serif; letter-spacing: .15em; }
 .impact { top: 35%; background: #f2a600; color: #17120a; }
 .countdown-layer { position: absolute; z-index: 7; inset: 0; display: grid; place-content: center; text-align: center; background: rgba(2,5,8,.2); }
@@ -220,6 +226,7 @@ button { cursor: pointer; }
   .menu-footer { position: relative; }
   .keyboard-hint { display: none; }
   .boost-meter { right: 22px; bottom: 126px; width: 125px; }
+  .slipstream-meter { right: 22px; bottom: 168px; width: 125px; }
 }
 
 @media (max-width: 600px) {

@@ -2,6 +2,35 @@
 
 Protótipo jogável do plano em `PLANO_DESENVOLVIMENTO.md`: corrida offline, lobby multiplayer, largada sincronizada, carro fantasma do adversário e resultado oficial com revanche.
 
+## Como se dirige
+
+A aceleração é automática. O piloto controla **direção** e **boost**, e são duas
+forças que disputam o mesmo comando:
+
+- **A curva empurra.** A força lateral sai da derivada da mesma função que
+  desenha a pista, cresce com o quadrado da velocidade e só escapa quando passa
+  da aderência do pneu. Na velocidade normal 41% do traçado pede correção e o
+  pior ponto consome 24% do esterço; com boost são 67% do traçado e 53% do
+  esterço. Somando boost e vácuo, a curva mais fechada pede mais esterço do que
+  o carro tem — ou seja, **a velocidade máxima só é utilizável nas retas**, e
+  isso não é uma regra escrita à parte, é consequência da física.
+- **O vácuo do rival rende.** Vindo atrás e alinhado com o adversário, o carro
+  ganha até 26 km/h, mais forte quanto mais perto. Ultrapassar custa esse ganho,
+  porque a esteira desaparece no instante em que o carro passa à frente. É o que
+  dá sentido mecânico à presença do outro piloto: sem isso uma corrida on-line
+  seriam duas provas solo sobrepostas.
+
+Quem não dirige termina a prova, mas 25 segundos mais devagar e com mais da
+metade do tempo na grama. Quem apenas mantém o carro no asfalto faz cerca de
+70 segundos.
+
+### Controles
+
+| | Computador | Celular |
+| --- | --- | --- |
+| Direção | `A` / `D` ou setas | Botões nas laterais |
+| Boost | `Espaço` | Botão dedicado |
+
 ## Executar
 
 ```bash
@@ -51,6 +80,18 @@ npm test
 ```
 
 A suíte cobre a física da corrida, a sequência das cinco luzes, a estimativa de relógio, a interpolação do fantasma, as regras das salas e testes de integração que sobem o servidor real e conectam dois clientes Socket.IO — inclusive medindo o erro do fantasma com pacotes atrasados e perdidos.
+
+Dois testes merecem destaque porque são o que sustenta a curva física:
+
+- **A curvatura é a derivada do deslocamento que o desenho usa**, conferida
+  numericamente ponto a ponto na pista inteira. Enquanto isso valer, é
+  impossível o jogo empurrar o carro para um lado e desenhar a curva para o
+  outro.
+- **O ritmo do fantasma na tela nunca passa da velocidade real do rival**, com
+  rede boa, com pacotes fora de ordem e com perdas. A medição é em metros por
+  segundo, e não metros por amostra, porque `setInterval` não entrega intervalos
+  constantes — medir por amostra transformava atraso do temporizador em "salto
+  do fantasma".
 
 O roteiro da apresentação é um teste de aceitação à parte, que percorre a demonstração inteira — dois pilotos na mesma sala, largada, corrida com a física real, fantasma, resultado e revanche:
 

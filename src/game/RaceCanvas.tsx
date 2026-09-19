@@ -10,7 +10,14 @@ import {
   type GhostSnapshot,
 } from './ghost'
 import { createFeel, registerImpact, updateFeel } from './feel'
-import { createRaceState, MAX_STEP_SECONDS, stepRace, type RaceInput } from './simulation'
+import {
+  CORNER_GRIP,
+  createRaceState,
+  MAX_STEP_SECONDS,
+  slipstreamFrom,
+  stepRace,
+  type RaceInput,
+} from './simulation'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
 import {
   CAR_SPRITE_REFERENCE_WIDTH,
@@ -24,6 +31,7 @@ import {
   roadProjection,
   ROADSIDE_LATERAL,
   ROADSIDE_SPACING,
+  SLIPSTREAM_BONUS,
   TRACK_LENGTH,
   trackCurve,
   VIEW_DISTANCE,
@@ -82,6 +90,8 @@ type Telemetry = {
   penalty: number
   boosting: boolean
   boostLocked: boolean
+  /** Vácuo aproveitado, já suavizado, de 0 a 1. */
+  slipstream: number
 }
 
 const initialTelemetry: Telemetry = {
@@ -93,6 +103,7 @@ const initialTelemetry: Telemetry = {
   penalty: 0,
   boosting: false,
   boostLocked: false,
+  slipstream: 0,
 }
 
 function roundedRect(
@@ -632,9 +643,19 @@ function RaceCanvas({
       const dt = (frame - previous) / 1000
       previous = frame
 
+      // Posição do fantasma neste quadro, já interpolada. É lida antes da
+      // simulação porque agora o rival não é só desenho: a esteira dele entra
+      // no passo de física como ganho de velocidade.
+      const rivalSample = ghostRef.current?.sample(serverNow) ?? null
+
       if (startedRef.current && !doneRef.current) {
         const elapsed = Math.max(0, (serverNow - startAt) / 1000)
-        for (const event of stepRace(race, inputRef.current, dt)) {
+        // Quem já chegou está parado na linha e não deixa mais esteira.
+        const vacuo =
+          rivalSample && rivalSample.state === 'racing'
+            ? slipstreamFrom(race.progress, race.lateral, rivalSample.progress, rivalSample.lateral)
+            : 0
+        for (const event of stepRace(race, inputRef.current, dt, vacuo)) {
           if (event.type === 'collision') {
             announce('IMPACTO — VELOCIDADE REDUZIDA')
             beep(105, 0.24)
@@ -709,7 +730,16 @@ function RaceCanvas({
           })
         }
 
-        const forcaDerrapagem = Math.max(feel.offRoad, derrapando ? Math.abs(feel.steer) : 0, race.penalty > 0 ? 1 : 0)
+        // Pneu raspando na curva: aparece quando a carga lateral passa da
+        // metade e satura no limite de aderência. É o retorno visual de que a
+        // curva está cobrando a velocidade escolhida.
+        const raspagem = Math.max(0, (feel.corner - CORNER_GRIP) / (1 - CORNER_GRIP))
+        const forcaDerrapagem = Math.max(
+          feel.offRoad,
+          raspagem,
+          derrapando ? Math.abs(feel.steer) : 0,
+          race.penalty > 0 ? 1 : 0,
+        )
         for (let i = skidRate.take(passo, forcaDerrapagem > 0.05, forcaDerrapagem); i > 0; i -= 1) {
           for (const roda of [-1, 1]) {
             effects.spawn('skid', rastro, race.lateral + roda * WHEEL_OFFSET, {
@@ -729,6 +759,7 @@ function RaceCanvas({
             penalty: race.penalty,
             boosting: race.boosting,
             boostLocked: race.boostLocked,
+            slipstream: feel.slipstream,
           })
         }
       }
@@ -748,8 +779,6 @@ function RaceCanvas({
         if (particula.kind === 'skid') drawParticle(particula, particula.distance - race.progress)
       }
 
-      // Posição do fantasma neste quadro, já interpolada.
-      const rivalSample = ghostRef.current?.sample(serverNow) ?? null
       const rivalAhead = rivalSample ? rivalSample.progress - race.progress : 0
       const rivalVisible = Boolean(rivalSample) && rivalAhead > 0 && rivalAhead < VIEW_DISTANCE
 
@@ -898,6 +927,20 @@ function RaceCanvas({
         <div className="boost-copy"><span>BOOST</span><b>{Math.round(telemetry.boost)}%</b></div>
         <div className="boost-track"><i style={{ width: `${telemetry.boost}%` }} /></div>
       </div>
+
+      {/* O vácuo só existe com rival na pista, e só aparece quando rende algo:
+          um medidor parado em zero durante toda a prova seria ruído no HUD. */}
+      {mode === 'online' && phase === 'racing' && telemetry.slipstream > 0.04 && (
+        <div className="slipstream-meter">
+          <div className="boost-copy">
+            <span>VÁCUO</span>
+            <b>+{Math.round(telemetry.slipstream * SLIPSTREAM_BONUS)} KM/H</b>
+          </div>
+          <div className="boost-track">
+            <i style={{ width: `${Math.round(telemetry.slipstream * 100)}%` }} />
+          </div>
+        </div>
+      )}
 
       {mode === 'online' && phase !== 'countdown' && (
         <div

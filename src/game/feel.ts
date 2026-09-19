@@ -1,5 +1,5 @@
 import type { RaceInput, RaceState } from './simulation.js'
-import { OFF_ROAD_LIMIT, speedForState } from './track.js'
+import { MAX_RACE_SPEED, OFF_ROAD_LIMIT } from './track.js'
 
 /**
  * Intensidades contínuas para a apresentação.
@@ -14,7 +14,7 @@ import { OFF_ROAD_LIMIT, speedForState } from './track.js'
  */
 
 /** Velocidade máxima que o carro alcança, usada para normalizar. */
-export const MAX_SPEED = speedForState(false, 0, true)
+export const MAX_SPEED = MAX_RACE_SPEED
 
 /**
  * Aceleração de referência, em km/h por segundo. A arrancada da largada passa
@@ -29,6 +29,8 @@ const TAU = {
   boost: 0.18,
   offRoad: 0.14,
   impact: 0.42,
+  slipstream: 0.22,
+  corner: 0.2,
 }
 
 export type FeelState = {
@@ -44,12 +46,26 @@ export type FeelState = {
   impact: number
   /** O quanto o carro está fora do asfalto, de 0 a 1. */
   offRoad: number
+  /** O quanto o vácuo do rival está rendendo, de 0 a 1. */
+  slipstream: number
+  /** Carga lateral que a curva está impondo, de 0 a 1. */
+  corner: number
   /** Velocidade do quadro anterior, para derivar a aceleração. */
   previousSpeed: number
 }
 
 export function createFeel(): FeelState {
-  return { speed: 0, accel: 0, steer: 0, boost: 0, impact: 0, offRoad: 0, previousSpeed: 0 }
+  return {
+    speed: 0,
+    accel: 0,
+    steer: 0,
+    boost: 0,
+    impact: 0,
+    offRoad: 0,
+    slipstream: 0,
+    corner: 0,
+    previousSpeed: 0,
+  }
 }
 
 /**
@@ -86,6 +102,12 @@ export function updateFeel(feel: FeelState, race: RaceState, input: RaceInput, d
   // Fora da pista cresce com o quanto o carro avançou para além da borda.
   const excedente = (Math.abs(race.lateral) - OFF_ROAD_LIMIT) / 0.3
   feel.offRoad = approach(feel.offRoad, clamp(excedente, 0, 1), TAU.offRoad, step)
+
+  // Vácuo e carga de curva já saem contínuos da simulação; a suavização aqui
+  // serve para o HUD e os efeitos não tremerem quando o valor oscila de um
+  // quadro para o outro.
+  feel.slipstream = approach(feel.slipstream, clamp(race.slipstream, 0, 1), TAU.slipstream, step)
+  feel.corner = approach(feel.corner, clamp(race.cornerLoad, 0, 1), TAU.corner, step)
 
   feel.impact = approach(feel.impact, 0, TAU.impact, step)
   return feel

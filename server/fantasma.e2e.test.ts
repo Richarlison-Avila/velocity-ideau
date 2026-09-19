@@ -64,7 +64,7 @@ afterEach(async () => {
 
 type Corrida = {
   erroMaximo: number
-  maiorSalto: number
+  maiorRitmo: number
   recuos: number
   amostras: number
   pacotesEnviados: number
@@ -125,10 +125,10 @@ async function medirFantasma(options: {
   const envio = setInterval(enviar, 100)
 
   let erroMaximo = 0
-  let maiorSalto = 0
+  let maiorRitmo = 0
   let recuos = 0
   let amostras = 0
-  let anterior: number | null = null
+  let anterior: { progress: number; t: number } | null = null
 
   const observar = setInterval(() => {
     const agora = Date.now()
@@ -141,17 +141,23 @@ async function medirFantasma(options: {
     erroMaximo = Math.max(erroMaximo, Math.abs(amostra.progress - esperado))
 
     if (anterior !== null) {
-      if (amostra.progress < anterior) recuos += 1
-      maiorSalto = Math.max(maiorSalto, amostra.progress - anterior)
+      if (amostra.progress < anterior.progress) recuos += 1
+      // O salto é medido como ritmo, em metros por segundo, e não em metros
+      // por amostra. `setInterval` não entrega 16 ms constantes — no Windows
+      // passa de 40 ms sob carga — e medir metros por amostra transformava
+      // atraso do temporizador em "salto do fantasma", reprovando o teste em
+      // uma execução a cada três sem nada de errado com o fantasma.
+      const intervalo = (agora - anterior.t) / 1000
+      if (intervalo > 0) maiorRitmo = Math.max(maiorRitmo, (amostra.progress - anterior.progress) / intervalo)
     }
-    anterior = amostra.progress
+    anterior = { progress: amostra.progress, t: agora }
   }, 16)
 
   await new Promise((resolve) => setTimeout(resolve, options.duracaoMs))
   clearInterval(envio)
   clearInterval(observar)
 
-  return { erroMaximo, maiorSalto, recuos, amostras, pacotesEnviados }
+  return { erroMaximo, maiorRitmo, recuos, amostras, pacotesEnviados }
 }
 
 describe('estado do rival no fantasma', () => {
@@ -234,8 +240,10 @@ describe('o fantasma acompanha o progresso real do rival', () => {
     // Um erro pequeno diante dos 70 m/s do carro.
     expect(corrida.erroMaximo).toBeLessThan(12)
     expect(corrida.recuos).toBe(0)
-    // Em 16 ms o carro anda 1,1 m; o dobro cobre variação de temporizador.
-    expect(corrida.maiorSalto).toBeLessThan(3)
+    // O fantasma nunca pode avançar visivelmente mais rápido do que o carro
+    // do rival de fato anda. Medido como ritmo, o valor é o próprio
+    // RIVAL_SPEED_MS, então a margem aqui é estreita de propósito.
+    expect(corrida.maiorRitmo).toBeLessThan(RIVAL_SPEED_MS * 1.2)
   }, 15_000)
 
   it('não dá saltos com pacotes chegando fora de ordem', async () => {
@@ -246,7 +254,9 @@ describe('o fantasma acompanha o progresso real do rival', () => {
     })
 
     expect(corrida.recuos).toBe(0)
-    expect(corrida.maiorSalto).toBeLessThan(6)
+    // Com a rede degradada a correção pode adiantar o fantasma por um
+    // instante; o que não pode é ele dar um salto visível na tela.
+    expect(corrida.maiorRitmo).toBeLessThan(RIVAL_SPEED_MS * 1.6)
     expect(corrida.erroMaximo).toBeLessThan(25)
   }, 15_000)
 
@@ -258,7 +268,7 @@ describe('o fantasma acompanha o progresso real do rival', () => {
     })
 
     expect(corrida.recuos).toBe(0)
-    expect(corrida.maiorSalto).toBeLessThan(8)
+    expect(corrida.maiorRitmo).toBeLessThan(RIVAL_SPEED_MS * 1.6)
     expect(corrida.erroMaximo).toBeLessThan(30)
   }, 15_000)
 })

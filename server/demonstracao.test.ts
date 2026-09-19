@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createGameServer, type GameServer } from './app.js'
 import type { PublicRoom, RaceOutcome } from './rooms.js'
 import { GhostTracker, INTERPOLATION_DELAY_MS, type GhostSnapshot } from '../src/game/ghost.js'
-import { createRaceState, stepRace, type RaceInput } from '../src/game/simulation.js'
+import { noLimiteDoAsfalto, segurandoAFaixa, type Piloto } from '../src/game/piloto.js'
+import { createRaceState, stepRace } from '../src/game/simulation.js'
 import { TRACK_LENGTH } from '../src/game/track.js'
 
 /**
@@ -20,8 +21,16 @@ import { TRACK_LENGTH } from '../src/game/track.js'
  * protocolo que o navegador usa.
  */
 
-const PARADO: RaceInput = { left: false, right: false, boost: false }
-const SO_BOOST: RaceInput = { left: false, right: false, boost: true }
+/**
+ * Os dois pilotos da demonstração.
+ *
+ * Desde que a curva empurra o carro, uma corrida sem ninguém no volante
+ * termina na grama e não representa a prova que o público vai ver. O piloto
+ * atento com boost faz o papel de quem já pegou o jeito; o que só corrige na
+ * borda do asfalto faz o papel do visitante que pegou o celular agora.
+ */
+const ATENTO_COM_BOOST: Piloto = segurandoAFaixa(0, true)
+const INICIANTE: Piloto = noLimiteDoAsfalto()
 
 let server: GameServer
 let port = 0
@@ -30,11 +39,11 @@ const clients: Socket[] = []
 type Corrida = { tempo: number; topSpeed: number; colisoes: number }
 
 /** Roda uma prova inteira com a física do jogo e devolve o desempenho. */
-function correr(input: RaceInput): Corrida {
+function correr(piloto: Piloto): Corrida {
   const state = createRaceState()
   let tempo = 0
   while (!state.finished && tempo < 300) {
-    stepRace(state, input, 1 / 60)
+    stepRace(state, piloto(state), 1 / 60)
     tempo += 1 / 60
   }
   return { tempo, topSpeed: state.topSpeed, colisoes: state.collisions }
@@ -92,8 +101,8 @@ afterEach(async () => {
 describe('roteiro da demonstração', () => {
   it('duas pessoas entram na mesma sala, correm, veem o mesmo vencedor e jogam de novo', async () => {
     // Passo 0: as duas provas, com a física real do jogo.
-    const rapido = correr(SO_BOOST)
-    const lento = correr(PARADO)
+    const rapido = correr(ATENTO_COM_BOOST)
+    const lento = correr(INICIANTE)
     const diferenca = lento.tempo - rapido.tempo
 
     // O plano pede provas de 60 a 90 segundos.
@@ -195,7 +204,7 @@ describe('roteiro da demonstração', () => {
   }, 60_000)
 
   it('a prova tem o comprimento previsto no plano', () => {
-    const iniciante = correr(PARADO)
+    const iniciante = correr(INICIANTE)
     expect(TRACK_LENGTH).toBe(4_800)
     // Sessenta a noventa segundos, como pede a seção 3 do plano.
     expect(iniciante.tempo).toBeGreaterThan(60)
