@@ -40,8 +40,12 @@ export const WHEEL_OFFSET = 0.17
 /**
  * Recuo, em metros, entre o ponto onde o carro é desenhado e onde o efeito
  * nasce. Poeira e marcas saem de trás das rodas, não da frente do bico.
+ *
+ * Encolheu junto com a distância do carro à câmera: com a projeção mais
+ * acentuada o carro é desenhado a 11 m, e um recuo de 9 m jogaria o rastro
+ * quase em cima da câmera.
  */
-export const TRAIL_SETBACK = 9
+export const TRAIL_SETBACK = 4
 
 export type SpawnOptions = {
   life?: number

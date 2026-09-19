@@ -19,7 +19,23 @@ export const VIEW_DISTANCE = 215
 export const HORIZON_RATIO = 0.29
 export const BOTTOM_RATIO = 0.92
 export const CAR_SCREEN_RATIO = 0.82
-export const PERSPECTIVE_POWER = 1.72
+/**
+ * Quanto a projeção comprime o longe em favor do perto.
+ *
+ * Era 1,72, e com isso o fluxo na tela a 3 m era só 2,3 vezes o de 150 m — o
+ * olho lê profundidade por essa razão, e 2,3 é pouco demais para a pista
+ * parecer recuar em vez de deslizar. Com 3,2 a razão vai a 12, o fluxo junto
+ * à câmera quase dobra de novo e os primeiros 20 metros passam a ocupar 16%
+ * da tela em vez de 9,7%.
+ *
+ * O que torna esta constante barata: a escala no ponto onde o carro é
+ * desenhado é fixa por construção — `CAR_SCREEN_RATIO` a define —, então
+ * `CAR_HALF_LATERAL` e `OFF_ROAD_LIMIT` não se movem, e nada da geometria
+ * competitiva muda. O invariante do relevo também não depende dela: o termo
+ * perigoso e o termo que o segura carregam a mesma potência, e ela se
+ * cancela na razão.
+ */
+export const PERSPECTIVE_POWER = 3.2
 
 /**
  * Distância na pista que corresponde ao ponto onde o carro é desenhado.

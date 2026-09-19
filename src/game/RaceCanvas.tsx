@@ -798,7 +798,10 @@ function RaceCanvas({
       for (let i = 0; i < slices; i += 1) {
         const nearDistance = VIEW_DISTANCE * (1 - (i + 1) / slices)
         const near = roadGeometry(nearDistance)
-        const stripe = Math.floor((race.progress + nearDistance) / 18) % 2 === 0
+        // A cada 12 m, e não 18: são 5,8 faixas por segundo em cruzeiro em
+        // vez de 3,9. É a referência mais barata que existe para o olho medir
+        // o avanço, e ela decide também o zebrado e o tracejado das pistas.
+        const stripe = Math.floor((race.progress + nearDistance) / 12) % 2 === 0
 
         ctx.fillStyle = stripe ? ambiente.gramaClara : ambiente.gramaEscura
         ctx.fillRect(0, far.y, width, Math.max(1, near.y - far.y + 1))
