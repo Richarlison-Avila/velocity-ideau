@@ -14,8 +14,16 @@ import { DEFAULT_CAR, carById, type CarId } from './cars'
 import { drawCar, prepareCar, type CarPose } from './carSprites'
 import { createFeel, registerImpact, updateFeel } from './feel'
 import { LUZ, misturar, rampa } from './paleta'
-import { RECUO_DO_PORTICO, desenharObjeto, desenharPortico, prepararCenario } from './cenarioSprites'
-import type { FamiliaModelada } from './cenarioModel'
+import {
+  desenharBuraco,
+  desenharFaixaDeFundo,
+  desenharObjeto,
+  desenharOleo,
+  desenharPoca,
+  desenharPortico,
+  prepararCenario,
+} from './cenarioSprites'
+import type { FamiliaDeVaga } from './cenarioModel'
 import {
   createGantry,
   createSceneryItem,
@@ -141,18 +149,6 @@ const initialTelemetry: Telemetry = {
   slipstream: 0,
 }
 
-function roundedRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-) {
-  ctx.beginPath()
-  ctx.roundRect(x, y, width, height, radius)
-}
-
 
 /** Preferência de som, guardada entre corridas e entre recargas da página. */
 const SOM_KEY = 'ghost-racer-mudo'
@@ -197,12 +193,6 @@ const ANGULOS_DE_RAJADA = Array.from({ length: 18 }, (_, i) => {
   return passo + Math.sin(i * 12.9898) * 0.09
 })
 
-/** Barreira, cone e a faixa refletiva que os dois usam. */
-const BARREIRA = rampa('#eef1f2')
-const BARREIRA_FAIXA = rampa('#ff4b37')
-const CONE = rampa('#ff8a00')
-const REFLETIVO = rampa('#f5f6e9')
-
 /**
  * Cerca e guardrail: as duas famílias que seguem procedurais.
  *
@@ -211,6 +201,12 @@ const REFLETIVO = rampa('#f5f6e9')
  * depende das projeções de duas vagas vizinhas, que diferem — assadas numa
  * célula por vaga, virariam uma fila de portõezinhos soltos.
  */
+/** Tom para onde a poeira clareia ao subir do chão. */
+const POEIRA_CLARA = '#c6b489'
+
+/** A faísca nasce nesta cor e esfria para a cor dela. */
+const FAISCA_QUENTE = '#fff3c4'
+
 const CERCA = rampa('#6d7b7f')
 const GUARDRAIL = rampa('#aeb6ba')
 
@@ -220,16 +216,13 @@ const GUARDRAIL = rampa('#aeb6ba')
  * São os mesmos números de quando cada objeto era desenhado à mão aqui: o
  * que mudou foi de onde vem o desenho, não o tamanho que ele ocupa.
  */
-const ALTURA_DA_FAMILIA: Record<FamiliaModelada, number> = {
+const ALTURA_DA_FAMILIA: Record<FamiliaDeVaga, number> = {
   tree: 0.52,
   bush: 0.16,
   grass: 0.038,
   // A placa nova tem painel largo, então ela precisa ser mais baixa que a
   // antiga para ocupar a mesma mancha na beira da pista.
   sign: 0.085,
-  // O marcador tem altura própria, vinda do espaçamento da pista, e não passa
-  // por esta tabela — mas o tipo cobra a entrada.
-  marcador: 0.15,
   pneus: 0.075,
   poste: 0.42,
   arquibancada: 0.26,
@@ -456,6 +449,18 @@ function RaceCanvas({
     const serra = rampa(ambiente.serra)
     const serraLonge = rampa(misturar(ambiente.serra, ambiente.ceuMeio, 0.42))
     const nuvem = rampa(misturar(ambiente.ceuMeio, LUZ, 0.3))
+    // A faixa de meio-campo fica entre a serra e a grama, e a cor dela também:
+    // mais fechada que a montanha lavada pelo céu, mais aberta que o chão.
+    const corDaFaixa = misturar(ambiente.serra, ambiente.chao, 0.38)
+    // O buraco é a única peça que continua sendo pintada ao vivo, e a única
+    // cuja cor vem do chão em que ela está: asfalto quebrado é asfalto, e uma
+    // borda de cinza fixo apareceria clara demais ao entardecer e escura
+    // demais ao meio-dia.
+    const buraco = rampa(ambiente.asfaltoClaro)
+    // Poeira da grama, da cor do chão daquele lugar. Clareada, porque poeira
+    // no ar pega luz que o chão não pega — mas puxada para o tom dele, senão
+    // a mesma nuvem bege subiria do campo verde e da duna.
+    const poeira = misturar(ambiente.chao, POEIRA_CLARA, 0.55)
     let width = 0
     let height = 0
     let previous = performance.now()
@@ -673,6 +678,15 @@ function RaceCanvas({
 
       ctx.fillStyle = ambiente.chao
       ctx.fillRect(0, height * 0.38, width, height)
+
+      // A faixa de meio-campo vem por último, apoiada no chão distante: é o
+      // degrau que faltava entre a montanha e a grama. Corre mais depressa que
+      // a serra e mais devagar que as árvores da beira, e é essa diferença de
+      // velocidade que dá a leitura de camadas.
+      desenharFaixaDeFundo(
+        ctx, ambiente.lugar, corDaFaixa,
+        width, height * 0.4 + subida * 0.8, height * 0.1, desvio * 1.7,
+      )
     }
 
     /**
@@ -785,8 +799,8 @@ function RaceCanvas({
     const portico = createGantry()
 
     // Poses reaproveitadas entre quadros, pelo mesmo motivo.
-    const poseDoJogador: CarPose = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0 }
-    const poseDoFantasma: CarPose = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0 }
+    const poseDoJogador: CarPose = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
+    const poseDoFantasma: CarPose = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
 
     /** Última posição lateral conhecida do rival, para derivar o esterço dele. */
     let lateralDoFantasma = 0
@@ -819,14 +833,9 @@ function RaceCanvas({
       const ultimo = lastSceneryIndex(race.progress)
       const primeiro = firstSceneryIndex(race.progress)
 
-      // O laço vai algumas vagas além do primeiro índice à frente: é onde o
-      // pórtico que a câmera já passou termina de subir e se dissolver. Como
-      // percorre do longe para o perto, essas vagas extras caem por último —
-      // que é exatamente a ordem de profundidade delas.
-      for (let indice = ultimo; indice >= primeiro - RECUO_DO_PORTICO; indice -= 1) {
+      for (let indice = ultimo; indice >= primeiro; indice -= 1) {
         const ahead = indice * SCENERY_SPACING - race.progress
-        const passou = indice < primeiro
-        const projetado = roadGeometry(Math.max(0, ahead))
+        const projetado = roadGeometry(ahead)
         const referencia = projetado.roadWidth
         // Longe demais para render qualquer coisa legível: sairia um pixel
         // sujo, e sob a bruma nem isso. O corte era 6, e deixava passar
@@ -834,7 +843,7 @@ function RaceCanvas({
         if (referencia < 14) continue
         // Atrás de uma lomba não há chão para apoiar nada, e um objeto
         // desenhado aqui flutuaria no céu acima da crista.
-        if (!passou && atrasDaLomba(ahead)) continue
+        if (atrasDaLomba(ahead)) continue
 
         // Névoa: o que está longe se dissolve no horizonte em vez de aparecer
         // nítido e minúsculo, que é justamente o que denuncia a projeção falsa.
@@ -851,11 +860,10 @@ function RaceCanvas({
         if (indice % GANTRY_EVERY === 0 && layout.gantry(indice, portico)) {
           // A crista esconde o arco inteiro um pouco antes de escondê-lo pela
           // base. Sem a folga, um arco de largura de tela pisca na lomba.
-          const escondido = !passou && atrasDaLomba(Math.min(VIEW_DISTANCE - 1, ahead + 8))
-          if (!escondido) desenharPortico(ctx, projetado, portico.variant, ahead, nitidez)
+          if (!atrasDaLomba(Math.min(VIEW_DISTANCE - 1, ahead + 8))) {
+            desenharPortico(ctx, projetado, portico.variant, nitidez)
+          }
         }
-        // Atrás da câmera não há beira de pista: só o pórtico sobrevive aqui.
-        if (passou) continue
 
         for (const lado of LADOS) {
           if (!layout.scenery(indice, lado, cenario)) continue
@@ -960,25 +968,38 @@ function RaceCanvas({
       const y = projected.y - particle.lift * (1 - fade) * scale
 
       ctx.save()
-      if (particle.kind === 'skid') {
-        // A marca escurece o asfalto e vai sumindo, como borracha queimada.
-        ctx.globalAlpha = 0.55 * fade
-        ctx.fillStyle = '#0d0f12'
-        ctx.fillRect(x - size / 2, projected.y, Math.max(1.5, size), Math.max(1.5, size * 0.8))
-      } else if (particle.kind === 'spark') {
-        ctx.globalAlpha = fade
-        ctx.fillStyle = fade > 0.5 ? '#fff3c4' : '#ff8a00'
-        ctx.fillRect(x - size / 2, y - size / 2, size, size)
-      } else if (particle.kind === 'boost') {
-        ctx.globalAlpha = 0.55 * fade
-        ctx.fillStyle = '#43e7ff'
-        ctx.fillRect(x - size / 2, y, size, Math.max(1, size * 1.6))
-      } else {
-        ctx.globalAlpha = 0.42 * fade
-        ctx.fillStyle = '#c6b489'
-        ctx.beginPath()
-        ctx.arc(x, y, Math.max(1, size * (1.4 - fade * 0.6)), 0, Math.PI * 2)
-        ctx.fill()
+      // Um caso por tipo, sem saída padrão. A versão anterior era uma cadeia
+      // de `if` com a poeira no `else` do fim: um tipo novo cairia calado em
+      // poeira e ninguém ia notar até ver nuvem bege onde devia haver outra
+      // coisa. Aqui ele para o compilador.
+      switch (particle.kind) {
+        case 'skid':
+          // A marca escurece o asfalto e vai sumindo, como borracha queimada.
+          ctx.globalAlpha = 0.55 * fade
+          ctx.fillStyle = particle.tint
+          ctx.fillRect(x - size / 2, projected.y, Math.max(1.5, size), Math.max(1.5, size * 0.8))
+          break
+        case 'spark':
+          ctx.globalAlpha = fade
+          ctx.fillStyle = fade > 0.5 ? FAISCA_QUENTE : particle.tint
+          ctx.translate(x, y)
+          ctx.rotate(particle.spin * (particle.maxLife - particle.life))
+          ctx.fillRect(-size / 2, -size / 2, size, size)
+          break
+        case 'boost':
+          ctx.globalAlpha = 0.55 * fade
+          ctx.fillStyle = particle.tint
+          ctx.fillRect(x - size / 2, y, size, Math.max(1, size * 1.6))
+          break
+        case 'dust':
+          ctx.globalAlpha = 0.42 * fade
+          ctx.fillStyle = particle.tint
+          ctx.beginPath()
+          ctx.arc(x, y, Math.max(1, size * (1.4 - fade * 0.6)), 0, Math.PI * 2)
+          ctx.fill()
+          break
+        default:
+          particle.kind satisfies never
       }
       ctx.restore()
     }
@@ -1020,7 +1041,30 @@ function RaceCanvas({
     /** Escala de tela do carro, que é a régua de tudo que anda sobre o asfalto. */
     const escalaDoCarro = () => Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH)
 
-    const drawObstacle = (distanceAhead: number, lane: number, kind: ObstacleKind) => {
+    /**
+     * Carga vertical do relevo, para a suspensão.
+     *
+     * Não é a inclinação: subida constante não empurra ninguém para baixo. O
+     * que carrega ou alivia a suspensão é a **mudança** de inclinação — o
+     * fundo de uma depressão, onde a pista para de descer e começa a subir,
+     * comprime; a crista de uma lomba alivia. É por isso que a conta é uma
+     * diferença entre dois pontos em volta do carro, e não `layout.slope`
+     * lido direto, que já alimenta o fundo e não serviria aqui.
+     *
+     * A janela é de doze metros para cada lado porque o relevo é montado em
+     * trechos de cento e cinquenta e cinco: menor que isso a conta só pega
+     * ruído da interpolação, e muito maior atravessa a lomba inteira e sai
+     * quase zero justamente onde o efeito deveria ser máximo.
+     */
+    const JANELA_DO_RELEVO = 12
+    const RELEVO_NA_SUSPENSAO = 34
+    const cargaDoRelevo = () => {
+      const atras = layout.slope(Math.max(0, race.progress - JANELA_DO_RELEVO))
+      const adiante = layout.slope(race.progress + JANELA_DO_RELEVO)
+      return ((adiante - atras) / (JANELA_DO_RELEVO * 2)) * RELEVO_NA_SUSPENSAO
+    }
+
+    const drawObstacle = (distanceAhead: number, lane: number, kind: ObstacleKind, id: number) => {
       const projected = roadGeometry(distanceAhead)
       const closeness = Math.max(0, 1 - distanceAhead / VIEW_DISTANCE)
       // A mesma escala de tela do carro. Sem ela o obstáculo tinha teto fixo
@@ -1032,66 +1076,44 @@ function RaceCanvas({
       const x = projected.center + lateralOffset(lane, projected.roadWidth)
       const y = projected.y
 
-      ctx.save()
-      ctx.translate(x, y)
-      if (kind === 'pothole') {
-        // O buraco é do asfalto, não um objeto sobre ele: fica deitado no
-        // chão, sem altura. A borda clara do lado de cá é o que o faz ler
-        // como afundamento e não como mancha, e o cascalho em volta é o que
-        // impede a peça de virar uma elipse perfeita demais.
-        ctx.fillStyle = 'rgba(210,214,206,.5)'
-        elipse(0, -size * 0.02, size * 0.5, size * 0.19)
-        ctx.fillStyle = '#15171b'
-        elipse(0, -size * 0.05, size * 0.46, size * 0.16)
-        ctx.fillStyle = 'rgba(21,23,27,.55)'
-        elipse(-size * 0.5, -size * 0.02, size * 0.11, size * 0.05)
-        elipse(size * 0.46, -size * 0.09, size * 0.09, size * 0.04)
-      } else if (kind === 'barrier') {
-        // Sombra e pés: sem eles a barreira flutua um palmo acima do asfalto.
-        ctx.fillStyle = SOMBRA_NO_CHAO
-        elipse(0, 0, size * 0.68, size * 0.09)
-        ctx.fillStyle = CERCA[1]
-        ctx.fillRect(-size * 0.58, -size * 0.12, size * 0.1, size * 0.14)
-        ctx.fillRect(size * 0.48, -size * 0.12, size * 0.1, size * 0.14)
-        // Painel, com a aresta de cima acesa e a de baixo na sombra.
-        ctx.fillStyle = BARREIRA[2]
-        roundedRect(ctx, -size * 0.65, -size * 0.42, size * 1.3, size * 0.48, size * 0.08)
-        ctx.fill()
-        ctx.fillStyle = BARREIRA_FAIXA[2]
-        ctx.fillRect(-size * 0.52, -size * 0.35, size * 0.35, size * 0.34)
-        ctx.fillRect(size * 0.16, -size * 0.35, size * 0.35, size * 0.34)
-        ctx.fillStyle = BARREIRA[4]
-        ctx.fillRect(-size * 0.6, -size * 0.4, size * 1.2, size * 0.05)
-        ctx.fillStyle = BARREIRA[0]
-        ctx.fillRect(-size * 0.62, -size * 0.02, size * 1.24, size * 0.05)
-      } else {
-        // Cone: base larga no chão, corpo com a face do sol acesa e a faixa
-        // refletiva atravessada.
-        ctx.fillStyle = SOMBRA_NO_CHAO
-        elipse(size * 0.06, 0, size * 0.5, size * 0.1)
-        ctx.fillStyle = CONE[0]
-        roundedRect(ctx, -size * 0.48, -size * 0.14, size * 0.96, size * 0.16, size * 0.04)
-        ctx.fill()
-        ctx.fillStyle = CONE[2]
-        ctx.beginPath()
-        ctx.moveTo(0, -size * 0.72)
-        ctx.lineTo(size * 0.42, 0)
-        ctx.lineTo(-size * 0.42, 0)
-        ctx.closePath()
-        ctx.fill()
-        ctx.fillStyle = CONE[4]
-        ctx.beginPath()
-        ctx.moveTo(0, -size * 0.72)
-        ctx.lineTo(0, 0)
-        ctx.lineTo(-size * 0.42, 0)
-        ctx.closePath()
-        ctx.fill()
-        ctx.fillStyle = REFLETIVO[2]
-        ctx.fillRect(-size * 0.26, -size * 0.26, size * 0.52, size * 0.13)
-        ctx.fillStyle = REFLETIVO[4]
-        ctx.fillRect(-size * 0.26, -size * 0.26, size * 0.52, size * 0.04)
+      /**
+       * Um caso por tipo, e nenhuma saída padrão.
+       *
+       * As duas peças que ficam de pé saem da folha, como o resto do cenário:
+       * eram os últimos desenhos ao vivo sobre o chão e os únicos que
+       * escapavam do banho de névoa da folha, e em cor cheia apareciam
+       * recortados de outra cena à medida que a pista escurecia. As três que
+       * ficam deitadas continuam procedurais, porque a convenção de caixa da
+       * folha — chão em zero, topo em menos um — não descreve peça sem altura.
+       *
+       * O tamanho de cada uma sai de `size`, na proporção da meia-largura de
+       * colisão do tipo: a mancha de óleo pega o dobro de pista que um buraco,
+       * e precisa parecer que pega.
+       *
+       * A variante da barreira sai do identificador do obstáculo, que é
+       * literal em `track.ts`: os dois pilotos veem a mesma no mesmo lugar.
+       */
+      switch (kind) {
+        case 'barrier':
+          desenharObjeto(ctx, 'barreira', id, 0, x, y, size * 0.52)
+          break
+        case 'debris':
+          desenharObjeto(ctx, 'cone', 0, 0, x, y, size * 1.08)
+          break
+        case 'pothole':
+          desenharBuraco(ctx, x, y, size, buraco)
+          break
+        case 'oleo':
+          desenharOleo(ctx, x, y, size)
+          break
+        case 'poca':
+          desenharPoca(ctx, x, y, size, buraco, ambiente.ceuBaixo)
+          break
+        default:
+          // Sem isto, um tipo novo cairia calado no ramo de outro. Aqui ele
+          // para o compilador, que é onde se quer que pare.
+          kind satisfies never
       }
-      ctx.restore()
     }
 
     const draw = (frame: number) => {
@@ -1188,6 +1210,7 @@ function RaceCanvas({
             drift: roda * (0.2 + Math.random() * 0.5) * (0.5 + feel.speed),
             size: (6 + Math.random() * 6) * (0.7 + feel.speed * 0.6),
             life: 0.5 + feel.speed * 0.35,
+            tint: poeira,
           })
         }
 
@@ -1270,7 +1293,7 @@ function RaceCanvas({
           drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt)
           ghostDrawn = true
         }
-        drawObstacle(ahead, obstaculo.lane, obstaculo.kind)
+        drawObstacle(ahead, obstaculo.lane, obstaculo.kind, obstaculo.id)
       }
       if (!ghostDrawn) drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt)
 
@@ -1295,10 +1318,6 @@ function RaceCanvas({
        * estrutura: duas fileiras de quadriculado com espessura no asfalto, e o
        * pórtico por cima, que é o que se enxerga de longe e o que diz onde a
        * prova acaba.
-       *
-       * Ao contrário dos outros pórticos, este nunca precisa se dissolver: o
-       * progresso é travado em `TRACK_LENGTH` na simulação, então a câmera
-       * para na linha e nunca passa por baixo do arco.
        */
       const ateAChegada = TRACK_LENGTH - race.progress
       if (ateAChegada < VIEW_DISTANCE && !atrasDaLomba(ateAChegada)) {
@@ -1315,7 +1334,7 @@ function RaceCanvas({
             ctx.fillRect(esquerda + i * passo, finish.y + fileira * espessura, passo + 1, espessura + 1)
           }
         }
-        desenharPortico(ctx, finish, 0, ateAChegada, 1, true)
+        desenharPortico(ctx, finish, 0, 1, true)
       }
 
       // A bruma entra depois de tudo que tem profundidade — pista, cenário,
@@ -1340,14 +1359,27 @@ function RaceCanvas({
         // frente seguem o volante e a carroceria treme na grama. Quem pediu
         // menos movimento recebe tudo isso — inclusive o rolamento do pneu —
         // no quarto da intensidade.
-        poseDoJogador.tilt = feel.steer * 0.075 * forcaDoMovimento
-        poseDoJogador.suspension = (feel.accel * 0.05 - feel.impact * 0.1) * forcaDoMovimento
+        // A rolagem tem duas parcelas: a de regime, que segue o volante, e a
+        // transferência de peso do giro — quando o volante é jogado depressa,
+        // a carroceria passa do ponto antes de assentar. `steerRate` traz a
+        // pressa e `steer` traz o lado, e é por isso que os dois se
+        // multiplicam em vez de somar.
+        poseDoJogador.tilt =
+          (feel.steer * 0.075 + feel.steer * feel.steerRate * 0.02) * forcaDoMovimento
+        poseDoJogador.suspension =
+          (feel.accel * 0.05 - feel.impact * 0.1 + cargaDoRelevo() * feel.speed) * forcaDoMovimento
         poseDoJogador.steer = feel.steer * forcaDoMovimento
         poseDoJogador.boost = feel.boost
         poseDoJogador.travel = race.progress * forcaDoMovimento
+        poseDoJogador.dirt = feel.dirt
+        // Três tremores, com frequências separadas para não virarem um só: a
+        // grama, o tranco da batida e o carro no limite de aderência. O do
+        // limite é o mais rápido e o menor — é vibração, não solavanco.
         poseDoJogador.jitter =
-          feel.offRoad * Math.sin(frame * 0.055) * 1.6 * forcaDoMovimento +
-          feel.impact * Math.sin(frame * 0.085) * 2.4 * forcaDoMovimento
+          (feel.offRoad * Math.sin(frame * 0.055) * 1.6 +
+            feel.impact * Math.sin(frame * 0.085) * 2.4 +
+            feel.strain * Math.sin(frame * 0.21) * 0.7) *
+          forcaDoMovimento
         drawCar(
           ctx,
           playerX,

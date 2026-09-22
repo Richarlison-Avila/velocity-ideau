@@ -19,8 +19,11 @@
 import { carById, type CarId } from './cars'
 import {
   CAIXA_CARRO,
+  COR_DA_TERRA,
   LINHA_DO_CHAO,
+  MANCHAS_DE_TERRA,
   PARTS,
+  SOMBRA_DE_CONTATO,
   WHEEL_CENTERS,
   carModel,
   type CarModel,
@@ -95,6 +98,8 @@ export type CarPose = {
   boost: number
   /** Trepidação fora do asfalto, em unidades do desenho. */
   jitter: number
+  /** Terra na carroceria depois da grama, de 0 a 1. */
+  dirt: number
   /** Distância percorrida: é dela que sai a fase do rolamento dos pneus. */
   travel: number
 }
@@ -115,6 +120,24 @@ const QUADROS = 9
  * larga. Quatro deixa margem para isso sem a folha virar uma textura enorme.
  */
 const RESOLUCAO = 4
+
+/**
+ * Quanto a sombra responde ao curso da suspensão.
+ *
+ * O curso é pequeno — centésimos —, e a sombra precisa de um movimento que se
+ * veja. Seis é o fator em que afundar na arrancada fecha a mancha o bastante
+ * para se notar sem que o topo de uma lomba a faça sumir.
+ */
+const SOMBRA_POR_CURSO = 6
+
+/**
+ * Quanto a sombra escorrega para o lado quando a carroceria rola.
+ *
+ * A carroceria gira em torno da linha do chão, então o ponto de apoio não sai
+ * do lugar — o que escorrega é o vulto projetado pelo sol, que vem de cima e
+ * da esquerda. Daí o valor ser pequeno: é um vulto se deslocando, não o carro.
+ */
+const SOMBRA_POR_INCLINACAO = 16
 
 /** Inclinação da carroceria no esterço máximo, em radianos. */
 const INCLINACAO = 0.055
@@ -197,6 +220,11 @@ function desenharQuadro(ctx: CanvasRenderingContext2D, desenho: Map<Part, Desenh
   ctx.rotate(esterco * INCLINACAO)
   ctx.translate(0, -LINHA_DO_CHAO)
   for (const part of PARTS) {
+    // A sombra fica de fora da folha: ela é desenhada ao vivo em `drawCar`,
+    // no chão, enquanto o resto do carro rola e treme por cima. O retrato da
+    // garagem continua assando a dele, e ali isso é o certo — o carro está
+    // parado e nada tem por que se descolar dele.
+    if (part === 'sombra') continue
     ctx.save()
     if (ehRoda(part)) {
       const [x, y] = WHEEL_CENTERS[part]
@@ -340,11 +368,52 @@ export function drawCar(
   const folha = folhaDe(id, ambiente, ghostAlpha < 1)
   const esterco = Math.max(-1, Math.min(1, pose.steer))
   const quadro = Math.round(((esterco + 1) / 2) * (QUADROS - 1))
+  // Cada quadro da folha já traz o carro rolado pelo esterço dele, assado. O
+  // que se desenha por cima dele depois — terra, sombra dos pneus — precisa
+  // do mesmo giro para continuar no mesmo lugar do desenho.
+  const giroDoQuadro = ((quadro / (QUADROS - 1)) * 2 - 1) * INCLINACAO
 
   ctx.save()
   ctx.globalAlpha *= ghostAlpha
   ctx.translate(x, y)
   ctx.scale(scale, scale)
+
+  /**
+   * A sombra, antes de tudo, e no chão.
+   *
+   * É a diferença entre uma peça apoiada no asfalto e um adesivo colado nele.
+   * O carro afunda, estica e treme por cima dela; a sombra não. O que muda de
+   * verdade a mancha no chão é a altura: afundando, ela fecha e escurece;
+   * esticando — no topo de uma lomba, ou no quadro em que o carro bate —,
+   * abre e clareia, e é ela que anuncia que o carro está leve antes de
+   * qualquer outra coisa na tela.
+   */
+  const leveza = Math.max(-1, Math.min(1, -pose.suspension * SOMBRA_POR_CURSO))
+  const abertura = 1 + leveza * 0.45
+  const forca = Math.min(1, 1 - leveza * 0.45)
+  const opacidadeBase = ctx.globalAlpha
+  // A carroceria rola; o apoio dela escorrega de leve para o lado oposto. As
+  // rodas rolam junto com o quadro, e a sombra de cada uma vai atrás do pneu:
+  // o centro dela gira com ele, mas a elipse continua deitada no chão.
+  const giro = pose.tilt + giroDoQuadro
+  const cosseno = Math.cos(giro)
+  const seno = Math.sin(giro)
+  for (const m of SOMBRA_DE_CONTATO) {
+    let cx = m.x - pose.tilt * SOMBRA_POR_INCLINACAO
+    let cy = m.y
+    if (m.roda) {
+      const acima = m.y - LINHA_DO_CHAO
+      cx = m.x * cosseno - acima * seno
+      cy = m.x * seno + acima * cosseno + LINHA_DO_CHAO
+    }
+    ctx.globalAlpha = opacidadeBase * m.alpha * forca
+    ctx.fillStyle = m.cor
+    ctx.beginPath()
+    ctx.ellipse(cx, cy, m.rx * abertura, m.ry * abertura, 0, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.globalAlpha = opacidadeBase
+
   ctx.translate(pose.jitter, pose.suspension * 8)
   if (pose.tilt !== 0) {
     ctx.translate(0, LINHA_DO_CHAO)
@@ -357,6 +426,33 @@ export function drawCar(
     CAIXA_CARRO.x, CAIXA_CARRO.y, CAIXA_CARRO.largura, CAIXA_CARRO.altura,
   )
   desenharRolamento(ctx, pose.travel)
+
+  /**
+   * Terra da grama, por cima da pintura.
+   *
+   * Um punhado de manchas em vez de um banho na carroceria inteira, e por dois
+   * motivos. O barato é que tingir a folha exigiria uma tela de apoio e uma
+   * volta a mais por quadro, justamente no objeto maior da tela. O bom é que
+   * fica melhor: barro atirado por pneu é respingo, e respingo tem borda — um
+   * véu uniforme leria como o carro ter mudado de cor.
+   */
+  if (pose.dirt > 0.02) {
+    ctx.save()
+    // O giro do quadro, de novo: sem ele, no esterço máximo a terra do pontão
+    // escorrega três unidades para o lado e sai da carroceria justamente no
+    // meio da curva.
+    ctx.translate(0, LINHA_DO_CHAO)
+    ctx.rotate(giroDoQuadro)
+    ctx.translate(0, -LINHA_DO_CHAO)
+    ctx.globalAlpha = opacidadeBase * Math.min(1, pose.dirt) * 0.72
+    ctx.fillStyle = COR_DA_TERRA
+    for (const m of MANCHAS_DE_TERRA) {
+      ctx.beginPath()
+      ctx.ellipse(m.x, m.y, m.rx, m.ry, 0, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.restore()
+  }
 
   // No boost a luz de chuva acende e o escapamento transborda. Vai por cima da
   // folha e em modo aditivo: soma luz à pintura em vez de cobri-la.

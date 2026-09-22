@@ -120,6 +120,34 @@ const BURACOS: Obstacle[] = [
   { id: 309, distance: 4_740, lane: 0.9, kind: 'pothole' },
 ]
 
+/**
+ * Manchas de óleo e poças, nos três níveis.
+ *
+ * Onde elas cabem não foi escolha de gosto: o campo do profissional já estava
+ * saturado antes delas. Eram 38 obstáculos em 4 800 m, um único vão maior que
+ * 150 m — o de 4 330 a 4 510 — e uma folga de 0,628 s no desvio mais
+ * apertado, contra um piso de 0,5 s cobrado em teste.
+ *
+ * Um vão típico ali é de 110 m. Cortado ao meio, sobram 0,669 s para o
+ * desvio, e a folga de meio segundo só se mantém se a peça nova ficar a menos
+ * de 0,324 de faixa das **duas** vizinhas — que costumam estar a meia pista
+ * uma da outra. É por isso que não dá para semear mancha pelo traçado todo.
+ *
+ * Sobram três lugares que não tocam naquela folga: os 510 m de abertura, que
+ * até aqui não tinham nada; a fresta logo depois do primeiro obstáculo; e o
+ * vão largo da reta final.
+ *
+ * Que três delas caiam nos primeiros 600 m é feliz por acidente. Óleo e poça
+ * são as duas ameaças baratas do jogo, e a largada — com o carro ainda saindo
+ * da imobilidade — é onde o piloto aprende o que elas são sem pagar por isso.
+ */
+const MANCHAS: Obstacle[] = [
+  { id: 401, distance: 190, lane: -0.62, kind: 'poca' },
+  { id: 402, distance: 360, lane: 0.55, kind: 'oleo' },
+  { id: 403, distance: 570, lane: -0.31, kind: 'poca' },
+  { id: 404, distance: 4_420, lane: -0.06, kind: 'oleo' },
+]
+
 /** Obstáculos que só o profissional enfrenta, por cima dos do difícil. */
 const EXTRA_PROFISSIONAL: Obstacle[] = [
   { id: 201, distance: 630, lane: -0.14, kind: 'debris' },
@@ -153,7 +181,7 @@ const REGRAS: Record<Difficulty, RaceRules> = {
     offRoadDepthLoss: 0.25,
     boostDrain: 25,
     boostRecharge: 5.5,
-    obstacles: ordenar([...obstacles, ...BURACOS]),
+    obstacles: ordenar([...obstacles, ...BURACOS, ...MANCHAS]),
   },
   dificil: {
     difficulty: 'dificil',
@@ -169,7 +197,7 @@ const REGRAS: Record<Difficulty, RaceRules> = {
     offRoadDepthLoss: 0.32,
     boostDrain: 29,
     boostRecharge: 4.9,
-    obstacles: ordenar([...obstacles, ...BURACOS, ...EXTRA_DIFICIL]),
+    obstacles: ordenar([...obstacles, ...BURACOS, ...MANCHAS, ...EXTRA_DIFICIL]),
   },
   profissional: {
     difficulty: 'profissional',
@@ -185,7 +213,7 @@ const REGRAS: Record<Difficulty, RaceRules> = {
     offRoadDepthLoss: 0.4,
     boostDrain: 33,
     boostRecharge: 4.3,
-    obstacles: ordenar([...obstacles, ...BURACOS, ...EXTRA_DIFICIL, ...EXTRA_PROFISSIONAL]),
+    obstacles: ordenar([...obstacles, ...BURACOS, ...MANCHAS, ...EXTRA_DIFICIL, ...EXTRA_PROFISSIONAL]),
   },
 }
 

@@ -103,7 +103,7 @@ A escolha é só de pintura. Todos os carros andam com a mesma física: o duelo 
 
 A intuição sobre o que assar estava invertida, e vale registrar: parecia que a folha servia para o campo distante, onde há muitos objetos pequenos, e que o objeto colado na câmera deveria ser desenhado ao vivo para não borrar. É o contrário. Objeto pequeno custa **chamadas**; objeto grande custa **área escrita**. Uma árvore de setecentos pixels com trinta faces escreve mais pixels do que todas as faixas de grama da pista somadas; esticada de uma célula de 256, escreve um terço disso. A folha é o caminho rápido justamente para o que está perto — e o borrão ali custa pouco, porque a sessenta metros por segundo um objeto a cinco metros atravessa a tela em seis quadros.
 
-Duas famílias continuam procedurais, por motivo estrutural. A **cerca** precisa que as travessas de vagas vizinhas se encontrem, e isso depende das projeções das duas vagas: assada por vaga, viraria uma fila de portõezinhos soltos. Os **obstáculos** são no máximo dois em cena por vez, e não pagam a célula.
+A **cerca** continua procedural, por motivo estrutural: as travessas de vagas vizinhas precisam se encontrar, e isso depende das projeções das duas vagas — assada por vaga, viraria uma fila de portõezinhos soltos. Os obstáculos que ficam deitados no asfalto também, pelo motivo contrário: a folha descreve cada objeto numa caixa com o chão em zero e o topo em menos um, e essa caixa não descreve uma peça sem altura.
 
 Nenhuma face do cenário pode ser translúcida, e isso é teste. Quem desenha aplica a névoa da distância com `globalAlpha`: face a face isso dá uma cor, e aplicado ao objeto já composto na folha, dá outra — o objeto mudaria de cor ao trocar de nível de detalhe. Pela mesma razão a sombra no chão fica **fora** do sprite, desenhada ao vivo. Ela é o detalhe mais barato do cenário e o que mais rende: sem ela, tudo o que fica na beira da pista paira alguns pixels acima da grama.
 
@@ -134,15 +134,41 @@ Eles são emitidos de **dentro** do laço do cenário, e não num passe à parte
 
 O pórtico continua procedural, junto com cerca e guardrail: ele acompanha a largura do asfalto, chega a dois mil pixels de dispositivo e não caberia em célula nenhuma — e é barato, uma dúzia de preenchimentos.
 
-A armadilha que ele guardava é estrutural. `roadProjection` faz `Math.max(0, distanceAhead)`: nada cresce além do tamanho que tem em `ahead = 0`, e o cenário para no primeiro índice à frente. Uma árvore some pela lateral e ninguém nota, mas um arco que atravessa a pista congelaria no tamanho máximo e apagaria de um quadro para o outro, com a tela cheia dele. Então o laço vai cinco vagas além do primeiro índice — trinta metros — e ali o pórtico **sobe e se dissolve** em vez de piscar. Como o laço percorre do longe para o perto, essas vagas extras caem por último, que é exatamente a ordem de profundidade delas.
+O pórtico vive e morre com a vaga em que está, como qualquer outro objeto da beira da pista. Houve uma versão que o fazia subir e se dissolver ao chegar perto, para ele não sumir de um quadro para o outro quando a câmera o alcança — `roadProjection` faz `Math.max(0, distanceAhead)`, então nada cresce além do tamanho que tem em `ahead = 0`. O remédio se via mais que a doença, e saiu.
 
-A linha de chegada era doze células num retângulo de cinco pixels de altura: a superfície mais pobre do jogo, no momento que mais importa dele. Agora são duas fileiras de quadriculado com espessura no asfalto e o pórtico quadriculado por cima. Este nunca precisa se dissolver — a simulação trava o progresso em `TRACK_LENGTH`, então a câmera para na linha e nunca passa por baixo do arco.
+A linha de chegada era doze células num retângulo de cinco pixels de altura: a superfície mais pobre do jogo, no momento que mais importa dele. Agora são duas fileiras de quadriculado com espessura no asfalto e o pórtico quadriculado por cima.
 
-`banca.html` é a bancada de desenvolvimento: abre com `npm run dev` em `/banca.html`, mostra toda a folha em três tamanhos, uma tira de pórticos de quarenta metros até depois de a câmera passar por baixo, e imprime o tempo de assar e o tamanho da folha. `?familia=tree` isola uma família, `?flora=seca` troca a paleta. Não entra na build.
+### Faixa de meio-campo
+
+Entre a serra e a grama corre uma faixa própria de cada lugar: linha de mata no campo, silhueta de prédios na cidade, cumeada de rocha na montanha, dunas no deserto. Sem ela a montanha encostava direto na grama e a distância entre as duas virava um salto.
+
+É uma tira assada uma vez e desenhada como padrão que se repete, então custa um preenchimento por quadro. A tira emenda consigo mesma porque toda silhueta que cruza a borda direita é repetida do outro lado — sem isso, a repetição mostra uma costura vertical atravessando o horizonte a cada volta.
+
+Ela corre mais depressa que a serra e mais devagar que as árvores da beira da pista, e é essa diferença de velocidade que dá a leitura de camadas. O sorteio da tira não usa a semente da corrida: é decoração de horizonte, igual para todo mundo que correr naquele lugar.
+
+`banca.html` é a bancada de desenvolvimento: abre com `npm run dev` em `/banca.html` e mostra toda a folha em três tamanhos, os cinco obstáculos em cinco tamanhos, a poça nos quatro ambientes, uma tira de pórticos de cento e vinte metros até a vaga em que são cortados, as quatro faixas de fundo e o carro em seis poses; no rodapé, o tempo de assar e o tamanho da folha. `?familia=tree` isola uma família, `?flora=seca` troca a paleta. Não entra na build. Ela não precisa do servidor da partida, então a entrada `bancada` de `.claude/launch.json` sobe só o Vite, na porta 5174 — útil quando outra sessão já está com a 5173.
 
 O fundo tem duas cordilheiras, a de trás já lavada pela cor do céu, e cada uma é desenhada duas vezes com a mesma crista deslocada: o que sobra entre as duas é a lasca acesa na encosta voltada para o sol. Nuvens, o halo do sol em três degraus de opacidade e as rajadas de velocidade do boost completam o fundo. Tudo isso junto custa 0,4 ms por quadro.
 
 O que está longe recebe só a silhueta. Detalhe no horizonte vira ruído, e quem manda ali é a névoa.
+
+### Obstáculos
+
+Barreira e cone saem da folha, como o resto do cenário. Eram os últimos desenhos ao vivo de pé sobre o chão, e os únicos fora do banho de névoa da folha: em cor cheia, apareciam recortados de outra cena à medida que a pista escurecia. A barreira tem duas pinturas, de galões e de blocos, e a variante sai do identificador do obstáculo — que é literal em `track.ts`, então os dois pilotos veem a mesma barreira no mesmo lugar. Buraco, óleo e poça seguem procedurais, deitados no asfalto.
+
+Medir o cone pixel a pixel revelou um defeito que era de todo o cenário, desde que a folha existe: as células estavam encostadas umas nas outras, e o `drawImage` de um objeto de perto, que amplia, lia meio texel além do retângulo pedido e trazia junto a primeira coluna da vizinha. Aparecia como um risco de cor estranha na borda de cada objeto. Hoje há dois pixels de folga em volta de cada célula. O empacotamento também passou a preencher a sobra de cada prateleira em vez de deixá-la vazia, e a folha — já com as duas famílias novas e a folga — caiu de 8,3 para 7,8 MB, e de 9 para 6,6 ms de assar.
+
+**Óleo e poça** são o perfil oposto ao da barreira: largos (0,34 e 0,30 de meia-largura de colisão, contra 0,25) e baratos (40% e 30% da penalidade). Dá para atravessar de propósito em vez de jogar o carro na grama para desviar, que é a decisão que a barreira nunca oferece. A água da poça é o céu do lugar, então ela muda com a etapa sem saber que etapa é.
+
+Onde eles cabem não foi escolha de gosto. O campo do profissional já estava saturado: 38 obstáculos em 4 800 m, um único vão maior que 150 m e 0,628 s de folga no desvio mais apertado, contra o piso de 0,5 s cobrado em `rules.test.ts`. Cortar um vão típico de 110 m ao meio exige que a peça nova fique a menos de 0,324 de faixa das **duas** vizinhas, que costumam estar a meia pista uma da outra. Sobraram três lugares que não tocam naquela folga — os 510 m de abertura, a fresta logo depois do primeiro obstáculo e o vão largo da reta final —, e entraram quatro manchas. Que três caiam nos primeiros 600 m é feliz por acidente: são as ameaças baratas do jogo, e a largada é onde o piloto aprende o que elas são sem pagar por isso.
+
+### O carro na pista
+
+A sombra do carro saiu da folha. A folha inteira inclina com o volante e é deslocada pela suspensão e pela trepidação, e a sombra assada ia junto — uma sombra que rola com a carroceria não é sombra, é adesivo. Desenhada ao vivo, ela fica no chão e reage só à altura: fecha e escurece quando o carro afunda, abre e clareia quando ele fica leve, no topo de uma lomba ou no quadro da batida. A sombra de cada pneu é a exceção, e vai atrás dele: neste desenho a rolagem gira o quadro inteiro, rodas inclusive, em torno da linha do chão, e a roda da frente está sessenta unidades acima desse pivô — no esterço máximo ela anda nove para o lado, e uma sombra parada ali ficava sozinha no asfalto.
+
+Depois de uma passagem pela grama o carro fica sujo. A sujeira é o único sinal assimétrico de `feel.ts`: chega perto do máximo em menos de um segundo de grama e leva uns vinte segundos de asfalto para sair. São manchas de respingo, e não um véu sobre a carroceria — barro atirado por pneu tem borda, e um véu uniforme leria como o carro ter mudado de cor. As posições saem de onde o barro de cada eixo cai de fato, e um teste cobra que toda mancha fique sobre o carro: a primeira versão punha terra ao lado da roda dianteira, e num carro de roda descoberta ali só há braço de suspensão e ar.
+
+A suspensão responde ao relevo — à **mudança** de inclinação, que é o que carrega o carro: o fundo de uma depressão comprime, a crista alivia. Jogar o volante depressa rola a carroceria um pouco além do ponto antes de ela assentar, e o carro no limite de aderência vibra, numa frequência mais alta e menor que a da grama e a da batida. Cada partícula passou a ter a própria cor e o próprio giro: a poeira sobe da cor do chão de cada lugar, e as faíscas giram em vez de saírem todas alinhadas à tela, como confete.
 
 ## Testes
 
@@ -225,6 +251,9 @@ A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resu
 - [x] Cronômetro, velocidade e progresso
 - [x] Cinco luzes de largada e áudio procedural básico
 - [x] Poeira, faíscas, rastro de boost e marcas de pneu, com teto de partículas
+- [x] Cenário assado em folha de sprites, com quatro lugares, pórticos e faixa de meio-campo
+- [x] Cinco tipos de obstáculo, dois deles manchas que valem a pena atravessar
+- [x] Sombra no chão, terra da grama e suspensão que responde ao relevo
 - [x] Salas para dois jogadores com código, link e QR code
 - [x] Lobby em tempo real, confirmação e tratamento de sala cheia/inexistente
 - [x] Relógio sincronizado entre cliente e servidor

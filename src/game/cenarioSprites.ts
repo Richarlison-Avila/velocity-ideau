@@ -25,10 +25,11 @@
  * atravessa a pista e chega a dois mil pixels de largura, e é barato de
  * desenhar. Os dois continuam procedurais.
  */
-import { SCENERY_SPACING, type Flora } from './layout'
-import { rampa } from './paleta'
+import type { Flora, Lugar } from './layout'
+import { LUZ, misturar, rampa, type Rampa } from './paleta'
 import { LADOS } from './pincel'
 import {
+  MEIA_LARGURA,
   TONS,
   VARIANTES,
   objetoModelado,
@@ -58,6 +59,11 @@ const ALTURA_CHEIA: Record<FamiliaModelada, number> = {
   pedra: 96,
   cacto: 160,
   predio: 256,
+  // Os dois obstáculos chegam maiores na tela do que qualquer objeto de beira
+  // de pista: o jogador tem de enxergá-los a tempo de desviar, e por isso eles
+  // crescem com a mesma régua do carro. Célula à altura disso.
+  barreira: 144,
+  cone: 176,
 }
 
 /**
@@ -68,6 +74,18 @@ const ALTURA_CHEIA: Record<FamiliaModelada, number> = {
  * chega a existir nesse tamanho.
  */
 const LIMIAR_SIMPLES = 64
+
+/**
+ * Folga em volta de cada célula, em pixels.
+ *
+ * Sem ela as células ficam encostadas umas nas outras, e o `drawImage` de um
+ * objeto de perto — que amplia — lê meio texel além do retângulo pedido e traz
+ * junto a primeira coluna da vizinha. Aparecia como um risco de cor estranha
+ * na borda de cada objeto, e não era do cone: era de todos, desde que a folha
+ * existe. Dois pixels cobrem tanto a ampliação quanto o núcleo mais largo que
+ * a suavização usa ao reduzir.
+ */
+const FOLGA = 2
 
 /** A célula pequena é um quarto da grande, e leva um terço das faces. */
 const REDUCAO_SIMPLES = 4
@@ -98,17 +116,6 @@ const SOMBRA_NO_CHAO = 'rgba(10,20,26,.3)'
 const PORTICO = rampa('#98a2a8')
 const FAIXAS_DO_PORTICO = ['#cf4436', '#2f6f8f', '#e6b325'].map(rampa)
 
-/**
- * Por quantas vagas o pórtico continua sendo desenhado depois de a câmera
- * passar por baixo dele.
- *
- * `roadProjection` trava em `ahead = 0`: nada cresce além do tamanho que tem
- * ali. Uma árvore some pela lateral e ninguém nota, mas um arco que atravessa
- * a pista congelaria no tamanho máximo e apagaria de um quadro para o outro,
- * com a tela cheia dele. Estas vagas extras são o espaço em que ele sobe e se
- * dissolve, em vez de piscar.
- */
-export const RECUO_DO_PORTICO = 5
 
 type Celula = {
   x: number
@@ -174,34 +181,52 @@ function assar(flora: Flora, nevoaRGB: string): Folha {
     }
   })
 
-  // Empacotamento por prateleiras: cada linha tem a altura do primeiro objeto
-  // que entrou nela, e quebra quando não cabe mais.
+  /**
+   * Empacotamento por prateleiras, preenchendo a sobra de cada uma.
+   *
+   * A lista vem da mais alta para a mais baixa, e cada linha tem a altura da
+   * primeira peça que entrou nela. A versão anterior só quebrava a linha
+   * quando a próxima peça não cabia, e deixava a sobra vazia — com peças de
+   * trezentos e poucos pixels numa linha de dois mil, sobrava meia peça por
+   * linha. Varrer o que ainda não foi colocado atrás de qualquer uma que caiba
+   * na sobra custa um laço de sessenta itens na hora de assar e devolve mais
+   * de um megabyte de textura.
+   */
   const celulas = new Map<string, Celula>()
+  const restantes = [...pedidos]
   let x = 0
   let y = 0
-  let alturaDaLinha = 0
   let larguraUsada = 0
-  for (const pedido of pedidos) {
-    if (x + pedido.largura > LARGURA_MAXIMA) {
-      x = 0
-      y += alturaDaLinha
-      alturaDaLinha = 0
-    }
+
+  const colocar = (pedido: (typeof pedidos)[number]) => {
+    // O que fica guardado é o retângulo do desenho, já para dentro da folga:
+    // quem desenha não precisa saber que ela existe.
     celulas.set(chaveDaCelula(pedido.familia, pedido.variante, pedido.tom, pedido.detalhe), {
-      x,
-      y,
+      x: x + FOLGA,
+      y: y + FOLGA,
       largura: pedido.largura,
       altura: pedido.altura,
       meiaLargura: pedido.modelo.meiaLargura,
     })
-    x += pedido.largura
+    x += pedido.largura + FOLGA * 2
     larguraUsada = Math.max(larguraUsada, x)
-    alturaDaLinha = Math.max(alturaDaLinha, pedido.altura)
+  }
+
+  while (restantes.length > 0) {
+    const primeiro = restantes.shift()!
+    const alturaDaLinha = primeiro.altura + FOLGA * 2
+    x = 0
+    colocar(primeiro)
+    for (let i = 0; i < restantes.length;) {
+      if (x + restantes[i].largura + FOLGA * 2 <= LARGURA_MAXIMA) colocar(restantes.splice(i, 1)[0])
+      else i += 1
+    }
+    y += alturaDaLinha
   }
 
   const tela = document.createElement('canvas')
   tela.width = Math.max(1, larguraUsada)
-  tela.height = Math.max(1, y + alturaDaLinha)
+  tela.height = Math.max(1, y)
   const ctx = tela.getContext('2d')!
 
   for (const pedido of pedidos) {
@@ -289,7 +314,13 @@ export function desenharObjeto(
   altura: number,
 ) {
   if (!atual || altura < 2) return
-  const detalhe: Detalhe = altura >= LIMIAR_SIMPLES ? 'cheio' : 'simples'
+  // O limiar vale para o maior lado, não para a altura. A barreira é duas
+  // vezes e meia mais larga que alta: medida só pela altura, ela nunca
+  // alcançaria a célula cheia, e os galões dela ficariam para sempre na versão
+  // de duas faixas mesmo ocupando cento e quarenta pixels de tela. A
+  // arquibancada tinha o mesmo problema, em menor grau.
+  const lado = altura * Math.max(1, MEIA_LARGURA[familia] * 2)
+  const detalhe: Detalhe = lado >= LIMIAR_SIMPLES ? 'cheio' : 'simples'
   const celula =
     atual.celulas.get(chaveDaCelula(familia, variante % VARIANTES[familia], tom % TONS[familia], detalhe))
   if (!celula) return
@@ -310,6 +341,163 @@ export function desenharObjeto(
   )
 }
 
+/** Preto do fundo do buraco: mais fechado que qualquer tom de asfalto. */
+const FUNDO_DO_BURACO = '#15171b'
+
+/**
+ * Brita solta em volta do buraco, em frações do raio dele.
+ *
+ * A lista é constante de propósito. Sorteada a cada quadro, a brita ferveria
+ * em volta do buraco enquanto ele se aproxima — e o buraco é justamente a
+ * peça que o jogador fica olhando enquanto decide de que lado passa.
+ */
+const CASCALHO: readonly (readonly [number, number, number])[] = [
+  [-1.08, 0.1, 0.16], [-0.86, -0.46, 0.1], [0.12, -0.62, 0.12],
+  [0.98, -0.3, 0.14], [1.12, 0.22, 0.09], [0.44, 0.52, 0.11],
+  [-0.5, 0.6, 0.08],
+]
+
+/**
+ * Um buraco no asfalto.
+ *
+ * É o único dos três obstáculos que não passa pela folha, e não por descuido:
+ * fica deitado no chão, sem altura, e a convenção de caixa da folha — chão em
+ * zero, topo em menos um — não descreve uma peça que não se levanta. Sai
+ * barato assim mesmo, porque são no máximo dois na tela.
+ *
+ * O que o faz ler como afundamento, e não como mancha de óleo, são três
+ * camadas na ordem em que são desenhadas: a brita solta em volta, a borda de
+ * agregado exposto, e o miolo rebaixado dentro dela. `tons` é a rampa do
+ * asfalto da corrida: asfalto quebrado é asfalto, e uma borda de cinza fixo
+ * apareceria clara demais ao entardecer e escura demais ao meio-dia.
+ */
+export function desenharBuraco(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  chao: number,
+  tamanho: number,
+  tons: Rampa,
+) {
+  const raio = tamanho * 0.5
+  const elipse = (cx: number, cy: number, rx: number, ry: number) => {
+    ctx.beginPath()
+    ctx.ellipse(x + cx, chao + cy, Math.max(0.5, rx), Math.max(0.5, ry), 0, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // Brita antes da borda: é o que tira do buraco o contorno de elipse perfeita
+  // demais, que o fazia ler como mancha pintada. Sai no tom claro porque é
+  // pedra solta recém-descoberta, e no tom escuro sumia dentro da pista.
+  ctx.fillStyle = tons[3]
+  for (const [bx, by, br] of CASCALHO) {
+    elipse(bx * raio, by * raio * 0.34, br * raio, br * raio * 0.4)
+  }
+  // Borda: agregado exposto, mais claro que a pista. Dois anéis dão a
+  // espessura da capa asfáltica.
+  ctx.fillStyle = tons[3]
+  elipse(0, -tamanho * 0.02, raio, raio * 0.38)
+  ctx.fillStyle = tons[1]
+  elipse(0, -tamanho * 0.01, raio * 0.92, raio * 0.33)
+  // Miolo. O anel escuro que sobra do lado de cá é a parede de dentro virada
+  // para a câmera: sem ele o buraco fica chapado e vira adesivo.
+  ctx.fillStyle = tons[0]
+  elipse(0, -tamanho * 0.04, raio * 0.86, raio * 0.3)
+  ctx.fillStyle = FUNDO_DO_BURACO
+  elipse(0, -tamanho * 0.015, raio * 0.82, raio * 0.27)
+}
+
+/**
+ * Lóbulos de uma mancha, em frações do raio dela: centro, centro, raio.
+ *
+ * Uma elipse só lê como adesivo colado na pista — é o defeito que o buraco
+ * tinha antes da brita. Cinco círculos que se cobrem dão um contorno que
+ * ninguém desenharia de propósito, que é exatamente o que uma poça é.
+ */
+const LOBULOS: readonly (readonly [number, number, number])[] = [
+  [0, 0, 1], [-0.62, -0.16, 0.56], [0.58, 0.12, 0.62],
+  [0.22, -0.38, 0.5], [-0.28, 0.34, 0.46],
+]
+
+/** Desenha o contorno lobado, encolhido por `fator`. */
+function mancha(ctx: CanvasRenderingContext2D, x: number, chao: number, raio: number, fator: number) {
+  for (const [cx, cy, cr] of LOBULOS) {
+    ctx.beginPath()
+    ctx.ellipse(
+      x + cx * raio * fator, chao + cy * raio * 0.34 * fator,
+      Math.max(0.5, cr * raio * fator), Math.max(0.5, cr * raio * 0.34 * fator),
+      0, 0, Math.PI * 2,
+    )
+    ctx.fill()
+  }
+}
+
+/** Cores do óleo: quase preto, e o arco-íris fino que só ele tem. */
+const OLEO = ['#1b1f26', '#0e1015'] as const
+const IRISADO = ['#4b3a72', '#2c5f63'] as const
+
+/**
+ * Uma mancha de óleo.
+ *
+ * É o obstáculo mais largo do jogo e o mais barato de acertar, e as duas
+ * coisas juntas são o ponto dele: dá para atravessar de propósito em vez de
+ * jogar o carro na grama para desviar — decisão que a barreira nunca oferece.
+ * Por isso ele precisa parecer atravessável, e não um buraco: nada de borda
+ * clara em volta, nada de brita. O que o marca é o irisado, que nenhuma outra
+ * peça do jogo tem, e que o distingue do buraco no meio segundo em que o
+ * piloto decide.
+ *
+ * As cores são fixas, e não tiradas do asfalto como as do buraco: óleo é
+ * preto em qualquer hora do dia.
+ */
+export function desenharOleo(ctx: CanvasRenderingContext2D, x: number, chao: number, tamanho: number) {
+  const raio = tamanho * 0.9
+  ctx.fillStyle = OLEO[0]
+  mancha(ctx, x, chao, raio, 1)
+  ctx.fillStyle = OLEO[1]
+  mancha(ctx, x, chao, raio, 0.72)
+  // Irisado, na beira de cima e à esquerda, que é de onde vem a luz. Duas
+  // lambidas bastam: mais do que isso vira poça de gasolina de desenho.
+  ctx.fillStyle = IRISADO[0]
+  ctx.beginPath()
+  ctx.ellipse(x - raio * 0.34, chao - raio * 0.15, raio * 0.3, raio * 0.07, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.fillStyle = IRISADO[1]
+  ctx.beginPath()
+  ctx.ellipse(x + raio * 0.24, chao - raio * 0.2, raio * 0.2, raio * 0.05, 0, 0, Math.PI * 2)
+  ctx.fill()
+}
+
+/**
+ * Uma poça de água.
+ *
+ * O que a faz ler como água é o céu dentro dela: a cor vem de `ceu`, o mesmo
+ * tom que o fundo da corrida usa no horizonte, então a poça muda com a hora
+ * do dia sem que nada aqui saiba que horas são. Em volta, o asfalto molhado
+ * no tom mais fundo da rampa da pista — é a orla escura que diz que ali tem
+ * profundidade, e que a separa de uma mancha de óleo.
+ */
+export function desenharPoca(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  chao: number,
+  tamanho: number,
+  tons: Rampa,
+  ceu: string,
+) {
+  const raio = tamanho * 0.78
+  ctx.fillStyle = tons[0]
+  mancha(ctx, x, chao, raio, 1)
+  ctx.fillStyle = ceu
+  mancha(ctx, x, chao, raio, 0.76)
+  // Brilho: dois riscos claros, deitados, onde a superfície devolve o sol.
+  ctx.fillStyle = misturar(ceu, LUZ, 0.55)
+  for (const [cx, cw] of [[-0.3, 0.26], [0.26, 0.17]] as const) {
+    ctx.beginPath()
+    ctx.ellipse(x + cx * raio, chao - raio * 0.12, cw * raio, raio * 0.035, 0, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
 /**
  * Um pórtico sobre a pista.
  *
@@ -317,32 +505,26 @@ export function desenharObjeto(
  * chega a dois mil pixels de dispositivo e não caberia em célula de folha
  * nenhuma. Em compensação é barato — uma dúzia de preenchimentos.
  *
- * `ahead` negativo significa que a câmera já passou por baixo. Aí ele sobe
- * e se dissolve, porque a projeção não o faz mais crescer e cortá-lo seco
- * seria um arco de tela cheia sumindo de um quadro para o outro.
+ * Ele vive e morre com a vaga em que está, como qualquer outro objeto da
+ * beira da pista: nada de subir nem de se apagar ao chegar perto. Houve uma
+ * versão que fazia as duas coisas, para o arco não sumir de um quadro para o
+ * outro quando a câmera o alcança — mas o remédio se via mais que a doença.
  */
 export function desenharPortico(
   ctx: CanvasRenderingContext2D,
   projetado: { center: number; y: number; roadWidth: number },
   variante: number,
-  ahead: number,
   nitidez: number,
   chegada = false,
 ) {
   const largura = projetado.roadWidth
-  const dissolucao = RECUO_DO_PORTICO * SCENERY_SPACING
-  const opacidade = ahead >= 0 ? 1 : Math.max(0, 1 + ahead / dissolucao)
-  if (opacidade <= 0.01) return
-  // Sobe depressa: passar por baixo de um arco é um movimento de fração de
-  // segundo, e uma subida lenta leria como o arco flutuando para cima.
-  const subida = ahead >= 0 ? 0 : -ahead * largura * 0.045
-  const base = projetado.y - subida
+  const base = projetado.y
   const arco = largura * 0.44
   const perna = Math.max(1, largura * 0.032)
   const viga = Math.max(2, largura * 0.115)
   const meiaViga = largura * 0.63
 
-  ctx.globalAlpha = nitidez * opacidade
+  ctx.globalAlpha = nitidez
   // Pernas, apoiadas fora do asfalto.
   for (const lado of LADOS) {
     const x = projetado.center + lado * largura * 0.58
@@ -380,4 +562,201 @@ export function desenharPortico(
     ctx.fillRect(projetado.center - meiaViga * 0.92, painelTopo, meiaViga * 1.84, Math.max(1, painelAltura * 0.22))
   }
   ctx.globalAlpha = nitidez
+}
+
+// ---------------------------------------------------------------------------
+// Faixa de meio-campo
+// ---------------------------------------------------------------------------
+
+/**
+ * Largura e altura da tira assada, em pixels.
+ *
+ * Ela é desenhada como padrão que se repete, então a largura só precisa ser
+ * grande o bastante para o olho não pegar a repetição — não tem relação com o
+ * tamanho da tela. Na hora do desenho ela é esticada para a altura pedida.
+ */
+const FAIXA_LARGURA = 960
+const FAIXA_ALTURA = 120
+
+/**
+ * Sorteio determinístico da tira.
+ *
+ * Não usa `Math.random` e não usa a semente da corrida: a tira é decoração de
+ * horizonte, igual para todo mundo que correr naquele lugar. Um gerador
+ * próprio de quatro linhas evita arrastar o traçado para dentro do assador.
+ */
+function sorteio(semente: number) {
+  let estado = semente >>> 0
+  return () => {
+    estado = (Math.imul(estado, 1664525) + 1013904223) >>> 0
+    return estado / 0x100000000
+  }
+}
+
+/**
+ * Desenha uma silhueta e repete a que cruza a borda direita do outro lado.
+ *
+ * É o que faz a tira emendar consigo mesma: sem isso, a repetição do padrão
+ * mostra uma costura vertical atravessando o horizonte a cada volta.
+ */
+function naTira(ctx: CanvasRenderingContext2D, x: number, desenhar: (x: number) => void) {
+  desenhar(x)
+  if (x > FAIXA_LARGURA - 200) desenhar(x - FAIXA_LARGURA)
+  if (x < 200) desenhar(x + FAIXA_LARGURA)
+}
+
+function assarFaixa(lugar: Lugar, tons: Rampa): HTMLCanvasElement {
+  const tela = document.createElement('canvas')
+  tela.width = FAIXA_LARGURA
+  tela.height = FAIXA_ALTURA
+  const ctx = tela.getContext('2d')!
+  const proximo = sorteio(lugar.length * 7919 + 13)
+  const base = FAIXA_ALTURA
+
+  if (lugar === 'cidade') {
+    // Silhueta de cidade: blocos de altura variada, com a laje acesa e umas
+    // poucas janelas. É o que Top Gear punha atrás da pista nas etapas urbanas.
+    for (let i = 0; i < 46; i += 1) {
+      const x = proximo() * FAIXA_LARGURA
+      const largura = 26 + proximo() * 46
+      const altura = 30 + proximo() * 78
+      const acesas = proximo() < 0.5
+      naTira(ctx, x, (px) => {
+        ctx.fillStyle = tons[1]
+        ctx.fillRect(px, base - altura, largura, altura)
+        ctx.fillStyle = tons[3]
+        ctx.fillRect(px, base - altura, largura, 4)
+        if (!acesas) return
+        ctx.fillStyle = tons[4]
+        for (let j = 0; j < 3; j += 1) {
+          ctx.fillRect(px + 6 + j * 12, base - altura + 12, 5, 6)
+        }
+      })
+    }
+    return tela
+  }
+
+  if (lugar === 'deserto') {
+    // Dunas: cristas largas e rasas que se sobrepõem, sem nada vertical.
+    for (let i = 0; i < 16; i += 1) {
+      const x = proximo() * FAIXA_LARGURA
+      const largura = 190 + proximo() * 220
+      const altura = 26 + proximo() * 34
+      naTira(ctx, x, (px) => {
+        ctx.fillStyle = tons[i % 2 === 0 ? 1 : 2]
+        ctx.beginPath()
+        ctx.moveTo(px - largura / 2, base)
+        ctx.quadraticCurveTo(px - largura * 0.18, base - altura * 1.5, px + largura * 0.2, base - altura * 0.7)
+        ctx.quadraticCurveTo(px + largura * 0.42, base - altura * 0.2, px + largura / 2, base)
+        ctx.closePath()
+        ctx.fill()
+      })
+    }
+    return tela
+  }
+
+  if (lugar === 'montanha') {
+    // Cumeada de rocha: uma linha quebrada só, com a face do sol acesa.
+    const passo = 34
+    const alturas: number[] = []
+    for (let x = 0; x <= FAIXA_LARGURA + passo; x += passo) {
+      alturas.push(34 + proximo() * 62)
+    }
+    // A última amostra volta a ser a primeira, senão a tira não emenda.
+    alturas[alturas.length - 1] = alturas[0]
+    ctx.fillStyle = tons[1]
+    ctx.beginPath()
+    ctx.moveTo(0, base)
+    alturas.forEach((altura, i) => ctx.lineTo(i * passo, base - altura))
+    ctx.lineTo(FAIXA_LARGURA, base)
+    ctx.closePath()
+    ctx.fill()
+    ctx.fillStyle = tons[3]
+    ctx.beginPath()
+    alturas.forEach((altura, i) => {
+      const x = i * passo
+      if (i === 0) ctx.moveTo(x, base - altura)
+      else ctx.lineTo(x, base - altura)
+    })
+    for (let i = alturas.length - 1; i >= 0; i -= 1) {
+      ctx.lineTo(i * passo + passo * 0.32, base - alturas[i] + 9)
+    }
+    ctx.closePath()
+    ctx.fill()
+    return tela
+  }
+
+  // Campo: linha de mata, alternando copa redonda e conífera.
+  for (let i = 0; i < 64; i += 1) {
+    const x = proximo() * FAIXA_LARGURA
+    const altura = 42 + proximo() * 46
+    const meia = altura * (0.3 + proximo() * 0.16)
+    const conifera = proximo() < 0.42
+    naTira(ctx, x, (px) => {
+      ctx.fillStyle = tons[1]
+      if (conifera) {
+        ctx.beginPath()
+        ctx.moveTo(px, base - altura)
+        ctx.lineTo(px + meia, base)
+        ctx.lineTo(px - meia, base)
+        ctx.closePath()
+        ctx.fill()
+      } else {
+        ctx.beginPath()
+        ctx.ellipse(px, base - altura * 0.58, meia, altura * 0.58, 0, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      // Realce discreto no alto e à esquerda. Com o tom mais claro da rampa
+      // ele virava uma bolinha, e a mata inteira lia como pontilhado.
+      ctx.fillStyle = tons[2]
+      ctx.beginPath()
+      ctx.ellipse(px - meia * 0.4, base - altura * 0.78, meia * 0.42, altura * 0.16, 0, 0, Math.PI * 2)
+      ctx.fill()
+    })
+  }
+  return tela
+}
+
+const faixas = new Map<string, HTMLCanvasElement>()
+
+/**
+ * A faixa que fecha o fundo, entre a serra e a grama.
+ *
+ * É o degrau que faltava no horizonte: sem ela, a montanha encosta direto na
+ * grama e a distância entre as duas vira um salto. Custa um preenchimento por
+ * quadro, porque a tira é um padrão que se repete — o deslocamento a faz
+ * correr com a curva, mais depressa que a serra e mais devagar que as árvores
+ * da beira da pista, que é o que dá a leitura de camadas.
+ */
+export function desenharFaixaDeFundo(
+  ctx: CanvasRenderingContext2D,
+  lugar: Lugar,
+  corBase: string,
+  largura: number,
+  base: number,
+  altura: number,
+  deslocamento: number,
+) {
+  const chave = `${lugar}|${corBase}`
+  let tira = faixas.get(chave)
+  if (!tira) {
+    tira = assarFaixa(lugar, rampa(corBase))
+    faixas.set(chave, tira)
+    // Uma por corrida basta; a anterior some junto com o ambiente.
+    if (faixas.size > 2) {
+      const maisVelha = faixas.keys().next()
+      if (!maisVelha.done) faixas.delete(maisVelha.value)
+    }
+  }
+
+  const escala = altura / FAIXA_ALTURA
+  const passo = FAIXA_LARGURA * escala
+  const inicio = -(((deslocamento % passo) + passo) % passo)
+  ctx.save()
+  ctx.translate(inicio, base - altura)
+  ctx.scale(escala, escala)
+  for (let x = 0; x < (largura - inicio) / escala; x += FAIXA_LARGURA) {
+    ctx.drawImage(tira, x, 0)
+  }
+  ctx.restore()
 }

@@ -3,8 +3,10 @@ import { CARS } from './cars'
 import {
   CAIXA_CARRO,
   LINHA_DO_CHAO,
+  MANCHAS_DE_TERRA,
   PARTS,
   RODAS,
+  SOMBRA_DE_CONTATO,
   WHEEL_CENTERS,
   carModel,
   type Face,
@@ -20,6 +22,55 @@ import { CAR_SPRITE_HALF_WIDTH } from './track'
  * desenho caiba onde promete — e é por isso que as elipses do molde são
  * polígonos.
  */
+/**
+ * Os polígonos de um caminho, um por subcaminho.
+ *
+ * As quadráticas entram pelo ponto de controle e pelo ponto final. Num canto
+ * arredondado isso devolve o canto vivo — um pouco maior que o de verdade —,
+ * o que só importaria para um ponto encostado exatamente num canto.
+ */
+function poligonos(d: string): [number, number][][] {
+  const saida: [number, number][][] = []
+  let atual: [number, number][] = []
+  let x = 0
+  let y = 0
+  for (const parte of d.split(/(?=[MLHVQZ])/)) {
+    const comando = parte[0]
+    const n = parte.slice(1).trim().split(/[\s,]+/).filter(Boolean).map(Number)
+    if (comando === 'M') {
+      if (atual.length) saida.push(atual)
+      atual = []
+    }
+    if (comando === 'Z') {
+      if (atual.length) saida.push(atual)
+      atual = []
+      continue
+    }
+    if (comando === 'H') {
+      for (const v of n) atual.push([(x = v), y])
+      continue
+    }
+    if (comando === 'V') {
+      for (const v of n) atual.push([x, (y = v)])
+      continue
+    }
+    for (let i = 0; i + 1 < n.length; i += 2) atual.push([(x = n[i]), (y = n[i + 1])])
+  }
+  if (atual.length) saida.push(atual)
+  return saida
+}
+
+/** Ponto dentro de polígono, pelo número de cruzamentos de um raio horizontal. */
+function dentro(poligono: [number, number][], px: number, py: number) {
+  let cruza = false
+  for (let i = 0, j = poligono.length - 1; i < poligono.length; j = i, i += 1) {
+    const [xi, yi] = poligono[i]
+    const [xj, yj] = poligono[j]
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) cruza = !cruza
+  }
+  return cruza
+}
+
 function contorno(faces: Face[]) {
   let x1 = Infinity
   let y1 = Infinity
@@ -139,6 +190,58 @@ describe('molde dos carros', () => {
     for (const roda of ['dianteiraEsquerda', 'dianteiraDireita'] as const) {
       const local = contorno(modelo.faces.filter((face) => face.part === roda))
       expect(WHEEL_CENTERS[roda][1] + local.y2, roda).toBeLessThan(LINHA_DO_CHAO)
+    }
+  })
+
+  it('a sombra de contato atravessa a linha do chão', () => {
+    // A corrida desenha a sombra ao vivo, fora da folha, e a garagem a assa
+    // junto com o carro. As duas saem desta lista — e se ela descolar da linha
+    // do chão, o carro passa a flutuar nos dois lugares ao mesmo tempo.
+    const corpo = SOMBRA_DE_CONTATO.filter((m) => !m.roda)
+    expect(corpo).toHaveLength(1)
+    expect(corpo[0].y - corpo[0].ry).toBeLessThan(LINHA_DO_CHAO)
+    expect(corpo[0].y + corpo[0].ry).toBeGreaterThan(LINHA_DO_CHAO)
+    // Uma por pneu, cada uma sob o pneu dela — é o que deixa a corrida girar
+    // a sombra junto com a roda sem precisar adivinhar qual é qual.
+    for (const roda of RODAS) {
+      const sob = SOMBRA_DE_CONTATO.filter((m) => m.roda === roda)
+      expect(sob, roda).toHaveLength(1)
+      expect(sob[0].x, roda).toBeCloseTo(WHEEL_CENTERS[roda][0], 6)
+      if (!roda.startsWith('traseira')) continue
+      expect(sob[0].y - sob[0].ry, roda).toBeLessThan(LINHA_DO_CHAO)
+      expect(sob[0].y + sob[0].ry, roda).toBeGreaterThan(LINHA_DO_CHAO)
+    }
+    // E é a mesma sombra que a garagem assa, não uma cópia.
+    for (const car of CARS) {
+      const assadas = carModel(car.id).faces.filter((face) => face.part === 'sombra')
+      expect(assadas, car.id).toHaveLength(SOMBRA_DE_CONTATO.length)
+    }
+  })
+
+  it('a terra da grama cai sobre o carro, e não no asfalto em volta dele', () => {
+    // As manchas saem da posição dos pneus justamente para cair na carroceria
+    // de qualquer carro. Uma que sobrasse para fora apareceria como barro
+    // flutuando ao lado do carro — pior do que carro limpo. Cobra-se a mancha
+    // inteira, e não só o centro dela.
+    for (const car of CARS) {
+      const modelo = carModel(car.id)
+      const pecas = modelo.faces
+        .filter((face) => face.part !== 'sombra')
+        .flatMap((face) => {
+          const [dx, dy] = (RODAS as readonly string[]).includes(face.part)
+            ? WHEEL_CENTERS[face.part as (typeof RODAS)[number]]
+            : [0, 0]
+          return poligonos(face.d).map((poligono) => poligono.map(([x, y]) => [x + dx, y + dy] as [number, number]))
+        })
+      for (const m of MANCHAS_DE_TERRA) {
+        const pontos: [number, number][] = [
+          [m.x, m.y], [m.x - m.rx, m.y], [m.x + m.rx, m.y], [m.x, m.y - m.ry], [m.x, m.y + m.ry],
+        ]
+        for (const [px, py] of pontos) {
+          const coberto = pecas.some((poligono) => dentro(poligono, px, py))
+          expect(coberto, `${car.id}: terra em (${px.toFixed(1)}, ${py.toFixed(1)})`).toBe(true)
+        }
+      }
     }
   })
 

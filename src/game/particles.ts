@@ -25,6 +25,22 @@ export type Particle = {
   /** Subida na tela por segundo, em pixels. */
   lift: number
   size: number
+  /**
+   * Cor da partícula.
+   *
+   * Cada tipo tem a sua, mas quem emite pode trocar: a poeira que sobe da
+   * grama de um campo não é da cor da que sobe de um deserto, e antes todas
+   * saíam do mesmo bege.
+   */
+  tint: string
+  /**
+   * Giro, em radianos por segundo.
+   *
+   * Só aparece no que não é redondo. Sem ele, as faíscas de uma batida saíam
+   * todas com o quadrado alinhado à tela — e um estouro alinhado lê como
+   * confete, não como metal raspando.
+   */
+  spin: number
 }
 
 /** Teto de partículas simultâneas, para não pesar em aparelhos modestos. */
@@ -58,13 +74,15 @@ export type SpawnOptions = {
   drift?: number
   lift?: number
   size?: number
+  tint?: string
+  spin?: number
 }
 
 const DEFAULTS: Record<ParticleKind, Required<SpawnOptions>> = {
-  dust: { life: 0.7, drift: 0.25, lift: 26, size: 9 },
-  spark: { life: 0.45, drift: 0.9, lift: 64, size: 5 },
-  boost: { life: 0.35, drift: 0, lift: 10, size: 7 },
-  skid: { life: 3, drift: 0, lift: 0, size: 6 },
+  dust: { life: 0.7, drift: 0.25, lift: 26, size: 9, tint: '#c6b489', spin: 0 },
+  spark: { life: 0.45, drift: 0.9, lift: 64, size: 5, tint: '#ff8a00', spin: 14 },
+  boost: { life: 0.35, drift: 0, lift: 10, size: 7, tint: '#43e7ff', spin: 0 },
+  skid: { life: 3, drift: 0, lift: 0, size: 6, tint: '#0d0f12', spin: 0 },
 }
 
 export class ParticleField {
@@ -92,6 +110,8 @@ export class ParticleField {
       drift: options.drift ?? preset.drift,
       lift: options.lift ?? preset.lift,
       size: options.size ?? preset.size,
+      tint: options.tint ?? preset.tint,
+      spin: options.spin ?? preset.spin,
     })
     // Acima do teto, as partículas mais antigas somem primeiro.
     if (this.items.length > MAX_PARTICLES) this.items.splice(0, this.items.length - MAX_PARTICLES)
@@ -100,9 +120,13 @@ export class ParticleField {
   burst(kind: ParticleKind, quantidade: number, distance: number, lateral: number, options: SpawnOptions = {}) {
     for (let index = 0; index < quantidade; index += 1) {
       const spread = (index / Math.max(1, quantidade - 1) - 0.5) * 2
+      // O giro espalha junto com a deriva: a faísca que sai para a esquerda
+      // gira para um lado, a da direita para o outro, e as do meio quase
+      // param. É o que dá ao estouro um centro de onde as coisas saem.
       this.spawn(kind, distance, lateral, {
         ...options,
         drift: (options.drift ?? DEFAULTS[kind].drift) * spread,
+        spin: (options.spin ?? DEFAULTS[kind].spin) * spread,
       })
     }
   }

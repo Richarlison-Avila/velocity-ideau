@@ -9,7 +9,7 @@ import {
   type Difficulty,
 } from './rules'
 import { createRaceState, speedForState, stepRace, type RaceInput, type RaceState } from './simulation'
-import { HIT_HALF_WIDTH, OFF_ROAD_LIMIT, TRACK_LENGTH, VIEW_DISTANCE } from './track'
+import { HIT_HALF_WIDTH, obstacles, OFF_ROAD_LIMIT, TRACK_LENGTH, VIEW_DISTANCE } from './track'
 
 const PARADO: RaceInput = { left: false, right: false, boost: false }
 const dt = 1 / 60
@@ -77,9 +77,14 @@ describe('contrato da dificuldade', () => {
     expect(regras.cruiseSpeed).toBe(252)
     expect(regras.boostSpeed).toBe(314)
     expect(regras.penaltySeconds).toBeCloseTo(1.65, 6)
-    // As dez barreiras e destroços originais seguem intactos; os buracos
-    // vieram depois, para fechar as beiradas, e são de outro tipo.
-    expect(regras.obstacles.filter((o) => o.kind !== 'pothole')).toHaveLength(10)
+    // As dez barreiras e destroços originais seguem intactos.
+    //
+    // Conferir contra a lista de `track.ts` diz isso sem depender de qual
+    // tipo entrou depois. A versão anterior contava os que não eram buraco, o
+    // que dava no mesmo enquanto o buraco era a única adição — e passou a
+    // mentir na segunda, quando as manchas chegaram.
+    expect(obstacles).toHaveLength(10)
+    for (const original of obstacles) expect(regras.obstacles).toContainEqual(original)
   })
 
   it('cada nível aperta o anterior em todas as frentes', () => {

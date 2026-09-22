@@ -38,6 +38,12 @@ const TAU = {
   impact: 0.42,
   steerRate: 0.2,
   strain: 0.3,
+  // A sujeira é o único sinal assimétrico do módulo, e é o que ela tem de
+  // interessante: entra em menos de um segundo de grama e fica na carroceria
+  // por uns bons trechos de reta depois. Iguais nos dois sentidos, ela lavaria
+  // sozinha em meio segundo e ninguém veria que o carro se sujou.
+  sujeiraSobe: 0.55,
+  sujeiraDesce: 11,
   slipstream: 0.22,
   corner: 0.2,
 }
@@ -59,6 +65,8 @@ export type FeelState = {
   impact: number
   /** O quanto o carro está fora do asfalto, de 0 a 1. */
   offRoad: number
+  /** Terra acumulada na carroceria, de 0 a 1. Sobe na grama e sai devagar. */
+  dirt: number
   /** O quanto o vácuo do rival está rendendo, de 0 a 1. */
   slipstream: number
   /** Carga lateral que a curva está impondo, de 0 a 1. */
@@ -79,6 +87,7 @@ export function createFeel(): FeelState {
     boost: 0,
     impact: 0,
     offRoad: 0,
+    dirt: 0,
     slipstream: 0,
     corner: 0,
     previousSpeed: 0,
@@ -130,6 +139,12 @@ export function updateFeel(feel: FeelState, race: RaceState, dt: number) {
   // Fora da pista cresce com o quanto o carro avançou para além da borda.
   const excedente = (Math.abs(race.lateral) - OFF_ROAD_LIMIT) / 0.3
   feel.offRoad = approach(feel.offRoad, clamp(excedente, 0, 1), TAU.offRoad, step)
+
+  // Sujeira: o alvo é acumular, não acompanhar. Enquanto houver roda na grama
+  // a terra sobe rumo a cobrir o carro, por mais rasa que seja a saída — a
+  // profundidade muda a poeira que levanta, não o quanto o carro se suja.
+  const sujando = feel.offRoad > 0.05
+  feel.dirt = approach(feel.dirt, sujando ? 1 : 0, sujando ? TAU.sujeiraSobe : TAU.sujeiraDesce, step)
 
   // Vácuo e carga de curva já saem contínuos da simulação; a suavização aqui
   // serve para o HUD e os efeitos não tremerem quando o valor oscila de um

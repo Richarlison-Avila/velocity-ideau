@@ -14,7 +14,7 @@ import {
   type RaceInput,
   type RaceState,
 } from './simulation'
-import { obstacles, TRACK_LENGTH } from './track'
+import { HIT_HALF_WIDTH, obstacles, TRACK_LENGTH } from './track'
 
 /** Regras do nível de referência: é sobre elas que esta suíte fala. */
 const REGRAS = rulesFor('normal')
@@ -160,8 +160,17 @@ describe('obstáculos e penalidades', () => {
   it('quem vai pelo centro atinge apenas os obstáculos do centro', () => {
     const { events } = correr(() => PARADO)
     const atingidos = events.flatMap((event) => (event.type === 'collision' ? [event.obstacleId] : []))
-    const esperados = obstacles.filter((obstacle) => Math.abs(obstacle.lane) < 0.25).map((obstacle) => obstacle.id)
+    // O alcance sai do tipo de cada um, e a lista sai das regras da corrida.
+    // Antes eram um 0,25 solto e a lista literal de `track.ts`: dava no mesmo
+    // enquanto todo obstáculo tinha a mesma meia-largura e tudo o que fora
+    // acrescentado depois morava nas beiradas. A mancha de óleo é larga e
+    // passa pelo meio, e aí as duas simplificações deixaram de valer.
+    const esperados = REGRAS.obstacles
+      .filter((o) => Math.abs(o.lane) < HIT_HALF_WIDTH[o.kind])
+      .map((o) => o.id)
     expect(atingidos.sort()).toEqual(esperados.sort())
+    // E o centro é mesmo ameaçado: sem isto a conferência passaria vazia.
+    expect(esperados.length).toBeGreaterThan(2)
   })
 
   it('a penalidade tem duração previsível', () => {

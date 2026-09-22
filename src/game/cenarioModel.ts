@@ -39,7 +39,7 @@
  * pixels por árvore.
  */
 import { misturar, rampa, SOMBRA, type Rampa } from './paleta'
-import { CILINDRO, pincel, type Face, type Pincel } from './pincel'
+import { CILINDRO, LADOS, pincel, type Face, type Pincel } from './pincel'
 import type { Flora, SceneryKind } from './layout'
 
 /**
@@ -52,7 +52,7 @@ import type { Flora, SceneryKind } from './layout'
 type Camada = 'objeto'
 
 /**
- * Famílias que ganham modelo.
+ * Famílias que ocupam vaga na beira da pista.
  *
  * Cerca e guardrail ficam de fora, e pelo mesmo motivo: são contínuos. O vão
  * de cada um cobre metade do espaçamento para os dois lados, para as travessas
@@ -60,7 +60,22 @@ type Camada = 'objeto'
  * vagas, que diferem. Assados numa célula por vaga, virariam uma fila de
  * portõezinhos soltos.
  */
-export type FamiliaModelada = Exclude<SceneryKind, 'fence' | 'guardrail'> | 'marcador'
+export type FamiliaDeVaga = Exclude<SceneryKind, 'fence' | 'guardrail'>
+
+/**
+ * Tudo que a folha assa.
+ *
+ * Além das vagas, o marcador de distância — que tem altura própria, vinda do
+ * espaçamento da pista — e os dois obstáculos que ficam de pé sobre o asfalto.
+ * O buraco não entra: é do asfalto, deitado, sem altura, e não cabe na
+ * convenção de caixa que todo o resto usa.
+ *
+ * Barreira e cone entram por consistência, não por desempenho: são no máximo
+ * dois na tela de cada vez. O que se ganha é o banho de névoa da folha, que
+ * eles não tinham — desenhados ao vivo em cor cheia, apareciam recortados de
+ * outra cena à medida que a pista escurecia.
+ */
+export type FamiliaModelada = FamiliaDeVaga | 'marcador' | 'barreira' | 'cone'
 
 /** Quantas variantes de forma cada família tem. */
 export const VARIANTES: Record<FamiliaModelada, number> = {
@@ -76,6 +91,11 @@ export const VARIANTES: Record<FamiliaModelada, number> = {
   pedra: 3,
   cacto: 3,
   predio: 3,
+  // Duas pinturas de barreira: uma de galões e uma de blocos. Elas se repetem
+  // muitas vezes numa prova, e é a variante que impede a fila de carimbos.
+  barreira: 2,
+  // Cone é cone: na pista de verdade também são todos iguais.
+  cone: 1,
 }
 
 /** Quais famílias mudam de cor com o tom sorteado pelo traçado. */
@@ -96,6 +116,10 @@ export const TONS: Record<FamiliaModelada, number> = {
   // deserto é arenito e numa montanha é granito.
   pedra: 1,
   cacto: 2,
+  // Cor de material, como a placa e o poste: não existe barreira nem cone
+  // desbotado por sorteio.
+  barreira: 1,
+  cone: 1,
 }
 
 /**
@@ -158,6 +182,12 @@ const TORCIDA = ['#e05a3d', '#f0d15a', '#5fa8d8', '#e8e5d6', '#4d5a63'].map(ramp
 /** A rocha muda com a flora: granito na montanha, arenito no deserto. */
 const ROCHAS: Record<Flora, Rampa> = { verde: rampa('#6e736d'), seca: rampa('#9a7a52') }
 const CACTOS = [rampa('#3f7a4e'), rampa('#4a8a58')]
+
+/** Obstáculos: as duas cores de sinalização que existem em qualquer pista. */
+const BARREIRA = rampa('#eef1f2')
+const BARREIRA_FAIXA = rampa('#ff4b37')
+const CONE = rampa('#ff8a00')
+const REFLETIVO = rampa('#f5f6e9')
 
 // ---------------------------------------------------------------------------
 // Ferramentas de forma
@@ -573,12 +603,115 @@ function predio(p: Pincel<Camada>, variante: number, detalhe: Detalhe) {
   p.poly('objeto', VIDRO[0], [[-0.09, -0.17], [0.09, -0.17], [0.09, 0], [-0.09, 0]])
 }
 
+/**
+ * Barreira: o painel que fecha uma faixa da pista.
+ *
+ * O que a torna legível de longe é o padrão, não a cor — ele diz "desvie"
+ * antes de a peça ter tamanho para mostrar detalhe. Os pés levantam o painel
+ * do asfalto, e o vinco escuro embaixo é o que impede a barreira de parecer
+ * pintada no chão.
+ */
+function barreira(p: Pincel<Camada>, variante: number, detalhe: Detalhe) {
+  const meia = 1.26
+  const painel = -0.3
+  const cheio = detalhe === 'cheio'
+
+  // Os pés vêm antes do painel: ele cobre o topo deles e passa a estar por
+  // cima, que é a ordem em que a barreira de verdade é montada.
+  for (const lado of LADOS) {
+    const x = lado * 0.86
+    p.rect('objeto', METAL[1], x - 0.08, -0.4, 0.16, 0.4)
+    if (!cheio) continue
+    p.rect('objeto', METAL[3], x - 0.08, -0.4, 0.05, 0.4)
+    // Sapata: sem ela o pé parece enfiado no asfalto.
+    p.poly('objeto', METAL[0], [[x - 0.1, -0.05], [x + 0.1, -0.05], [x + 0.17, 0], [x - 0.17, 0]])
+  }
+
+  p.volume('objeto', BARREIRA, { y: -1, meia }, { y: painel, meia },
+    cheio ? [3, 4, 4, 3, 2] : [3, 3, 2])
+
+  // Toda pintura é cortada na borda do painel: sem o corte, o galão inclinado
+  // passa da caixa que o objeto declara e some sem aviso, recortado pela
+  // célula da folha.
+  const corte = (v: number) => Math.min(meia, Math.max(-meia, v))
+  if (variante === 0) {
+    // Galões: faixas inclinadas que atravessam o painel de ponta a ponta.
+    const passo = cheio ? 0.36 : 0.72
+    const inclinacao = 0.28
+    for (let x = -meia - inclinacao; x < meia; x += passo * 2) {
+      p.poly('objeto', BARREIRA_FAIXA[2], [
+        [corte(x), painel], [corte(x + passo), painel],
+        [corte(x + passo + inclinacao), -1], [corte(x + inclinacao), -1],
+      ])
+    }
+  } else {
+    // Blocos retos: cinco faixas com as três ímpares vermelhas, para a peça
+    // ficar simétrica. Assimétrica ela lia como bandeira, não como barreira.
+    const passo = (meia * 2) / 5
+    for (let i = 0; i < 5; i += 2) {
+      p.rect('objeto', BARREIRA_FAIXA[2], -meia + i * passo, -1, passo, painel + 1)
+    }
+  }
+
+  // Aresta acesa em cima e vinco na sombra embaixo: a costura do carro.
+  p.faixa('objeto', BARREIRA[4], { y: -1, meia }, { y: -0.94, meia })
+  p.faixa('objeto', BARREIRA[0], { y: painel - 0.07, meia }, { y: painel, meia })
+}
+
+/**
+ * Cone: a marcação mais barata de uma pista e a mais reconhecível.
+ *
+ * O corpo é partido em três gomos que ladrilham o triângulo, e não empilhado
+ * em camadas: assim cada pixel é escrito uma vez só, que é o que a peça
+ * precisa quando chega grande na tela.
+ */
+function cone(p: Pincel<Camada>, detalhe: Detalhe) {
+  const corpo = 0.32
+  const base = 0.43
+  const pe = -0.16
+  const ponta = 0.045
+  // Da ponta até o pé do corpo, em fração da altura dele.
+  const emY = (t: number) => -1 + t * (1 + pe)
+  const emX = (t: number) => ponta + (corpo - ponta) * t
+
+  // A saia leva três faixas, as mesmas três do corpo: com cinco, as divisões
+  // dela não batiam com as dos gomos e o pé do cone virava um tabuleiro.
+  p.volume('objeto', CONE, { y: pe - 0.02, meia: 0.4 }, { y: 0, meia: base },
+    detalhe === 'cheio' ? [3, 2, 1] : [3, 1])
+
+  // Os três gomos ladrilham o triângulo inteiro: a soma deles é a silhueta.
+  // Os tons vão de 3 a 1, e não a 0: o tom mais fundo de uma rampa laranja é
+  // marrom, e o gomo da sombra lia como ferrugem em vez de laranja na sombra.
+  for (const [de, ate, tom] of [[-1, -0.3, 3], [-0.3, 0.3, 2], [0.3, 1, 1]] as const) {
+    p.poly('objeto', CONE[tom], [
+      [ponta * de, -1], [ponta * ate, -1], [corpo * ate, emY(1)], [corpo * de, emY(1)],
+    ])
+  }
+  if (detalhe === 'simples') return
+
+  // Vinco onde o corpo encosta na saia: sem ele os dois viram uma peça só e a
+  // saia deixa de ler como a base larga que impede o cone de tombar.
+  p.faixa('objeto', CONE[0], { y: pe - 0.02, meia: 0.4 }, { y: pe + 0.03, meia: 0.41 })
+
+  // Duas faixas refletivas, cada uma com a aresta de cima acesa.
+  for (const [de, ate] of [[0.32, 0.5], [0.64, 0.8]] as const) {
+    p.faixa('objeto', REFLETIVO[2], { y: emY(de), meia: emX(de) }, { y: emY(ate), meia: emX(ate) })
+    p.faixa('objeto', REFLETIVO[4], { y: emY(de), meia: emX(de) }, { y: emY(de + 0.05), meia: emX(de + 0.05) })
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Montagem
 // ---------------------------------------------------------------------------
 
-/** Meia-largura de cada família, em alturas do objeto. */
-const MEIA_LARGURA: Record<FamiliaModelada, number> = {
+/**
+ * Meia-largura de cada família, em alturas do objeto.
+ *
+ * Sai do módulo porque quem desenha precisa dela antes de escolher a célula:
+ * o nível de detalhe é decidido pelo maior lado do objeto, e para a barreira
+ * esse lado é a largura.
+ */
+export const MEIA_LARGURA: Record<FamiliaModelada, number> = {
   tree: 0.44,
   bush: 0.78,
   grass: 0.82,
@@ -591,6 +724,8 @@ const MEIA_LARGURA: Record<FamiliaModelada, number> = {
   pedra: 0.72,
   cacto: 0.42,
   predio: 0.62,
+  barreira: 1.26,
+  cone: 0.44,
 }
 
 const cache = new Map<string, ObjetoModelado>()
@@ -643,6 +778,10 @@ export function objetoModelado(
     rocha(p, ROCHAS[flora], v, detalhe)
   } else if (familia === 'cacto') {
     cacto(p, CACTOS[t % CACTOS.length], v, detalhe)
+  } else if (familia === 'barreira') {
+    barreira(p, v, detalhe)
+  } else if (familia === 'cone') {
+    cone(p, detalhe)
   } else {
     predio(p, v, detalhe)
   }

@@ -48,6 +48,27 @@ describe('efeitos da pista', () => {
     expect(campo.all[0].distance).toBeGreaterThan(1_000)
   })
 
+  it('cada tipo nasce com a cor dele, e quem emite pode trocar', () => {
+    // A poeira da grama sai da cor do chão de cada lugar: a troca é o caminho
+    // normal, não um caso raro.
+    const campo = new ParticleField()
+    campo.spawn('dust', 500, 0)
+    campo.spawn('spark', 500, 0)
+    campo.spawn('dust', 500, 0, { tint: '#123456' })
+    const [poeira, faisca, trocada] = campo.all
+    expect(poeira.tint).not.toBe(faisca.tint)
+    expect(trocada.tint).toBe('#123456')
+  })
+
+  it('as faíscas giram para os dois lados, na mesma medida em que se espalham', () => {
+    const campo = new ParticleField()
+    campo.burst('spark', 7, 500, 0)
+    const giros = campo.all.map((particle) => particle.spin)
+    expect(giros[0]).toBeLessThan(0)
+    expect(giros[giros.length - 1]).toBeGreaterThan(0)
+    expect(giros[0]).toBeCloseTo(-giros[giros.length - 1], 6)
+  })
+
   it('espalha a explosão de faíscas para os dois lados', () => {
     const campo = new ParticleField()
     campo.burst('spark', 8, 500, 0, { drift: 1 })

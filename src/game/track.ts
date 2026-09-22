@@ -68,7 +68,16 @@ export const CAR_SPRITE_HALF_WIDTH = 31
 /** Largura de tela em que o sprite do carro é desenhado na escala 1. */
 export const CAR_SPRITE_REFERENCE_WIDTH = 620
 
-export type ObstacleKind = 'barrier' | 'debris' | 'pothole'
+/**
+ * Os cinco tipos de obstáculo.
+ *
+ * Os três primeiros são peças: batem. Os dois últimos são manchas no asfalto,
+ * e é outro perfil de ameaça — largas o bastante para não dar para fingir que
+ * não estão ali, e baratas o bastante para valer a pena passar por cima em vez
+ * de jogar o carro na grama para desviar. É a decisão que a barreira nunca
+ * oferece.
+ */
+export type ObstacleKind = 'barrier' | 'debris' | 'pothole' | 'oleo' | 'poca'
 
 export type Obstacle = {
   id: number
@@ -87,6 +96,10 @@ export const HIT_HALF_WIDTH: Record<ObstacleKind, number> = {
   barrier: 0.25,
   debris: 0.25,
   pothole: 0.17,
+  // A mancha é o contrário da barreira: larga e barata. O óleo cobre mais
+  // pista do que qualquer peça, e é por isso que ele não pode custar caro.
+  oleo: 0.34,
+  poca: 0.3,
 }
 
 /**
@@ -99,6 +112,8 @@ export const HIT_PENALTY_SHARE: Record<ObstacleKind, number> = {
   barrier: 1,
   debris: 1,
   pothole: 0.55,
+  oleo: 0.4,
+  poca: 0.3,
 }
 
 export const obstacles: Obstacle[] = [

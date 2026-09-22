@@ -10,10 +10,13 @@
 <div id="saida"></div>
 <p class="nota" id="nota"></p>
 <script type="module">
-  import { prepararCenario, desenharObjeto, memoriaDaFolha } from '/src/game/cenarioSprites.ts'
-  import { VARIANTES, TONS } from '/src/game/cenarioModel.ts'
-  import { desenharPortico } from '/src/game/cenarioSprites.ts'
+  import { prepararCenario, desenharObjeto, desenharBuraco, desenharOleo, desenharPoca, memoriaDaFolha } from '/src/game/cenarioSprites.ts'
+  import { VARIANTES, TONS, MEIA_LARGURA } from '/src/game/cenarioModel.ts'
+  import { rampa } from '/src/game/paleta.ts'
+  import { desenharPortico, desenharFaixaDeFundo } from '/src/game/cenarioSprites.ts'
   import { roadProjection, BOTTOM_RATIO } from '/src/game/track.ts'
+  import { ambientFor, AMBIENT_COUNT } from '/src/game/layout.ts'
+  import { drawCar, prepareCar } from '/src/game/carSprites.ts'
 
   const q = new URLSearchParams(location.search)
   const flora = q.get('flora') ?? 'verde'
@@ -42,7 +45,9 @@
     titulo.textContent = `${familia} — ${combos.length} combinações`
     saida.append(titulo)
 
-    const passo = 230
+    // O passo acompanha a família: a barreira é duas vezes e meia mais larga
+    // que alta, e num passo fixo ela invadia a célula da vizinha.
+    const passo = Math.max(230, Math.max(...TAMANHOS) * MEIA_LARGURA[familia] * 2 + 40)
     const tela = document.createElement('canvas')
     tela.width = combos.length * passo + VAO * 2
     tela.height = TAMANHOS.reduce((soma, t) => soma + t + 26, 0)
@@ -55,17 +60,106 @@
       ctx.fillRect(0, y, tela.width, altura + 26)
       let x = VAO + passo / 2
       for (const { v, tom } of combos) {
-        // A sombra no chão não mora no sprite: é translúcida, e uma face
-        // translúcida composta duas vezes daria cores diferentes.
-        ctx.fillStyle = 'rgba(10,20,26,.3)'
-        ctx.beginPath()
-        ctx.ellipse(x + altura * 0.06, chao, altura * 0.24, altura * 0.05, 0, 0, Math.PI * 2)
-        ctx.fill()
+        // A sombra no chão sai de `desenharObjeto`, e não do sprite: é
+        // translúcida, e uma face translúcida composta duas vezes daria cores
+        // diferentes. Desenhá-la aqui de novo dobrava a mancha.
         desenharObjeto(ctx, familia, v, tom, x, chao, altura)
         x += passo
       }
       y += altura + 26
     }
+    saida.append(tela)
+  }
+
+  /**
+   * Os três obstáculos, do tamanho de longe ao de perto.
+   *
+   * Ficam juntos e sobre asfalto porque é assim que aparecem: o que importa
+   * aqui não é cada um isolado, é se dá para dizer qual é qual no tamanho em
+   * que o jogador ainda tem tempo de desviar. As alturas são as mesmas que
+   * `drawObstacle` usa — barreira 0,52, cone 1,08 —, então o que se vê é o
+   * tamanho de jogo e não uma escala de bancada.
+   */
+  {
+    const titulo = document.createElement('h1')
+    titulo.textContent = 'obstáculos — como chegam na pista'
+    saida.append(titulo)
+
+    const ASFALTO = ['#3b4147', '#434a51']
+    const ASFALTO_TONS = rampa('#4a5157')
+    const TAMANHOS = [18, 34, 60, 96, 150]
+    const PECAS = [
+      ['barreira', (ctx, x, y, t) => desenharObjeto(ctx, 'barreira', 0, 0, x, y, t * 0.52)],
+      ['barreira', (ctx, x, y, t) => desenharObjeto(ctx, 'barreira', 1, 0, x, y, t * 0.52)],
+      ['cone', (ctx, x, y, t) => desenharObjeto(ctx, 'cone', 0, 0, x, y, t * 1.08)],
+      ['buraco', (ctx, x, y, t) => desenharBuraco(ctx, x, y, t, ASFALTO_TONS)],
+      ['óleo', (ctx, x, y, t) => desenharOleo(ctx, x, y, t)],
+      ['poça', (ctx, x, y, t) => desenharPoca(ctx, x, y, t, ASFALTO_TONS, '#e2a46a')],
+    ]
+
+    const COLUNA = 290
+    const tela = document.createElement('canvas')
+    tela.width = PECAS.length * COLUNA
+    tela.height = TAMANHOS.reduce((soma, t) => soma + t + 40, 0)
+    const ctx = tela.getContext('2d')
+
+    let y = 0
+    TAMANHOS.forEach((tamanho, linha) => {
+      const altura = tamanho + 40
+      ctx.fillStyle = ASFALTO[linha % 2]
+      ctx.fillRect(0, y, tela.width, altura)
+      // Faixa central da pista, para o obstáculo não flutuar num cinza liso.
+      ctx.fillStyle = '#c8ccc4'
+      ctx.fillRect(0, y + altura - 6, tela.width, 2)
+      PECAS.forEach(([, desenhar], i) => {
+        desenhar(ctx, i * COLUNA + COLUNA / 2, y + altura - 12, tamanho)
+      })
+      y += altura
+    })
+    saida.append(tela)
+  }
+
+  /**
+   * A poça nos quatro ambientes.
+   *
+   * A água dela é o céu do lugar — é o que a faz ler como água e não como
+   * mancha de tinta, e é a única peça do jogo cuja cor vem do fundo. Esta
+   * tira existe para conferir que ela se separa do asfalto nos quatro, e não
+   * só no que estava aberto quando foi desenhada.
+   *
+   * Os ambientes saem de `ambientFor`, varrendo sementes até achar os quatro:
+   * a tabela não é exportada, e copiar as cores aqui só criaria uma segunda
+   * versão delas para ficar desencontrada da primeira.
+   */
+  {
+    const titulo = document.createElement('h1')
+    titulo.textContent = 'poça — a água é o céu do lugar'
+    saida.append(titulo)
+
+    const ambientes = []
+    for (let semente = 0; ambientes.length < AMBIENT_COUNT && semente < 400; semente += 1) {
+      const a = ambientFor(semente)
+      if (!ambientes.some((outro) => outro.nome === a.nome)) ambientes.push(a)
+    }
+
+    const COLUNA = 200
+    const ALTURA = 130
+    const tela = document.createElement('canvas')
+    tela.width = ambientes.length * COLUNA
+    tela.height = ALTURA + 22
+    const ctx = tela.getContext('2d')
+    ctx.font = '11px system-ui, sans-serif'
+    ambientes.forEach((ambiente, i) => {
+      const x = i * COLUNA
+      // Fundo com as duas listras de asfalto da pista daquele ambiente.
+      ctx.fillStyle = ambiente.asfaltoEscuro
+      ctx.fillRect(x, 0, COLUNA, ALTURA)
+      ctx.fillStyle = ambiente.asfaltoClaro
+      ctx.fillRect(x, ALTURA / 2, COLUNA, ALTURA / 2)
+      desenharPoca(ctx, x + COLUNA / 2, ALTURA - 24, 88, rampa(ambiente.asfaltoClaro), ambiente.ceuBaixo)
+      ctx.fillStyle = '#e8ecef'
+      ctx.fillText(`${ambiente.nome} · ${ambiente.lugar}`, x + 8, ALTURA + 15)
+    })
     saida.append(tela)
   }
 
@@ -78,12 +172,12 @@
    */
   {
     const titulo = document.createElement('h1')
-    titulo.textContent = 'pórtico — de 40 m até 28 m atrás da câmera'
+    titulo.textContent = 'pórtico — de 120 m até a vaga em que ele é cortado'
     saida.append(titulo)
 
     const ALTURA = 210
     const LARGURA = 128
-    const AHEADS = [40, 20, 8, 2, 0, -6, -14, -22, 20]
+    const AHEADS = [120, 80, 50, 30, 18, 10, 4, 0, 20]
     const tela = document.createElement('canvas')
     tela.width = AHEADS.length * LARGURA
     tela.height = ALTURA
@@ -98,11 +192,90 @@
       const proj = roadProjection(ahead, LARGURA, ALTURA / BOTTOM_RATIO)
       // A última célula mostra o pórtico da chegada, com o quadriculado.
       const chegada = i === AHEADS.length - 1
-      desenharPortico(ctx, { ...proj, center: i * LARGURA + LARGURA / 2 }, i % 3, chegada ? 20 : ahead, 1, chegada)
+      desenharPortico(ctx, { ...proj, center: i * LARGURA + LARGURA / 2 }, i % 3, 1, chegada)
       ctx.fillStyle = '#9fb0ae'
       ctx.font = '11px system-ui'
       ctx.fillText(chegada ? 'chegada' : `${ahead} m`, i * LARGURA + 8, 16)
       ctx.restore()
+    })
+    saida.append(tela)
+  }
+
+  // A faixa de meio-campo, nos quatro lugares.
+  {
+    const titulo = document.createElement('h1')
+    titulo.textContent = 'faixa de fundo — campo · cidade · montanha · deserto'
+    saida.append(titulo)
+    const LUGARES = [
+      ['campo', '#2a4433'],
+      ['cidade', '#33414c'],
+      ['montanha', '#2a4247'],
+      ['deserto', '#6a4f33'],
+    ]
+    const ALTURA = 96
+    const tela = document.createElement('canvas')
+    tela.width = 1160
+    tela.height = ALTURA * LUGARES.length
+    const ctx = tela.getContext('2d')
+    LUGARES.forEach(([lugar, cor], i) => {
+      const base = (i + 1) * ALTURA
+      ctx.fillStyle = i % 2 ? '#3c5a6a' : '#44647a'
+      ctx.fillRect(0, base - ALTURA, tela.width, ALTURA)
+      // Duas passadas com deslocamentos diferentes mostram que a tira emenda.
+      desenharFaixaDeFundo(ctx, lugar, cor, tela.width, base, ALTURA * 0.82, i * 260)
+      ctx.fillStyle = '#dfe6e2'
+      ctx.font = '11px system-ui'
+      ctx.fillText(lugar, 8, base - ALTURA + 14)
+    })
+    saida.append(tela)
+  }
+
+  /**
+   * O carro nas poses que a fase 7 acrescentou.
+   *
+   * O painel do navegador desenha em rajadas e a simulação tem passo travado,
+   * então dirigir até a grama para ver a terra não é uma verificação que se
+   * consiga fazer aqui. As poses são postas à mão, com os valores que a
+   * corrida produz nos extremos, e o desenho é o mesmo `drawCar` do jogo.
+   *
+   * O que olhar: a sombra fica no chão enquanto o corpo sobe, desce e rola; a
+   * terra cai sobre o carro, e não no asfalto ao lado, também nas curvas.
+   */
+  {
+    const titulo = document.createElement('h1')
+    titulo.textContent = 'carro — sombra no chão, terra na carroceria'
+    saida.append(titulo)
+
+    const neutra = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
+    const POSES = [
+      ['neutro', neutra],
+      ['sujo', { ...neutra, dirt: 1 }],
+      ['afundado', { ...neutra, suspension: 0.06 }],
+      ['leve', { ...neutra, suspension: -0.12 }],
+      ['curva à dir. suja', { ...neutra, steer: 1, tilt: 0.095, dirt: 1 }],
+      ['curva à esq. suja', { ...neutra, steer: -1, tilt: -0.095, dirt: 1 }],
+    ]
+    const ESCALA = 2.4
+    const COLUNA = 190
+    const ALTURA = 230
+    const tela = document.createElement('canvas')
+    tela.width = POSES.length * COLUNA
+    tela.height = ALTURA + 22
+    const ctx = tela.getContext('2d')
+    ctx.imageSmoothingQuality = 'high'
+    prepareCar('senna', '')
+    POSES.forEach(([nome, pose], i) => {
+      const x = i * COLUNA
+      ctx.fillStyle = i % 2 ? '#3b4147' : '#434a51'
+      ctx.fillRect(x, 0, COLUNA, ALTURA)
+      // Linha do chão, para ver a sombra atravessando-a.
+      const chao = 150
+      ctx.fillStyle = '#5b646c'
+      ctx.fillRect(x, chao + 20 * ESCALA, COLUNA, 1)
+      drawCar(ctx, x + COLUNA / 2, chao, ESCALA, 'senna', pose)
+      ctx.fillStyle = '#e8ecef'
+      ctx.font = '11px system-ui, sans-serif'
+      ctx.fillText(nome, x + 8, ALTURA + 15)
     })
     saida.append(tela)
   }

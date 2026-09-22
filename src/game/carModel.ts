@@ -279,6 +279,88 @@ const RODA = {
   },
 }
 
+/**
+ * Sombra de contato do carro, em unidades do desenho.
+ *
+ * É uma lista, e não um punhado de chamadas dentro do molde, porque ela tem
+ * dois consumidores que precisam da mesma geometria: o retrato da garagem, que
+ * a assa junto com o resto e está certo assim — lá o carro está parado —, e a
+ * corrida, que a desenha ao vivo em `drawCar`.
+ *
+ * Na corrida ela não pode ser assada. A folha inteira inclina com o volante e
+ * é deslocada pela suspensão e pela trepidação; a sombra assada ia junto, e
+ * uma sombra que rola com a carroceria não é sombra, é adesivo. Desenhada ao
+ * vivo, ela fica no chão enquanto o carro se mexe por cima — que é o que
+ * ancora a peça no asfalto.
+ *
+ * Cada mancha diz se é de roda, e de qual. A distinção importa na corrida: a
+ * da carroceria fica no chão, mas a de cada pneu tem de acompanhar o pneu,
+ * porque neste desenho a rolagem gira o quadro inteiro — rodas inclusive — em
+ * torno da linha do chão. A roda da frente está sessenta unidades acima desse
+ * pivô e anda nove para o lado no esterço máximo; uma sombra parada ali fica
+ * sozinha no asfalto, ao lado do pneu.
+ */
+export const SOMBRA_DE_CONTATO: readonly {
+  x: number
+  y: number
+  rx: number
+  ry: number
+  cor: string
+  alpha: number
+  roda?: Roda
+}[] = [
+  { x: 0, y: LINHA_DO_CHAO - 2, rx: 28, ry: 4.5, cor: '#0a1416', alpha: 0.26 },
+  ...RODAS.map((roda) => {
+    const [x, y] = WHEEL_CENTERS[roda]
+    const tras = roda.startsWith('traseira')
+    const { meiaLargura, meiaAltura } = tras ? RODA.traseira : RODA.dianteira
+    return {
+      x,
+      y: y + meiaAltura - 0.6,
+      rx: meiaLargura * 0.95,
+      ry: tras ? 2 : 1.5,
+      cor: '#081013',
+      alpha: 0.35,
+      roda,
+    }
+  }),
+]
+
+/**
+ * Onde a terra gruda depois de uma passagem pela grama.
+ *
+ * As posições são medidas a partir do centro de cada pneu, porque é o pneu
+ * que atira o barro. Mas o que ele atinge não é "o que estiver ao lado", e a
+ * diferença apareceu no teste que cobra que toda mancha caia sobre o carro: a
+ * primeira versão punha terra ao lado da roda dianteira, e num carro de roda
+ * descoberta ao lado dela só há braço de suspensão e ar — as quatro manchas
+ * da frente flutuavam no vazio, em todos os carros.
+ *
+ * Então cada eixo suja o que de fato fica no caminho do barro dele. A roda
+ * traseira suja a si mesma, o canto de baixo da asa logo atrás e o pé do
+ * pontão logo à frente. A dianteira atira para trás, e o barro dela cai no
+ * pontão. A traseira suja mais porque é ela que traciona.
+ */
+export const MANCHAS_DE_TERRA: readonly { x: number; y: number; rx: number; ry: number }[] =
+  RODAS.flatMap((roda) => {
+    const [x, y] = WHEEL_CENTERS[roda]
+    const paraDentro = -Math.sign(x)
+    const em = (dentro: number, abaixo: number, rx: number, ry: number) =>
+      ({ x: x + paraDentro * dentro, y: y + abaixo, rx, ry })
+    if (roda.startsWith('traseira')) {
+      return [
+        em(1.5, 4.2, 2.4, 1.4),
+        em(2.5, -3, 1.8, 1.1),
+        em(9.2, 5, 2.2, 1.1),
+        em(10.5, -13, 2.4, 1.3),
+      ]
+    }
+    return [em(11, 23, 2, 1.2), em(9.5, 29, 1.6, 1)]
+  })
+
+/** Cor da terra na carroceria. Barro seco, não lama preta. */
+export const COR_DA_TERRA = '#7a6344'
+
 // ---------------------------------------------------------------------------
 // Materiais comuns
 // ---------------------------------------------------------------------------
@@ -1112,13 +1194,7 @@ export function carModel(id: CarId): CarModel {
 
   // Sombra de contato, por baixo de tudo: uma mancha sob o carro e uma mais
   // fechada sob cada pneu, que é o que assenta a peça no asfalto.
-  p.elipse('sombra', '#0a1416', 0, LINHA_DO_CHAO - 2, 28, 4.5, 0.26)
-  for (const roda of RODAS) {
-    const [x, y] = WHEEL_CENTERS[roda]
-    const tras = roda.startsWith('traseira')
-    const { meiaLargura, meiaAltura } = tras ? RODA.traseira : RODA.dianteira
-    p.elipse('sombra', '#081013', x, y + meiaAltura - 0.6, meiaLargura * 0.95, tras ? 2 : 1.5, 0.35)
-  }
+  for (const m of SOMBRA_DE_CONTATO) p.elipse('sombra', m.cor, m.x, m.y, m.rx, m.ry, m.alpha)
 
   desenharAsaDianteira(p, tinta, corpo)
   desenharRoda(p, 'dianteiraEsquerda', tinta)

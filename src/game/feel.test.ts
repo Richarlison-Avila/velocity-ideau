@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { approach, createFeel, registerImpact, updateFeel } from './feel'
 import { rulesFor } from './rules'
 import { createRaceState, speedForState, stepRace, type RaceInput } from './simulation'
+import { OFF_ROAD_LIMIT } from './track'
 
 const REGRAS = rulesFor('normal')
 const MAX_SPEED = REGRAS.boostSpeed
@@ -172,6 +173,46 @@ describe('intensidades da apresentação', () => {
     }
     expect(amostras.some((valor) => valor > 0.1 && valor < 0.9)).toBe(true)
     expect(feel.offRoad).toBeGreaterThan(0.9)
+  })
+
+  it('a terra entra depressa na grama e sai devagar do asfalto', () => {
+    // É o único sinal assimétrico do módulo. Iguais nos dois sentidos, a
+    // sujeira lavaria sozinha em meio segundo e ninguém veria que o carro se
+    // sujou. A posição é posta à mão, e não dirigida, para a conta medir só a
+    // apresentação: dirigir até a grama e voltar mistura a inércia do volante.
+    const race = createRaceState()
+    const feel = createFeel()
+    const passo = 1 / 60
+    const ate = (limite: number, pronto: () => boolean) => {
+      let t = 0
+      while (!pronto() && t < limite) {
+        updateFeel(feel, race, passo)
+        t += passo
+      }
+      return t
+    }
+
+    expect(feel.dirt).toBe(0)
+    race.lateral = OFF_ROAD_LIMIT + 0.3
+    const sujar = ate(10, () => feel.dirt > 0.8)
+    race.lateral = 0
+    const limpar = ate(120, () => feel.dirt < 0.2)
+
+    expect(sujar).toBeLessThan(1.5)
+    expect(limpar).toBeGreaterThan(sujar * 10)
+    // E ela sai uma hora: é terra, não pintura.
+    expect(feel.dirt).toBeLessThan(0.2)
+  })
+
+  it('uma raspada rasa na grama também suja', () => {
+    // A profundidade da saída muda a poeira, não a sujeira: o alvo é o mesmo
+    // com uma roda na grama ou com as quatro.
+    const race = createRaceState()
+    const feel = createFeel()
+    race.lateral = OFF_ROAD_LIMIT + 0.03
+    for (let t = 0; t < 3; t += 1 / 60) updateFeel(feel, race, 1 / 60)
+    expect(feel.offRoad).toBeLessThan(0.2)
+    expect(feel.dirt).toBeGreaterThan(0.9)
   })
 
   it('o impacto decai sozinho depois de marcado', () => {
