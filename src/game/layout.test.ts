@@ -6,7 +6,6 @@ import {
   createSceneryItem,
   createTrackLayout,
   curvatureLoad,
-  CURVE_SEGMENT,
   firstSceneryIndex,
   GANTRY_EVERY,
   hash32,
@@ -17,12 +16,25 @@ import {
   randomAt,
   ROADSIDE_MARGIN,
   SCENERY_SPACING,
+  SUPER_CURVE_APPROACH,
+  SUPER_CURVE_COUNT,
+  SUPER_CURVE_EXIT,
+  SUPER_CURVE_FIRST,
+  SUPER_CURVE_LAST,
+  SUPER_CURVE_DRAW_EXAGGERATION,
+  SUPER_CURVE_TYPES,
+  SUPER_CURVE_UNITS,
+  SUPER_CURVE_WALL_TAIL,
+  SUPER_MAX_CURVATURE,
   VARIANTES_SORTEADAS,
   SLOPE_LIMIT,
   SLOPE_SEGMENT,
+  START_STRAIGHT,
   type SceneryItem,
+  type TrackLayout,
 } from './layout'
 import { rulesFor } from './rules'
+import { MAX_CORNER_LOAD, type RaceContext } from './simulation'
 import {
   CAMERA_DEPTH,
   roadProjection,
@@ -40,8 +52,10 @@ function fotografar(seed: number) {
   const layout = createTrackLayout(seed)
   const item = createSceneryItem()
   const linhas: string[] = []
-  for (let d = 0; d <= TRACK_LENGTH; d += 25) linhas.push(layout.centerOffset(d).toFixed(9))
+  for (let d = 0; d <= TRACK_LENGTH; d += 25) linhas.push(layout.heading(d).toFixed(9))
+  for (let d = 0; d <= TRACK_LENGTH; d += 25) linhas.push(layout.lateralAhead(d, 120).toFixed(9))
   for (let d = 0; d <= TRACK_LENGTH; d += 25) linhas.push(layout.elevation(d).toFixed(9))
+  for (const curva of layout.superCurves) linhas.push(`${curva.name}:${curva.start}:${curva.side}`)
   for (let i = 0; i < 400; i += 1) {
     for (const lado of [-1, 1] as const) {
       linhas.push(layout.scenery(i, lado, item) ? descrever(item) : '-')
@@ -100,7 +114,7 @@ describe('mesma semente, mesma pista', () => {
     const b = createTrackLayout(2)
     let maior = 0
     for (let d = 0; d <= TRACK_LENGTH; d += 10) {
-      maior = Math.max(maior, Math.abs(a.centerOffset(d) - b.centerOffset(d)))
+      maior = Math.max(maior, Math.abs(a.lateralAhead(d, 150) - b.lateralAhead(d, 150)))
     }
     expect(maior).toBeGreaterThan(20)
   })
@@ -123,24 +137,38 @@ describe('mesma semente, mesma pista', () => {
   })
 })
 
+/** Quanto as super curvas que já terminaram viraram, até aquela distância. */
+function viradaDasSuperCurvas(layout: TrackLayout, distancia: number) {
+  let soma = 0
+  for (const curva of layout.superCurves) if (curva.end <= distancia) soma += curva.side * curva.turn
+  return soma
+}
+
 describe('limites da curva', () => {
-  it('o rumo nunca passa do limite declarado', () => {
+  it('fora das super curvas, o rumo comum nunca passa do limite declarado', () => {
+    // O rumo total soma as super curvas, e por isso não tem limite. O que é
+    // do traçado comum continua preso a ±HEADING_LIMIT.
     for (const seed of SEMENTES) {
       const layout = createTrackLayout(seed)
       for (let d = 0; d <= TRACK_LENGTH + VIEW_DISTANCE; d += 3) {
-        expect(Math.abs(layout.heading(d))).toBeLessThanOrEqual(HEADING_LIMIT + 1e-9)
+        if (layout.superCurveAt(d)) continue
+        const comum = layout.heading(d) - viradaDasSuperCurvas(layout, d)
+        expect(Math.abs(comum)).toBeLessThanOrEqual(HEADING_LIMIT + 1e-9)
       }
     }
   })
 
-  it('nenhuma curva chega perto de 90 graus', () => {
-    // O critério do projeto: a mudança de rumo entre dois pontos quaisquer.
+  it('fora das super curvas, nenhuma curva chega perto de 90 graus', () => {
+    // As curvas comuns fazem o ritmo, e o critério antigo continua valendo
+    // para elas: a mudança de rumo entre dois pontos quaisquer.
     const limite = Math.PI / 2
     for (const seed of SEMENTES) {
       const layout = createTrackLayout(seed)
       let maior = 0
       for (let d = 0; d <= TRACK_LENGTH; d += 5) {
         for (const adiante of [50, 130, 260, 430]) {
+          const cruza = layout.superCurves.some((curva) => d < curva.end && d + adiante > curva.start)
+          if (cruza) continue
           maior = Math.max(maior, Math.abs(layout.heading(d + adiante) - layout.heading(d)))
         }
       }
@@ -150,49 +178,105 @@ describe('limites da curva', () => {
     }
   })
 
-  it('a curvatura respeita o limite derivado da construção', () => {
+  it('a curvatura respeita o limite de cada tipo de curva', () => {
     for (const seed of SEMENTES) {
       const layout = createTrackLayout(seed)
       for (let d = 1; d <= TRACK_LENGTH; d += 2) {
-        expect(Math.abs(layout.curvature(d))).toBeLessThanOrEqual(MAX_CURVATURE + 1e-9)
+        const limite = layout.superCurveAt(d) ? SUPER_MAX_CURVATURE : MAX_CURVATURE
+        expect(Math.abs(layout.curvature(d))).toBeLessThanOrEqual(limite + 1e-9)
       }
     }
   })
 
   it('não há quinas: a curvatura muda de forma contínua', () => {
     // Uma quina apareceria como um salto de curvatura entre dois pontos
-    // vizinhos. O limite é o que a suavização permite em um metro.
-    const saltoMaximo = MAX_CURVATURE / 20
+    // vizinhos. O limite é o que a suavização permite em um metro: na super
+    // curva, a derivada da curvatura vale no máximo 6·virada/comprimento², e é
+    // o trecho mais curto e mais virado que dá o pior caso.
+    const inclinacaoMaxima = Math.max(
+      ...SUPER_CURVE_TYPES.flatMap((tipo) => tipo.trechos.map((trecho) => (6 * trecho.virada) / trecho.comprimento ** 2)),
+    )
     for (const seed of SEMENTES) {
       const layout = createTrackLayout(seed)
       let anterior = layout.curvature(1)
       for (let d = 2; d <= TRACK_LENGTH; d += 1) {
         const atual = layout.curvature(d)
-        expect(Math.abs(atual - anterior)).toBeLessThan(saltoMaximo)
+        const salto = layout.superCurveAt(d) || layout.superCurveAt(d - 1) ? inclinacaoMaxima * 1.01 : MAX_CURVATURE / 20
+        expect(Math.abs(atual - anterior)).toBeLessThan(salto)
         anterior = atual
       }
     }
   })
 
-  it('a linha central é contínua, sem degrau entre trechos', () => {
+  it('no referencial do carro, a pista sai reta à frente dele', () => {
+    // É a câmera de perseguição: o rumo de referência é o da pista sob o
+    // carro. Logo adiante, a pista ainda aponta para onde o carro aponta.
     for (const seed of SEMENTES) {
       const layout = createTrackLayout(seed)
-      let anterior = layout.centerOffset(0)
-      for (let d = 1; d <= TRACK_LENGTH + VIEW_DISTANCE; d += 1) {
-        const atual = layout.centerOffset(d)
-        // Um metro adiante desloca, no máximo, o que o rumo máximo permite.
-        expect(Math.abs(atual - anterior)).toBeLessThanOrEqual(Math.tan(HEADING_LIMIT) + 1e-6)
-        anterior = atual
+      for (let p = 0; p <= TRACK_LENGTH; p += 7) {
+        expect(layout.lateralAhead(p, 0)).toBeCloseTo(0, 9)
+        // Três metros adiante, o desvio é o da curvatura: κ·d²/2, com folga
+        // para a interpolação da tabela.
+        expect(Math.abs(layout.lateralAhead(p, 3))).toBeLessThan(SUPER_MAX_CURVATURE * 4.5 + 0.05)
       }
+    }
+  })
+
+  it('o desvio lateral é a integral de quanto a pista vira dali em diante', () => {
+    for (const seed of [1, 42, 99_991]) {
+      const layout = createTrackLayout(seed)
+      for (let p = 300; p <= TRACK_LENGTH; p += 97) {
+        let integral = 0
+        const rumoAqui = layout.heading(p)
+        for (let u = 0; u < 150; u += 0.25) integral += (layout.heading(p + u + 0.125) - rumoAqui) * 0.25
+        expect(Math.abs(layout.lateralAhead(p, 150) - integral)).toBeLessThan(0.5)
+      }
+    }
+  })
+
+  it('a linha central é contínua, sem degrau entre um metro e o seguinte', () => {
+    for (const seed of SEMENTES) {
+      const layout = createTrackLayout(seed)
+      for (let p = 0; p <= TRACK_LENGTH; p += 211) {
+        let anterior = layout.lateralAhead(p, 0)
+        for (let a = 1; a <= VIEW_DISTANCE; a += 1) {
+          const atual = layout.lateralAhead(p, a)
+          // Um metro adiante desloca, no máximo, o quanto a pista virou até ali.
+          const virou = Math.abs(layout.heading(p + a) - layout.heading(p)) + Math.abs(layout.heading(p + a - 1) - layout.heading(p))
+          expect(Math.abs(atual - anterior)).toBeLessThanOrEqual(virou / 2 + 0.05)
+          anterior = atual
+        }
+      }
+    }
+  })
+
+  it('o que não é reta vira de verdade, e ainda sobra reta para o boost', () => {
+    // Com o sorteio uniforme, metade dos trechos com curva mal virava: nem
+    // curva que cobrasse nada, nem reta onde soltar o boost. Medido em cinco
+    // sementes: a curva forte e a reta limpa têm, as duas, espaço na prova.
+    for (const semente of [1, 7, 42, 20_250, 99_999]) {
+      const layout = createTrackLayout(semente)
+      let forte = 0
+      let limpa = 0
+      let amostras = 0
+      for (let d = START_STRAIGHT; d < TRACK_LENGTH; d += 5) {
+        const carga = Math.abs(curvatureLoad(layout.curvature(d)))
+        if (carga > 0.5) forte += 1
+        if (carga < 0.1) limpa += 1
+        amostras += 1
+      }
+      expect(forte / amostras, `semente ${semente}`).toBeGreaterThan(0.15)
+      expect(limpa / amostras, `semente ${semente}`).toBeGreaterThan(0.08)
     }
   })
 
   it('a largada acontece em reta', () => {
     for (const seed of SEMENTES) {
       const layout = createTrackLayout(seed)
-      // Os dois primeiros trechos são retos por construção: a arrancada
-      // precisa de uma referência sem curva.
-      for (let d = 0; d <= CURVE_SEGMENT * 2; d += 5) {
+      // A largada é reta por construção: a arrancada precisa de uma
+      // referência sem curva, e ninguém deve brigar com a curva antes de o
+      // carro chegar ao ritmo.
+      for (let d = 0; d <= START_STRAIGHT; d += 5) {
         expect(Math.abs(layout.heading(d))).toBeLessThan(1e-9)
       }
       // E logo depois a pista volta a ter vida.
@@ -570,21 +654,35 @@ describe('ambiente da corrida', () => {
     const layout = createTrackLayout(4_242)
     const primeiro = layout.ambient
     layout.elevation(2_000)
-    layout.centerOffset(3_500)
+    layout.lateralAhead(3_500, 100)
     expect(layout.ambient).toBe(primeiro)
   })
 })
 
 describe('curvatura na escala da física', () => {
-  it('cabe entre -1 e 1 em qualquer ponto de qualquer semente', () => {
+  it('cabe entre -1 e 1 nas curvas comuns, e no teto da física nas super curvas', () => {
     for (const semente of [1, 7, 42, 1_234, 99_999]) {
       const layout = createTrackLayout(semente)
       for (let distancia = 0; distancia <= TRACK_LENGTH; distancia += 5) {
-        const carga = curvatureLoad(layout.curvature(distancia))
-        expect(carga).toBeGreaterThanOrEqual(-1)
-        expect(carga).toBeLessThanOrEqual(1)
+        const carga = Math.abs(curvatureLoad(layout.curvature(distancia)))
+        expect(carga).toBeLessThanOrEqual(layout.superCurveAt(distancia) ? MAX_CORNER_LOAD : 1 + 1e-9)
       }
     }
+  })
+
+  it('acima da curva comum, a carga cresce mais devagar, mas sempre cresce', () => {
+    // O que parece mais fechado empurra mais — a compressão não inverte a
+    // ordem de duas curvas, só encurta a distância entre elas.
+    let anterior = 0
+    for (let fracao = 0; fracao <= 1; fracao += 0.01) {
+      const carga = curvatureLoad(fracao * SUPER_MAX_CURVATURE)
+      expect(carga).toBeGreaterThanOrEqual(anterior)
+      anterior = carga
+    }
+    expect(curvatureLoad(MAX_CURVATURE)).toBeCloseTo(1, 9)
+    // O grampo empurra mais do dobro da pior curva comum, sem estourar o teto.
+    expect(curvatureLoad(SUPER_MAX_CURVATURE)).toBeGreaterThan(2)
+    expect(curvatureLoad(SUPER_MAX_CURVATURE)).toBeLessThanOrEqual(MAX_CORNER_LOAD)
   })
 
   it('preserva o sinal: a normalização não inverte o lado da curva', () => {
@@ -620,6 +718,232 @@ describe('curvatura na escala da física', () => {
       expect(fracao).toBeGreaterThan(0.15)
       // E nem tanto que a pista inteira seja uma curva só.
       expect(fracao).toBeLessThan(0.75)
+    }
+  })
+})
+
+describe('super curvas', () => {
+  /** Muitas sementes: o que se afirma aqui vale para qualquer prova. */
+  const MUITAS = Array.from({ length: 60 }, (_, i) => i * 7_919 + 3)
+
+  it('toda prova tem as quatro, uma de cada tipo, em ordem de distância', () => {
+    for (const seed of MUITAS) {
+      const curvas = createTrackLayout(seed).superCurves
+      expect(curvas).toHaveLength(SUPER_CURVE_COUNT)
+      expect(new Set(curvas.map((curva) => curva.name)).size).toBe(SUPER_CURVE_UNITS)
+      for (let i = 1; i < curvas.length; i += 1) {
+        // A segunda metade do S emenda na primeira; as outras têm reta entre si.
+        if (curvas[i].linked) expect(curvas[i].start).toBe(curvas[i - 1].end)
+        else expect(curvas[i].start).toBeGreaterThan(curvas[i - 1].end)
+      }
+    }
+  })
+
+  it('viram de verdade: de 90 a 270 graus, e para os dois lados', () => {
+    for (const seed of MUITAS) {
+      const layout = createTrackLayout(seed)
+      for (const curva of layout.superCurves) {
+        // Dentro da janela o traçado comum é reto, então a virada é toda dela.
+        const virada = layout.heading(curva.end) - layout.heading(curva.start)
+        expect(virada * curva.side).toBeCloseTo(curva.turn, 6)
+        expect(curva.turn).toBeGreaterThanOrEqual(Math.PI / 2 - 1e-9)
+        expect(curva.turn).toBeLessThanOrEqual((3 * Math.PI) / 2 + 1e-9)
+      }
+      // Todas para o mesmo lado deixariam um lado da pista sem uso.
+      expect(new Set(layout.superCurves.map((curva) => curva.side)).size).toBe(2)
+    }
+  })
+
+  it('o S são duas curvas de lados contrários, sem reta entre elas', () => {
+    for (const seed of MUITAS) {
+      const curvas = createTrackLayout(seed).superCurves
+      const segunda = curvas.findIndex((curva) => curva.linked)
+      expect(segunda).toBeGreaterThan(0)
+      expect(curvas[segunda].name).toBe('S')
+      expect(curvas[segunda - 1].name).toBe('S')
+      expect(curvas[segunda].side).toBe(-curvas[segunda - 1].side)
+      // Só o S emenda.
+      expect(curvas.filter((curva) => curva.linked)).toHaveLength(1)
+    }
+  })
+
+  it('o grampo é o mais fechado, e todas ficam entre 20 e 28 metros de raio no ápice', () => {
+    for (const tipo of SUPER_CURVE_TYPES) {
+      for (const trecho of tipo.trechos) {
+        const raio = trecho.comprimento / (1.5 * trecho.virada)
+        expect(raio, tipo.nome).toBeGreaterThan(20)
+        expect(raio, tipo.nome).toBeLessThan(28)
+      }
+    }
+    const raioDoGrampo = 1 / SUPER_MAX_CURVATURE
+    const grampo = SUPER_CURVE_TYPES.find((tipo) => tipo.nome === 'GRAMPO')!.trechos[0]
+    expect(grampo.comprimento / (1.5 * grampo.virada)).toBeCloseTo(raioDoGrampo, 9)
+  })
+
+  it('ficam longe da largada e da chegada', () => {
+    for (const seed of MUITAS) {
+      for (const curva of createTrackLayout(seed).superCurves) {
+        expect(curva.start - SUPER_CURVE_APPROACH).toBeGreaterThanOrEqual(SUPER_CURVE_FIRST)
+        expect(curva.end + SUPER_CURVE_EXIT).toBeLessThanOrEqual(SUPER_CURVE_LAST)
+        expect(curva.start).toBeGreaterThan(START_STRAIGHT)
+      }
+    }
+  })
+
+  it('a aproximação e a saída são retas: nada esconde a curva', () => {
+    for (const seed of MUITAS) {
+      const layout = createTrackLayout(seed)
+      const curvas = layout.superCurves
+      curvas.forEach((curva, i) => {
+        // A tolerância é de um centésimo da pior curva comum: na borda da
+        // janela, o fim suavizado do trecho anterior ainda deixa um resto. As
+        // metades do S não têm reta entre si, e só as pontas dele são cobradas.
+        if (!curva.linked) {
+          for (let d = curva.start - SUPER_CURVE_APPROACH; d <= curva.start; d += 2) {
+            expect(Math.abs(layout.curvature(d))).toBeLessThan(MAX_CURVATURE / 100)
+          }
+        }
+        if (!curvas[i + 1]?.linked) {
+          for (let d = curva.end; d <= curva.end + SUPER_CURVE_EXIT; d += 2) {
+            expect(Math.abs(layout.curvature(d))).toBeLessThan(MAX_CURVATURE / 100)
+          }
+        }
+      })
+    }
+  })
+
+  it('empurram mais que qualquer curva comum, e o grampo mais que todas', () => {
+    for (const seed of [1, 42, 99_991]) {
+      const layout = createTrackLayout(seed)
+      for (const curva of layout.superCurves) {
+        expect(Math.abs(curvatureLoad(layout.curvature(curva.apex)))).toBeCloseTo(curva.peakLoad, 3)
+        expect(curva.peakLoad).toBeGreaterThan(1.5)
+      }
+      const grampo = layout.superCurves.find((curva) => curva.name === 'GRAMPO')!
+      for (const curva of layout.superCurves) expect(grampo.peakLoad).toBeGreaterThanOrEqual(curva.peakLoad)
+    }
+  })
+
+  it('a entrada e o miolo fogem dos obstáculos que todos os níveis têm', () => {
+    // Uma barreira no ápice trancaria a única linha que passa — no primeiro
+    // grampo que o visitante vê —, e um buraco na zebra de dentro puniria
+    // justamente quem leu a nota de curva. Medido em sessenta sementes.
+    const obstaculos = rulesFor('normal').obstacles
+    let conflitos = 0
+    for (const seed of MUITAS) {
+      for (const curva of createTrackLayout(seed).superCurves) {
+        const extensao = curva.end - curva.start
+        for (const obstaculo of obstaculos) {
+          const relativo = (obstaculo.distance - curva.start) / extensao
+          // Nada no miolo, e nada do lado de dentro da entrada — dos 70 m antes
+          // dela até a zebra, que é por onde a nota de curva manda passar.
+          if (relativo > 0.15 && relativo < 0.85) conflitos += 1
+          const naEntrada = obstaculo.distance > curva.start - 70 && relativo <= 0.15
+          if (naEntrada && obstaculo.lane * curva.side > 0) conflitos += 1
+        }
+      }
+    }
+    expect(conflitos).toBe(0)
+  })
+
+  it('a zebra da tangência fica na entrada, do lado de dentro, e cabe um quadro lento', () => {
+    for (const seed of MUITAS) {
+      for (const curva of createTrackLayout(seed).superCurves) {
+        expect(curva.kerbStart).toBeGreaterThan(curva.start)
+        expect(curva.kerbEnd).toBeLessThan(curva.apex)
+        // A vinte quadros por segundo, em cruzeiro, o carro anda 3,5 m por
+        // quadro: a zebra precisa de vários quadros para não ser pulada.
+        expect(curva.kerbEnd - curva.kerbStart).toBeGreaterThan(3.5 * 5)
+      }
+    }
+  })
+
+  it('por fora da super curva, o lugar é das placas: nenhum objeto de cenário', () => {
+    const item = createSceneryItem()
+    for (const seed of [1, 42, 99_991, 0xdeadbeef]) {
+      const layout = createTrackLayout(seed)
+      for (const curva of layout.superCurves) {
+        const de = Math.ceil(curva.start / SCENERY_SPACING)
+        const ate = Math.floor(curva.end / SCENERY_SPACING)
+        for (let indice = de; indice <= ate; indice += 1) {
+          expect(layout.scenery(indice, (-curva.side) as -1 | 1, item)).toBe(false)
+        }
+      }
+    }
+  })
+
+  it('o contexto da física traz a carga, a linha e a zebra da tangência', () => {
+    const layout = createTrackLayout(42)
+    const context: RaceContext = { curvature: 0, slipstream: 0 }
+    const curva = layout.superCurves[0]
+
+    layout.fillContext(curva.apex, context)
+    expect(Math.abs(context.curvature)).toBeGreaterThan(1)
+    // Por dentro é do lado da curva: o ganho da linha tem o sinal dela.
+    expect(Math.sign(context.lineGain!)).toBe(curva.side)
+    expect(context.apexId).toBe(0)
+
+    layout.fillContext((curva.kerbStart + curva.kerbEnd) / 2, context)
+    expect(context.apexId).toBe(curva.id)
+    expect(context.apexSide).toBe(curva.side)
+
+    // Na reta da largada, nada.
+    layout.fillContext(100, context)
+    expect(context.curvature).toBeCloseTo(0, 9)
+    expect(context.lineGain).toBeCloseTo(0, 9)
+    expect(context.apexId).toBe(0)
+    expect(context.apexSide).toBe(0)
+  })
+
+  it('o desenho exagera o giro das super curvas, e só delas', () => {
+    const layout = createTrackLayout(42)
+    // Numa reta longe de qualquer super curva, o desenho é o traçado.
+    const primeira = layout.superCurves[0]
+    for (let p = 0; p < primeira.start - SUPER_CURVE_APPROACH - VIEW_DISTANCE; p += 37) {
+      expect(layout.bendAhead(p, 150)).toBeCloseTo(layout.lateralAhead(p, 150), 6)
+    }
+    // Na entrada de uma super curva, o desenho vira mais que o traçado.
+    for (const curva of layout.superCurves.filter((c) => !c.linked)) {
+      const desenhado = Math.abs(layout.bendAhead(curva.start - 20, 100))
+      const tracado = Math.abs(layout.lateralAhead(curva.start - 20, 100))
+      expect(desenhado).toBeGreaterThan(tracado * 1.3)
+    }
+    // E a paisagem gira com o rumo desenhado, que carrega o exagero.
+    const curva = layout.superCurves[0]
+    const giroDesenhado = layout.drawnHeading(curva.end) - layout.drawnHeading(curva.start)
+    expect(giroDesenhado * curva.side).toBeCloseTo(curva.turn * SUPER_CURVE_DRAW_EXAGGERATION, 6)
+  })
+
+  it('o muro cobre o lado de fora da curva e um pouco da saída, menos na emenda do S', () => {
+    for (const seed of MUITAS) {
+      const layout = createTrackLayout(seed)
+      const curvas = layout.superCurves
+      curvas.forEach((curva, i) => {
+        const context: RaceContext = { curvature: 0, slipstream: 0 }
+        layout.fillContext((curva.start + curva.end) / 2, context)
+        // O muro fica por fora: do lado contrário ao da curva.
+        expect(context.wallSide).toBe(-curva.side)
+        expect(context.wallId).toBe(curva.id)
+        const emendada = curvas[i + 1]?.linked
+        const fim = curva.end + (emendada ? 0 : SUPER_CURVE_WALL_TAIL)
+        expect(layout.wallAt(fim - 0.5)?.id).toBe(curva.id)
+        // Depois do resto da saída, o muro acaba — na emenda do S, é o muro da
+        // segunda metade que começa, do outro lado.
+        const depois = layout.wallAt(fim + 0.5)
+        if (emendada) expect(depois?.id).toBe(curvas[i + 1].id)
+        else expect(depois).toBeNull()
+      })
+      // Na reta da largada, nenhum muro.
+      const context: RaceContext = { curvature: 0, slipstream: 0 }
+      layout.fillContext(100, context)
+      expect(context.wallSide).toBe(0)
+      expect(context.wallId).toBe(0)
+    }
+  })
+
+  it('a mesma semente dá as mesmas super curvas nos dois aparelhos', () => {
+    for (const seed of SEMENTES) {
+      expect(createTrackLayout(seed).superCurves).toEqual(createTrackLayout(seed).superCurves)
     }
   })
 })

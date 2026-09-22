@@ -15,17 +15,17 @@ import { drawCar, prepareCar, type CarPose } from './carSprites'
 import { createFeel, registerImpact, updateFeel } from './feel'
 import { LUZ, misturar, rampa } from './paleta'
 import {
-  desenharBuraco,
   desenharFaixaDeFundo,
   desenharObjeto,
-  desenharOleo,
-  desenharPoca,
+  desenharObstaculo,
   desenharPortico,
+  medidasDoObstaculo,
   prepararCenario,
 } from './cenarioSprites'
 import type { FamiliaDeVaga } from './cenarioModel'
 import {
   createGantry,
+  createRaceContext,
   createSceneryItem,
   createTrackLayout,
   curvatureLoad,
@@ -37,12 +37,17 @@ import {
 } from './layout'
 import { DIFFICULTY_LABELS, rulesFor, type Difficulty } from './rules'
 import {
+  APEX_BOOST,
+  APEX_LATERAL,
   createRaceState,
   MAX_STEP_SECONDS,
+  RESET_SECONDS,
+  RESET_STRIKES,
   slipstreamFrom,
   stepRace,
   type RaceContext,
   type RaceInput,
+  type ResetReason,
 } from './simulation'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
 import {
@@ -51,13 +56,16 @@ import {
   CAR_VIEW_DISTANCE,
   CURVE_BEND_SCALE,
   formatTime,
+  HIT_IS_CRASH,
   isTallMarker,
   lateralOffset,
   roadProjection,
   type ObstacleKind,
   HORIZON_RATIO,
+  CAR_HALF_LATERAL,
   ROADSIDE_LATERAL,
   ROADSIDE_SPACING,
+  SUPER_CURVE_WALL,
   SLOPE_RISE_SCALE,
   TRACK_LENGTH,
   VIEW_DISTANCE,
@@ -134,6 +142,16 @@ type Telemetry = {
   grip: number
   /** Vácuo aproveitado, já suavizado, de 0 a 1. */
   slipstream: number
+  /** Batidas desde o último reset. */
+  strikes: number
+  /** Medidor de saída de pista, de 0 a 1. */
+  offTrack: number
+  /** Segundos que faltam do reset em curso. */
+  resetting: number
+  /** Resets sofridos na prova: muda a cada reset, e é a chave da animação dele. */
+  resets: number
+  /** A próxima super curva, quando ela já está ao alcance da nota. */
+  nota: NotaDeCurva | null
 }
 
 const initialTelemetry: Telemetry = {
@@ -147,6 +165,11 @@ const initialTelemetry: Telemetry = {
   boostLocked: false,
   grip: 1,
   slipstream: 0,
+  strikes: 0,
+  offTrack: 0,
+  resetting: 0,
+  resets: 0,
+  nota: null,
 }
 
 
@@ -171,6 +194,33 @@ function guardarPreferencia(mudo: boolean) {
 }
 
 let somDesligado = lerPreferencia()
+
+/**
+ * Preferência da trilha, separada da do som.
+ *
+ * Há quem queira o motor e não a música — no workshop, com vinte celulares
+ * tocando ao mesmo tempo na mesma sala, é quase todo mundo. Desligar a música
+ * não pode custar o som do carro, que é retorno de jogo.
+ */
+const MUSICA_KEY = 'ghost-racer-sem-musica'
+
+function lerPreferenciaDaMusica() {
+  try {
+    return sessionStorage.getItem(MUSICA_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function guardarPreferenciaDaMusica(semMusica: boolean) {
+  try {
+    sessionStorage.setItem(MUSICA_KEY, semMusica ? '1' : '0')
+  } catch {
+    // Sem armazenamento só se perde a lembrança entre recargas.
+  }
+}
+
+let musicaDesligada = lerPreferenciaDaMusica()
 
 /**
  * Lados da pista, em constante de módulo.
@@ -206,6 +256,95 @@ const POEIRA_CLARA = '#c6b489'
 
 /** A faísca nasce nesta cor e esfria para a cor dela. */
 const FAISCA_QUENTE = '#fff3c4'
+
+/** Fumaça de pneu queimado: cinza claro e frio, que não se confunde com a poeira da grama. */
+const FUMACA_DE_PNEU = '#d7dcdf'
+
+/**
+ * Quanto a paisagem gira por radiano de rumo, em larguras de tela.
+ *
+ * Com 0,42, um grampo de 180° passa 1,3 tela de céu diante do carro, e uma
+ * curva comum, um terço de tela. Mais que isso, a serra patina nas curvas
+ * comuns; menos, o grampo parece uma curva qualquer.
+ */
+const GIRO_DA_PAISAGEM = 0.42
+
+/** Rolagem do horizonte por unidade de força lateral, em radianos, até a pior curva comum. */
+const ROLAGEM_POR_CARGA = 0.052
+
+/**
+ * Rolagem a mais por unidade de força lateral acima da pior curva comum.
+ *
+ * É mais íngreme que a de baixo de propósito: a curva comum inclina o bastante
+ * para ser sentida, e a super curva inclina o bastante para assustar. Um
+ * grampo em cruzeiro passa dos dez graus.
+ */
+const ROLAGEM_ALEM_DA_COMUM = 0.075
+
+/**
+ * Maior rolagem do horizonte: pouco mais de 11°.
+ *
+ * O giro é em torno do ponto em que o carro toca a pista, então a borda do
+ * asfalto junto dele quase não sai do lugar: o que inclina de verdade é o
+ * horizonte, que é onde o exagero precisa aparecer.
+ */
+const ROLAGEM_MAXIMA = 0.2
+
+/**
+ * Altura do muro de pneus, em frações da largura da pista naquela distância.
+ *
+ * Quatro fileiras de pneu, mais alto que o carro: alto o bastante para parecer
+ * que machuca, baixo o bastante para não tapar a pista que vem depois dele
+ * numa curva de 180°.
+ */
+const ALTURA_DO_MURO = 0.12
+
+/** Pintura dos pneus do muro: vermelho e branco, uma vaga de cada. */
+const MURO_VERMELHO = '#d93a2f'
+const MURO_BRANCO = '#eeeee6'
+const MURO_BORRACHA = '#1d2024'
+
+/** Inércia da rolagem, em segundos: a câmera acompanha, não chacoalha. */
+const ROLAGEM_TAU = 0.3
+
+/**
+ * Força lateral em que o carro começa a atravessar, e quanto a mais ele leva
+ * para a derrapagem cheia.
+ *
+ * A pior curva comum vale 1: até ali o pneu aponta o carro para onde ele vai.
+ * Só as super curvas passam disso, e o grampo em cruzeiro chega a 2,7 — a
+ * derrapagem cheia fica um pouco antes, para ele atravessar de verdade.
+ */
+const DERRAPAGEM_DE = 1
+const DERRAPAGEM_FAIXA = 1.2
+
+/**
+ * Inércia da derrapagem, em segundos: entra depressa, porque a traseira escapa
+ * de uma vez, e sai devagar, porque o piloto endireita o carro aos poucos.
+ */
+const DERRAPAGEM_ENTRA = 0.12
+const DERRAPAGEM_SAI = 0.28
+
+/**
+ * Metros antes da super curva em que a nota de curva aparece.
+ *
+ * Em cruzeiro no normal são quatro segundos: tempo de ler, soltar o boost e
+ * ir para o lado de dentro antes da entrada. É a mesma distância em que o
+ * grampo começa a aparecer no horizonte.
+ */
+const ALCANCE_DA_NOTA = 280
+
+/** O que o HUD anuncia da próxima super curva. */
+type NotaDeCurva = {
+  nome: string
+  graus: number
+  lado: 1 | -1
+  /** Metros até a entrada; zero dentro dela. */
+  metros: number
+  dentro: boolean
+  /** Lado da curva emendada logo depois, num S; zero se não há. */
+  depois: 1 | -1 | 0
+}
 
 const CERCA = rampa('#6d7b7f')
 const GUARDRAIL = rampa('#aeb6ba')
@@ -277,9 +416,13 @@ function RaceCanvas({
   const [phase, setPhase] = useState<RacePhase>('countdown')
   const [countdownLight, setCountdownLight] = useState(0)
   const [flash, setFlash] = useState<string | null>(null)
+  const [motivoDoReset, setMotivoDoReset] = useState<ResetReason>('crashes')
+  /** Tangências feitas na prova: cada uma reinicia o aviso dela. */
+  const [tangencias, setTangencias] = useState(0)
   const [lateStart, setLateStart] = useState(0)
   const audioRef = useRef<RaceAudio | null>(null)
   const [mudo, setMudo] = useState(somDesligado)
+  const [semMusica, setSemMusica] = useState(musicaDesligada)
 
   clockRef.current = now ?? Date.now
   finishRef.current = onFinish
@@ -306,6 +449,7 @@ function RaceCanvas({
     try {
       const motor = new RaceAudio(new AudioContextClass())
       motor.setMuted(somDesligado)
+      motor.setMusicEnabled(!musicaDesligada)
       motor.resume()
       audioRef.current = motor
       return motor
@@ -325,6 +469,14 @@ function RaceCanvas({
     guardarPreferencia(proximo)
     setMudo(proximo)
     audioRef.current?.setMuted(proximo)
+  }, [])
+
+  const alternarMusica = useCallback(() => {
+    const proximo = !musicaDesligada
+    musicaDesligada = proximo
+    guardarPreferenciaDaMusica(proximo)
+    setSemMusica(proximo)
+    audioRef.current?.setMusicEnabled(!proximo)
   }, [])
 
   const setInput = (key: keyof RaceInput, active: boolean) => {
@@ -415,6 +567,9 @@ function RaceCanvas({
         setCountdownLight(0)
         setPhase('racing')
         beep(740, 0.35)
+        // A trilha entra no "VAI!", com o prato do primeiro compasso. No duelo
+        // a largada é a mesma nos dois aparelhos, então a música também.
+        som()?.startMusic()
       }
       if (timer) {
         window.clearInterval(timer)
@@ -427,7 +582,7 @@ function RaceCanvas({
     return () => {
       if (timer) window.clearInterval(timer)
     }
-  }, [beep, countdownMs, difficulty, startAt])
+  }, [beep, countdownMs, difficulty, som, startAt])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -479,6 +634,8 @@ function RaceCanvas({
     const dustRate = new EmissionRate(34)
     const boostRate = new EmissionRate(26)
     const skidRate = new EmissionRate(22)
+    const smokeRate = new EmissionRate(30)
+    const wallRate = new EmissionRate(40)
 
     // Voltar do segundo plano não pode gerar um passo gigante de simulação.
     const resumeClock = () => {
@@ -511,9 +668,23 @@ function RaceCanvas({
     observer.observe(canvas)
     window.addEventListener('resize', resize)
 
+    // Cada aviso apaga só a si mesmo. Na terceira batida, o aviso da batida e o
+    // do reset saem no mesmo quadro, e o temporizador do primeiro apagaria o
+    // segundo antes da hora.
+    let avisoAtual = 0
     const announce = (message: string) => {
+      const este = (avisoAtual += 1)
       setFlash(message)
-      flashTimers.push(window.setTimeout(() => setFlash(null), 1_200))
+      flashTimers.push(window.setTimeout(() => {
+        if (avisoAtual === este) setFlash(null)
+      }, 1_200))
+    }
+    const NOME_DO_TRANCO: Record<ObstacleKind, string> = {
+      barrier: 'BATIDA',
+      debris: 'BATIDA',
+      pothole: 'BURACO',
+      oleo: 'ÓLEO NA PISTA',
+      poca: 'POÇA',
     }
 
     /**
@@ -529,20 +700,34 @@ function RaceCanvas({
 
     // Curva e esteira do quadro, entregues à simulação. É um objeto só,
     // reaproveitado, e não um novo a cada quadro: este laço não aloca.
-    const raceContext: RaceContext = { curvature: 0, slipstream: 0 }
+    const raceContext: RaceContext = createRaceContext(layout)
 
-    // A curva no ponto do carro é a mesma para todas as profundidades do
-    // quadro, então é calculada uma vez em vez de a cada chamada.
-    let curvaAqui = 0
-    /** Rumo da pista sob o carro, usado pelo horizonte. */
+    /** Rumo da pista sob o carro: é dele que sai o giro da paisagem. */
     let rumoAqui = 0
     /** Altura e inclinação sob o carro, referência do relevo neste quadro. */
     let alturaAqui = 0
     let inclinacaoAqui = 0
+    /**
+     * Rolagem do mundo, em radianos, já suavizada.
+     *
+     * É o horizonte inclinando para dentro da curva, na proporção da força
+     * lateral: nas curvas comuns, dois graus e pouco; num grampo embalado,
+     * quase sete. Pseudo-3D nenhum da linhagem de Top Gear e Horizon Chase
+     * inclina o horizonte — é o que diz, sem texto nenhum, que aquela curva é
+     * outra coisa.
+     */
+    let rolagem = 0
+    /** O quanto o carro deita com a força lateral, em radianos. */
+    let deitadaDoCarro = 0
+    /** Derrapagem do jogador e do rival, de -1 a 1, já suavizadas. */
+    let derrapagemDoJogador = 0
+    let derrapagemDoFantasma = 0
 
     const roadGeometry = (distanceAhead: number) => {
       const { y, roadWidth, perspective } = roadProjection(distanceAhead, width, height)
-      const bend = (layout.centerOffset(race.progress + distanceAhead) - curvaAqui) * width * CURVE_BEND_SCALE
+      // A pista no referencial do carro: só conta o quanto ela vira dali em
+      // diante. É o que deixa uma curva de 180° caber na tela.
+      const bend = layout.bendAhead(race.progress, distanceAhead) * width * CURVE_BEND_SCALE
       // O relevo entra pelo mesmo caminho da curva, só que na vertical: o
       // trecho mais alto que o ponto do carro sobe na tela, e a perspectiva
       // faz o efeito sumir no horizonte. Como tudo o que aparece na pista
@@ -599,19 +784,34 @@ function RaceCanvas({
      */
     const desenharSerra = (
       cor: string, base: number, onda: number, passo: number, fase: number, desvio: number, queda: number,
+      margem: number,
     ) => {
       ctx.fillStyle = cor
       ctx.beginPath()
-      ctx.moveTo(0, height * base + queda)
-      for (let x = 0; x <= width; x += 40) {
+      ctx.moveTo(-margem, height * base + queda)
+      for (let x = -margem; x <= width + margem + 40; x += 40) {
         const crista = height * (base + onda * Math.sin((x + desvio) * passo + fase)) + queda
         ctx.lineTo(x, crista)
       }
-      ctx.lineTo(width, height * 0.52)
-      ctx.lineTo(0, height * 0.52)
+      ctx.lineTo(width + margem + 40, height * 0.52)
+      ctx.lineTo(-margem, height * 0.52)
       ctx.closePath()
       ctx.fill()
     }
+
+    /**
+     * Folga de desenho além da tela, para a rolagem não descobrir os cantos.
+     *
+     * Girando o mundo em torno do carro, os cantos da tela passam a mostrar o
+     * que ficava fora dela. É proporcional à rolagem de agora, e não à máxima,
+     * porque cada pixel a mais no céu e na grama é preenchimento pago em todo
+     * quadro — e na reta a rolagem é zero.
+     */
+    const margemDaRolagem = () => Math.ceil(Math.abs(Math.sin(rolagem)) * Math.max(width, height) * 1.1) + 2
+
+    /** Leva x para dentro de [−margem, período − margem): o que sai por um lado volta pelo outro. */
+    const envolver = (x: number, periodo: number, margem: number) =>
+      ((((x + margem) % periodo) + periodo) % periodo) - margem
 
     /** Uma nuvem chapada: três bossas e uma aresta acesa em cima. */
     const desenharNuvem = (x: number, y: number, escala: number) => {
@@ -636,13 +836,16 @@ function RaceCanvas({
     ]
 
     const drawBackdrop = () => {
+      const margem = margemDaRolagem()
       ctx.fillStyle = gradienteDoCeu()
-      ctx.fillRect(0, 0, width, height * 0.44)
+      ctx.fillRect(-margem, -margem, width + margem * 2, height * 0.44 + margem)
 
-      // As montanhas correm para o lado contrário ao da curva. Elas estão
-      // longe demais para acompanhar a pista, e é justamente esse
-      // deslocamento em sentido oposto que faz a cena parecer virar.
-      const desvio = -(layout.centerOffset(race.progress + VIEW_DISTANCE) - curvaAqui) * width * CURVE_BEND_SCALE * 0.42
+      // A paisagem gira com o rumo do carro. Ela está longe demais para
+      // acompanhar a pista, e é esse giro em sentido oposto ao da curva que
+      // faz a cena parecer virar. Antes ela corria com o desvio da pista na
+      // tela, que tinha teto; agora corre com o rumo, que não tem: um grampo
+      // passa o céu inteiro diante do carro, o sol vai para trás dele e volta.
+      const desvio = -rumoAqui * width * GIRO_DA_PAISAGEM
 
       // E descem quando o carro sobe. A câmera acompanha a inclinação da
       // pista, então na subida ela aponta para cima e o que está longe cai na
@@ -652,8 +855,10 @@ function RaceCanvas({
 
       // Sol baixo à esquerda, que é de onde vem a luz de tudo o mais no jogo.
       // Três discos de opacidade decrescente no lugar de um degradê: é o mesmo
-      // halo em degraus que o resto do desenho usa.
-      const solX = width * 0.26 + desvio * 0.35
+      // halo em degraus que o resto do desenho usa. Ele está no infinito, então
+      // gira com o rumo por inteiro, e só volta depois de uma volta completa.
+      const volta = Math.PI * 2 * width * GIRO_DA_PAISAGEM
+      const solX = envolver(width * 0.26 + desvio, volta, height * 0.12)
       const solY = height * 0.23 + subida * 0.5
       ctx.fillStyle = `rgba(${ambiente.nevoaRGB},.05)`
       elipse(solX, solY, height * 0.115, height * 0.115)
@@ -663,30 +868,37 @@ function RaceCanvas({
       elipse(solX, solY, height * 0.034, height * 0.034)
 
       // As nuvens correm com a curva, mais devagar que a serra por estarem
-      // ainda mais longe.
+      // ainda mais longe. Uma nuvem que sai por um lado volta pelo outro: com
+      // o rumo sem teto, sem isso o céu ficaria vazio depois do primeiro grampo.
+      // O período é fixo, e não a largura com a folga da rolagem: a folga muda
+      // a cada quadro, e com ela todas as nuvens pulariam de lugar.
       for (const [fx, fy, escala] of NUVENS) {
-        desenharNuvem(width * fx + desvio * 0.22, height * fy + subida * 0.4, escala)
+        desenharNuvem(envolver(width * fx + desvio * 0.22, width * 1.6, width * 0.3), height * fy + subida * 0.4, escala)
       }
 
       // Duas cordilheiras: a de trás mais alta, já lavada pela cor do céu, e a
       // da frente em tom cheio. É a diferença entre as duas que dá fundo ao
       // fundo, em vez de uma silhueta só recortada contra o azul.
-      desenharSerra(serraLonge[3], 0.27, 0.05, 0.008, 1.9, desvio * 0.5, subida)
-      desenharSerra(serraLonge[1], 0.27, 0.05, 0.008, 1.9, desvio * 0.5, subida + height * 0.018)
-      desenharSerra(serra[3], 0.31, 0.035, 0.017, race.progress * 0.0005, desvio, subida)
-      desenharSerra(serra[1], 0.31, 0.035, 0.017, race.progress * 0.0005, desvio, subida + height * 0.014)
+      desenharSerra(serraLonge[3], 0.27, 0.05, 0.008, 1.9, desvio * 0.5, subida, margem)
+      desenharSerra(serraLonge[1], 0.27, 0.05, 0.008, 1.9, desvio * 0.5, subida + height * 0.018, margem)
+      desenharSerra(serra[3], 0.31, 0.035, 0.017, race.progress * 0.0005, desvio, subida, margem)
+      desenharSerra(serra[1], 0.31, 0.035, 0.017, race.progress * 0.0005, desvio, subida + height * 0.014, margem)
 
       ctx.fillStyle = ambiente.chao
-      ctx.fillRect(0, height * 0.38, width, height)
+      ctx.fillRect(-margem, height * 0.38, width + margem * 2, height * 0.62 + margem)
 
       // A faixa de meio-campo vem por último, apoiada no chão distante: é o
       // degrau que faltava entre a montanha e a grama. Corre mais depressa que
       // a serra e mais devagar que as árvores da beira, e é essa diferença de
-      // velocidade que dá a leitura de camadas.
+      // velocidade que dá a leitura de camadas. Desenhada a partir de fora da
+      // tela, para a rolagem não descobrir o canto.
+      ctx.save()
+      ctx.translate(-margem, 0)
       desenharFaixaDeFundo(
         ctx, ambiente.lugar, corDaFaixa,
-        width, height * 0.4 + subida * 0.8, height * 0.1, desvio * 1.7,
+        width + margem * 2, height * 0.4 + subida * 0.8, height * 0.1, desvio * 1.7 - margem,
       )
+      ctx.restore()
     }
 
     /**
@@ -729,6 +941,7 @@ function RaceCanvas({
     const drawRoad = () => {
       fatiaVisivel.fill(0)
       fatiaVisivel[0] = 1
+      const margem = margemDaRolagem()
 
       // Do perto para o longe, guardando o ponto mais alto já desenhado. Uma
       // fatia que cairia abaixo dele está atrás de uma lomba e some. Sem esse
@@ -751,10 +964,12 @@ function RaceCanvas({
         // A cada 12 m, e não 18: são 5,8 faixas por segundo em cruzeiro em
         // vez de 3,9. É a referência mais barata que existe para o olho medir
         // o avanço, e ela decide também o zebrado e o tracejado das pistas.
-        const stripe = Math.floor((race.progress + distancia) / 12) % 2 === 0
+        const onde = race.progress + distancia
+        const stripe = Math.floor(onde / 12) % 2 === 0
+        const superCurva = layout.superCurveAt(onde)
 
         ctx.fillStyle = stripe ? ambiente.gramaClara : ambiente.gramaEscura
-        ctx.fillRect(0, longe.y, width, Math.max(1, perto.y - longe.y + 1))
+        ctx.fillRect(-margem, longe.y, width + margem * 2, Math.max(1, perto.y - longe.y + 1))
 
         ctx.fillStyle = stripe ? ambiente.asfaltoClaro : ambiente.asfaltoEscuro
         ctx.beginPath()
@@ -765,14 +980,41 @@ function RaceCanvas({
         ctx.closePath()
         ctx.fill()
 
-        ctx.strokeStyle = stripe ? '#f6f7ee' : '#e84037'
-        ctx.lineWidth = Math.max(1, perto.roadWidth * 0.018)
+        // Na super curva a zebra engrossa e alterna mais depressa: é a moldura
+        // que diz, de longe, que ali a pista é outra.
+        const zebraCurta = superCurva ? Math.floor(onde / 4) % 2 === 0 : stripe
+        ctx.strokeStyle = zebraCurta ? '#f6f7ee' : '#e84037'
+        ctx.lineWidth = Math.max(1, perto.roadWidth * (superCurva ? 0.042 : 0.018))
         ctx.beginPath()
         ctx.moveTo(longe.center - longe.roadWidth / 2, longe.y)
         ctx.lineTo(perto.center - perto.roadWidth / 2, perto.y)
         ctx.moveTo(longe.center + longe.roadWidth / 2, longe.y)
         ctx.lineTo(perto.center + perto.roadWidth / 2, perto.y)
         ctx.stroke()
+
+        // A faixa da tangência: o trecho de dentro, na entrada, pintado de
+        // âmbar desde onde a passagem conta até a zebra. É o alvo que a nota de
+        // curva manda buscar, e ele precisa ser visto antes de ser alcançado.
+        if (superCurva && onde >= superCurva.kerbStart && onde <= superCurva.kerbEnd) {
+          const lado = superCurva.side
+          const dentroLonge = longe.center + lateralOffset(APEX_LATERAL * lado, longe.roadWidth)
+          const dentroPerto = perto.center + lateralOffset(APEX_LATERAL * lado, perto.roadWidth)
+          const bordaLonge = longe.center + (lado * longe.roadWidth) / 2
+          const bordaPerto = perto.center + (lado * perto.roadWidth) / 2
+          ctx.fillStyle = zebraCurta ? 'rgba(255,198,48,.34)' : 'rgba(255,198,48,.2)'
+          ctx.beginPath()
+          ctx.moveTo(dentroLonge, longe.y)
+          ctx.lineTo(bordaLonge, longe.y)
+          ctx.lineTo(bordaPerto, perto.y)
+          ctx.lineTo(dentroPerto, perto.y)
+          ctx.closePath()
+          ctx.fill()
+          ctx.strokeStyle = zebraCurta ? '#ffc630' : '#ff4b2b'
+          ctx.beginPath()
+          ctx.moveTo(bordaLonge, longe.y)
+          ctx.lineTo(bordaPerto, perto.y)
+          ctx.stroke()
+        }
 
         if (stripe) {
           // As duas faixas da mesma fatia entram no mesmo traço: mesma cor,
@@ -799,8 +1041,8 @@ function RaceCanvas({
     const portico = createGantry()
 
     // Poses reaproveitadas entre quadros, pelo mesmo motivo.
-    const poseDoJogador: CarPose = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
-    const poseDoFantasma: CarPose = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
+    const poseDoJogador: CarPose = { tilt: 0, suspension: 0, steer: 0, drift: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
+    const poseDoFantasma: CarPose = { tilt: 0, suspension: 0, steer: 0, drift: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
 
     /** Última posição lateral conhecida do rival, para derivar o esterço dele. */
     let lateralDoFantasma = 0
@@ -823,6 +1065,103 @@ function RaceCanvas({
     }
 
     /**
+     * Placa de seta na beira de fora de uma super curva.
+     *
+     * É o aviso de Top Gear e Horizon Chase, e o mais antigo das pistas de
+     * verdade: uma fila de setas no lado para onde o carro vai ser jogado,
+     * apontando para onde a pista vai. Procedural, como a cerca, porque são
+     * três retângulos e dois polígonos — e porque a seta muda de sentido com
+     * a curva, o que numa folha pedia duas cópias.
+     */
+    const desenharPlacaDeSeta = (x: number, chao: number, referencia: number, lado: number, sobre = 0) => {
+      const largura = referencia * 0.25
+      const altura = referencia * 0.13
+      const base = chao - sobre - referencia * 0.035
+      const topo = base - altura
+      // Apoiada no muro, a sombra fica nele; no chão, fica na grama.
+      if (sobre === 0) {
+        ctx.fillStyle = SOMBRA_NO_CHAO
+        ctx.fillRect(x - largura * 0.4, chao, largura * 0.95, Math.max(1, referencia * 0.009))
+      }
+      chao -= sobre
+      // Dois pés escuros, e a placa por cima deles.
+      const pe = Math.max(1, largura * 0.05)
+      ctx.fillStyle = '#23272c'
+      ctx.fillRect(x - largura * 0.32 - pe / 2, base, pe, chao - base)
+      ctx.fillRect(x + largura * 0.32 - pe / 2, base, pe, chao - base)
+      ctx.fillStyle = '#4a0d0a'
+      ctx.fillRect(x - largura / 2, topo, largura, altura)
+      const moldura = Math.max(1, altura * 0.09)
+      ctx.fillStyle = '#e2362b'
+      ctx.fillRect(x - largura / 2 + moldura, topo + moldura, largura - moldura * 2, altura - moldura * 2)
+      // Fio aceso em cima: a luz vem de cima, como em todo o resto do jogo.
+      ctx.fillStyle = '#ff7a5c'
+      ctx.fillRect(x - largura / 2 + moldura, topo + moldura, largura - moldura * 2, Math.max(1, moldura * 0.7))
+
+      // Duas setas em V deitado, apontando para o lado da curva.
+      const meio = topo + altura / 2
+      const meiaAltura = altura * 0.3
+      const abertura = largura * 0.11
+      const traco = abertura * 0.55
+      ctx.fillStyle = '#f6f7ee'
+      for (const deslocamento of [-0.2, 0.16]) {
+        const ponta = x + lado * (largura * deslocamento + abertura)
+        const costas = x + lado * largura * deslocamento
+        ctx.beginPath()
+        ctx.moveTo(costas, meio - meiaAltura)
+        ctx.lineTo(costas + lado * traco, meio - meiaAltura)
+        ctx.lineTo(ponta + lado * traco, meio)
+        ctx.lineTo(costas + lado * traco, meio + meiaAltura)
+        ctx.lineTo(costas, meio + meiaAltura)
+        ctx.lineTo(ponta, meio)
+        ctx.closePath()
+        ctx.fill()
+      }
+    }
+
+    /** Um quadrilátero preenchido, a peça de que o muro é feito. */
+    const quadrilatero = (
+      x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, x4: number, y4: number,
+    ) => {
+      ctx.beginPath()
+      ctx.moveTo(x1, y1)
+      ctx.lineTo(x2, y2)
+      ctx.lineTo(x3, y3)
+      ctx.lineTo(x4, y4)
+      ctx.closePath()
+      ctx.fill()
+    }
+
+    /**
+     * Um trecho do muro de pneus, de uma vaga à seguinte.
+     *
+     * Liga as projeções das duas vagas, e não desenha um bloco por vaga: numa
+     * curva de 180° duas vagas vizinhas caem longe uma da outra na tela, e blocos
+     * soltos virariam uma fila de caixotes. Ligado, o muro acompanha a curva e
+     * vira uma parede atravessando a vista quando a pista dobra atrás dele.
+     */
+    const desenharTrechoDeMuro = (
+      x1: number, y1: number, h1: number, x2: number, y2: number, h2: number, indice: number,
+    ) => {
+      // A base, deitada na grama: é o que assenta o muro no chão.
+      ctx.fillStyle = SOMBRA_NO_CHAO
+      quadrilatero(x1, y1, x2, y2, x2, y2 + h2 * 0.14, x1, y1 + h1 * 0.14)
+      // A face, pintada: vermelho e branco, uma vaga de cada.
+      ctx.fillStyle = indice % 2 === 0 ? MURO_VERMELHO : MURO_BRANCO
+      quadrilatero(x1, y1, x2, y2, x2, y2 - h2, x1, y1 - h1)
+      // As juntas entre as fileiras de pneu, e a de cima em borracha pura.
+      ctx.fillStyle = 'rgba(18,20,24,.4)'
+      for (const altura of [0.25, 0.47, 0.69]) {
+        quadrilatero(
+          x1, y1 - h1 * altura, x2, y2 - h2 * altura,
+          x2, y2 - h2 * (altura + 0.06), x1, y1 - h1 * (altura + 0.06),
+        )
+      }
+      ctx.fillStyle = MURO_BORRACHA
+      quadrilatero(x1, y1 - h1, x2, y2 - h2, x2, y2 - h2 * 0.8, x1, y1 - h1 * 0.8)
+    }
+
+    /**
      * Cenário e marcadores de distância, do fundo para a frente.
      *
      * Tudo sai do traçado, que é função pura da semente: o outro piloto vê
@@ -833,10 +1172,37 @@ function RaceCanvas({
       const ultimo = lastSceneryIndex(race.progress)
       const primeiro = firstSceneryIndex(race.progress)
 
+      // O muro de pneus é contínuo: cada trecho liga esta vaga à anterior, mais
+      // distante, e vem antes do que mora nesta vaga — que está mais perto.
+      let muroAnterior = false
+      let muroX = 0
+      let muroY = 0
+      let muroAltura = 0
+      let muroLado = 0
+
       for (let indice = ultimo; indice >= primeiro; indice -= 1) {
         const ahead = indice * SCENERY_SPACING - race.progress
         const projetado = roadGeometry(ahead)
         const referencia = projetado.roadWidth
+
+        const curvaDoMuro = layout.wallAt(indice * SCENERY_SPACING)
+        let temMuro = false
+        if (curvaDoMuro && referencia >= 4 && !atrasDaLomba(ahead)) {
+          const lado = -curvaDoMuro.side
+          const x = projetado.center + lateralOffset(lado * SUPER_CURVE_WALL, referencia)
+          const altura = referencia * ALTURA_DO_MURO
+          if (muroAnterior && muroLado === lado) {
+            ctx.globalAlpha = Math.min(1, 0.16 + projetado.perspective * 2.6)
+            desenharTrechoDeMuro(muroX, muroY, muroAltura, x, projetado.y, altura, indice)
+          }
+          muroX = x
+          muroY = projetado.y
+          muroAltura = altura
+          muroLado = lado
+          temMuro = true
+        }
+        muroAnterior = temMuro
+
         // Longe demais para render qualquer coisa legível: sairia um pixel
         // sujo, e sob a bruma nem isso. O corte era 6, e deixava passar
         // objetos de três pixels que custavam a passada inteira do laço.
@@ -917,6 +1283,18 @@ function RaceCanvas({
           )
         }
 
+        // Placas de seta, por fora da super curva, a cada doze metros. Moram no
+        // mesmo laço do cenário para entrar na ordem de profundidade dele.
+        // Em cima do muro, onde o piloto olha quando a pista some para o lado.
+        const superCurva = indice % 2 === 0 ? layout.superCurveAt(indice * SCENERY_SPACING) : null
+        if (superCurva) {
+          const lateral = -superCurva.side * SUPER_CURVE_WALL
+          desenharPlacaDeSeta(
+            projetado.center + lateralOffset(lateral, referencia), projetado.y, referencia, superCurva.side,
+            referencia * ALTURA_DO_MURO,
+          )
+        }
+
         // Marcador de distância: cai em toda vaga par, porque o espaçamento do
         // cenário é metade do dele. Fica no mesmo laço para a ordem de
         // profundidade valer para tudo o que está na beira da pista.
@@ -943,7 +1321,21 @@ function RaceCanvas({
      * telemetria — mas sai da mesma grandeza: o quanto ele andou de lado
      * desde o quadro anterior. Cor e transparência continuam sendo dele.
      */
-    const drawGhost = (distanceAhead: number, lateral: number, faded: boolean, dt: number) => {
+    /**
+     * Derrapagem que uma força lateral pede, de -1 a 1.
+     *
+     * Começa onde a curva comum acaba: até a carga da pior curva comum o pneu
+     * ainda aponta o carro para onde ele vai. Passado dela, cada unidade de
+     * carga atravessa o carro um pouco mais, até a derrapagem cheia.
+     */
+    const derrapagemPara = (forca: number) => {
+      if (!Number.isFinite(forca)) return 0
+      return Math.sign(forca) * Math.max(0, Math.min(1, (Math.abs(forca) - DERRAPAGEM_DE) / DERRAPAGEM_FAIXA))
+    }
+    const aproximarDerrapagem = (atual: number, alvo: number, dt: number) =>
+      atual + (alvo - atual) * (1 - Math.exp(-Math.max(0, dt) / (alvo === 0 ? DERRAPAGEM_SAI : DERRAPAGEM_ENTRA)))
+
+    const drawGhost = (distanceAhead: number, lateral: number, faded: boolean, dt: number, velocidade = 0) => {
       const projected = roadGeometry(distanceAhead)
       const x = projected.center + lateralOffset(lateral, projected.roadWidth)
       const scale = Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH) * Math.max(0.06, projected.perspective)
@@ -954,6 +1346,12 @@ function RaceCanvas({
       poseDoFantasma.steer = aproximarFantasma(volante, dt)
       poseDoFantasma.travel = race.progress + distanceAhead
       poseDoFantasma.tilt = poseDoFantasma.steer * 0.075 * forcaDoMovimento
+      // O rival derrapa pela mesma conta, com a curva do ponto em que ele está e
+      // a velocidade que ele informou: não temos a física dele, só a telemetria.
+      const proporcaoDoRival = velocidade / race.rules.cruiseSpeed
+      const forcaDoRival = curvatureLoad(layout.curvature(race.progress + distanceAhead)) * proporcaoDoRival * proporcaoDoRival
+      derrapagemDoFantasma = aproximarDerrapagem(derrapagemDoFantasma, derrapagemPara(forcaDoRival), dt)
+      poseDoFantasma.drift = derrapagemDoFantasma
 
       drawCar(ctx, x, projected.y, scale, rivalCarRef.current ?? DEFAULT_CAR, poseDoFantasma, faded ? 0.23 : 0.46, ambiente.nevoaRGB)
     }
@@ -1056,6 +1454,33 @@ function RaceCanvas({
      * ruído da interpolação, e muito maior atravessa a lomba inteira e sai
      * quase zero justamente onde o efeito deveria ser máximo.
      */
+    /**
+     * A nota de curva, como a de um copiloto de rali: a próxima super curva,
+     * o lado, o tamanho e quanto falta. Some quando a curva termina.
+     */
+    const notaDaProximaCurva = (): NotaDeCurva | null => {
+      const curvas = layout.superCurves
+      for (let i = 0; i < curvas.length; i += 1) {
+        const curva = curvas[i]
+        if (race.progress > curva.end) continue
+        const emendada = i + 1 < curvas.length && curvas[i + 1].linked ? curvas[i + 1] : null
+        // No S, passado o ápice da primeira metade, a nota já fala da segunda:
+        // é hora de deixar o carro abrir e encostar por dentro dela.
+        if (emendada && race.progress > curva.apex) continue
+        const metros = curva.start - race.progress
+        if (metros > ALCANCE_DA_NOTA) return null
+        return {
+          nome: curva.name,
+          graus: Math.round((curva.turn * 180) / Math.PI),
+          lado: curva.side,
+          metros: Math.max(0, Math.round(metros)),
+          dentro: metros <= 0,
+          depois: emendada ? emendada.side : 0,
+        }
+      }
+      return null
+    }
+
     const JANELA_DO_RELEVO = 12
     const RELEVO_NA_SUSPENSAO = 34
     const cargaDoRelevo = () => {
@@ -1064,56 +1489,20 @@ function RaceCanvas({
       return ((adiante - atras) / (JANELA_DO_RELEVO * 2)) * RELEVO_NA_SUSPENSAO
     }
 
+    /**
+     * Um obstáculo, na régua da pista.
+     *
+     * O tamanho e o achatamento saem de `roadGeometry`, a mesma projeção que
+     * desenha o asfalto, e não mais de uma curva própria: é o que faz o
+     * obstáculo encolher com a pista em vez de flutuar sobre ela. Fica sem o
+     * banho de opacidade que o cenário recebe ao longe — o piloto precisa ler
+     * a barreira a tempo de desviar dela, e a bruma do horizonte, desenhada
+     * depois, já a assenta na distância.
+     */
     const drawObstacle = (distanceAhead: number, lane: number, kind: ObstacleKind, id: number) => {
-      const projected = roadGeometry(distanceAhead)
-      const closeness = Math.max(0, 1 - distanceAhead / VIEW_DISTANCE)
-      // A mesma escala de tela do carro. Sem ela o obstáculo tinha teto fixo
-      // de 53 px enquanto o carro crescia com a largura da janela: numa tela
-      // larga a barreira ficava minúscula ao lado do carro que ela para.
-      const size = (5 + Math.pow(closeness, 1.5) * 48) * escalaDoCarro()
-      // Pela mesma conta de todo o resto. Antes era um 0,39 solto aqui, e o
-      // obstáculo aparecia 8% mais para fora do que a colisão considerava.
-      const x = projected.center + lateralOffset(lane, projected.roadWidth)
-      const y = projected.y
-
-      /**
-       * Um caso por tipo, e nenhuma saída padrão.
-       *
-       * As duas peças que ficam de pé saem da folha, como o resto do cenário:
-       * eram os últimos desenhos ao vivo sobre o chão e os únicos que
-       * escapavam do banho de névoa da folha, e em cor cheia apareciam
-       * recortados de outra cena à medida que a pista escurecia. As três que
-       * ficam deitadas continuam procedurais, porque a convenção de caixa da
-       * folha — chão em zero, topo em menos um — não descreve peça sem altura.
-       *
-       * O tamanho de cada uma sai de `size`, na proporção da meia-largura de
-       * colisão do tipo: a mancha de óleo pega o dobro de pista que um buraco,
-       * e precisa parecer que pega.
-       *
-       * A variante da barreira sai do identificador do obstáculo, que é
-       * literal em `track.ts`: os dois pilotos veem a mesma no mesmo lugar.
-       */
-      switch (kind) {
-        case 'barrier':
-          desenharObjeto(ctx, 'barreira', id, 0, x, y, size * 0.52)
-          break
-        case 'debris':
-          desenharObjeto(ctx, 'cone', 0, 0, x, y, size * 1.08)
-          break
-        case 'pothole':
-          desenharBuraco(ctx, x, y, size, buraco)
-          break
-        case 'oleo':
-          desenharOleo(ctx, x, y, size)
-          break
-        case 'poca':
-          desenharPoca(ctx, x, y, size, buraco, ambiente.ceuBaixo)
-          break
-        default:
-          // Sem isto, um tipo novo cairia calado no ramo de outro. Aqui ele
-          // para o compilador, que é onde se quer que pare.
-          kind satisfies never
-      }
+      desenharObstaculo(
+        ctx, medidasDoObstaculo(kind, lane, distanceAhead, roadGeometry), id, buraco, ambiente.ceuBaixo,
+      )
     }
 
     const draw = (frame: number) => {
@@ -1132,14 +1521,25 @@ function RaceCanvas({
         // A curvatura vem do mesmo traçado que está sendo desenhado, então o
         // empurrão que o piloto sente é o da curva que ele está vendo. Quem já
         // chegou está parado na linha e não deixa mais esteira.
-        raceContext.curvature = curvatureLoad(layout.curvature(race.progress))
+        // O traçado preenche a curva, a linha e a zebra da tangência de uma vez.
+        layout.fillContext(race.progress, raceContext)
         raceContext.slipstream =
           rivalSample && rivalSample.state === 'racing'
             ? slipstreamFrom(race.progress, race.lateral, rivalSample.progress, rivalSample.lateral)
             : 0
         for (const event of stepRace(race, inputRef.current, dt, raceContext)) {
           if (event.type === 'collision') {
-            announce('IMPACTO — VELOCIDADE REDUZIDA')
+            const kind = race.rules.obstacles.find((o) => o.id === event.obstacleId)?.kind ?? 'barrier'
+            // A batida conta para o reset, e o piloto precisa ver a conta antes
+            // de ela cobrar: "BATIDA 2 DE 3" avisa que a próxima para o carro.
+            // Na batida que já resetou, quem fala é o aviso do reset.
+            if (race.resetting === 0) {
+              announce(
+                HIT_IS_CRASH[kind]
+                  ? `${NOME_DO_TRANCO[kind]} ${race.strikes} DE ${RESET_STRIKES}`
+                  : `${NOME_DO_TRANCO[kind]} — VELOCIDADE REDUZIDA`,
+              )
+            }
             audioRef.current?.impact(0.6 + feel.speed * 0.4)
             // As faíscas saltam à frente do bico, onde a batida aconteceu.
             // Quanto mais rápido o carro estava, mais faíscas saltam.
@@ -1150,10 +1550,39 @@ function RaceCanvas({
             })
             registerImpact(feel)
           }
+          if (event.type === 'wall') {
+            // O muro é batida, e o aviso diz isso junto da conta do reset. Na
+            // batida que já resetou, quem fala é o aviso do reset.
+            if (race.resetting === 0) announce(`MURO! BATIDA ${race.strikes} DE ${RESET_STRIKES}`)
+            audioRef.current?.impact(0.8 + feel.speed * 0.2)
+            const lado = raceContext.wallSide ?? 0
+            effects.burst('spark', Math.round(16 + feel.speed * 14), race.progress + CAR_VIEW_DISTANCE + 4, race.lateral + lado * (CAR_HALF_LATERAL + 0.06), {
+              drift: 1.6 + feel.speed,
+              life: 0.45 + feel.speed * 0.3,
+            })
+            registerImpact(feel)
+          }
+          if (event.type === 'apex') {
+            // A tangência é o único prêmio da pista: aparece por cima de tudo,
+            // e some sozinha, sem disputar com os avisos de batida.
+            setTangencias((vezes) => vezes + 1)
+            // Dois bipes subindo: o som de acerto, o oposto do tranco da batida.
+            audioRef.current?.beep(880, 0.07)
+            flashTimers.push(window.setTimeout(() => audioRef.current?.beep(1_320, 0.1), 80))
+          }
+          if (event.type === 'reset') {
+            setMotivoDoReset(event.reason)
+            setFlash(null)
+            audioRef.current?.impact(0.9)
+            registerImpact(feel)
+            // O reset põe o carro parado no meio da pista: a poeira e as marcas
+            // de antes ficam onde estavam, na grama.
+          }
           if (event.type === 'finish') {
             doneRef.current = true
             setPhase('finished')
             audioRef.current?.update({ speed: 0, boost: 0, offRoad: 0, running: false })
+            audioRef.current?.stopMusic()
             const result: RaceResult = {
               time: elapsed,
               topSpeed: race.topSpeed,
@@ -1197,6 +1626,26 @@ function RaceCanvas({
         camera.lift = feel.speed * height * 0.016 * forcaDoMovimento
         camera.shake = (vibracao + tranco) * forcaDoMovimento
         camera.roll = -feel.steer * width * 0.014 * forcaDoMovimento
+
+        // O horizonte inclina para dentro da curva, na proporção da força
+        // lateral que ela impõe naquela velocidade. Lida um pouco à frente do
+        // carro, para a inclinação começar na entrada, e não no meio.
+        const proporcao = race.speed / race.rules.cruiseSpeed
+        const forcaLateral = curvatureLoad(layout.curvature(race.progress + 6)) * proporcao * proporcao
+        const comum = Math.max(-1, Math.min(1, forcaLateral)) * ROLAGEM_POR_CARGA
+        const alem = Math.sign(forcaLateral) * Math.max(0, Math.abs(forcaLateral) - 1) * ROLAGEM_ALEM_DA_COMUM
+        const inclinacao = Math.max(-ROLAGEM_MAXIMA, Math.min(ROLAGEM_MAXIMA, comum + alem))
+        // O carro deita junto, no mesmo sentido do volante: é o exagero de
+        // arcade, que diz a força da curva no próprio carro.
+        deitadaDoCarro = Math.max(-0.08, Math.min(0.08, forcaLateral * 0.03)) * forcaDoMovimento
+        // E atravessa: passada a carga da pior curva comum, a traseira escapa e a
+        // folha anda para os quadros de derrapagem. Entra e sai com inércia, e é
+        // essa inércia que faz a troca de quadros virar movimento.
+        derrapagemDoJogador = aproximarDerrapagem(derrapagemDoJogador, derrapagemPara(forcaLateral), passo)
+        // Curva à direita gira o mundo no sentido anti-horário: o horizonte
+        // sobe do lado para onde a pista vai, como numa curva inclinada.
+        rolagem += (-inclinacao * forcaDoMovimento - rolagem) * (1 - Math.exp(-passo / ROLAGEM_TAU))
+
         // Os efeitos saem de trás das rodas, e não do centro: nascendo sob o
         // carro, o próprio sprite os esconderia por toda a vida útil.
         const rastro = race.progress + CAR_VIEW_DISTANCE - TRAIL_SETBACK
@@ -1239,6 +1688,34 @@ function RaceCanvas({
           }
         }
 
+        // Raspando no muro, o carro solta faísca do lado dele a cada instante —
+        // atrás da roda e já do lado de fora, senão o próprio carro a esconde.
+        const ladoDoMuro = raceContext.wallSide ?? 0
+        for (let i = wallRate.take(passo, race.onWall, 1); i > 0; i -= 1) {
+          effects.spawn('spark', rastro - Math.random() * 2, race.lateral + ladoDoMuro * (CAR_HALF_LATERAL + 0.06), {
+            drift: -ladoDoMuro * (0.6 + Math.random()),
+            size: 3 + Math.random() * 3,
+            life: 0.25 + Math.random() * 0.2,
+          })
+        }
+
+        // Fumaça de pneu: só a super curva passa da carga que a curva comum
+        // mais fechada impõe, e é ali que o pneu queima. No asfalto, porque na
+        // grama o que sobe é poeira, e ela já tem o próprio efeito.
+        const excessoDeCarga = Math.abs(raceContext.curvature) * proporcao * proporcao - 1
+        const forcaFumaca = race.offRoad || race.resetting > 0 ? 0 : Math.min(1, excessoDeCarga)
+        for (let i = smokeRate.take(passo, forcaFumaca > 0.05, forcaFumaca); i > 0; i -= 1) {
+          // A roda de fora é a que carrega o peso, e a que mais fumaça.
+          const fora = raceContext.curvature > 0 ? -1 : 1
+          const roda = Math.random() < 0.7 ? fora : -fora
+          effects.spawn('dust', rastro, race.lateral + roda * (WHEEL_OFFSET + Math.random() * 0.06), {
+            drift: fora * (0.3 + Math.random() * 0.5),
+            size: (9 + Math.random() * 8) * (0.6 + forcaFumaca * 0.6),
+            life: 0.55 + forcaFumaca * 0.4,
+            tint: FUMACA_DE_PNEU,
+          })
+        }
+
         if (frame - lastHudUpdate > 80) {
           lastHudUpdate = frame
           setTelemetry({
@@ -1252,16 +1729,31 @@ function RaceCanvas({
             boostLocked: race.boostLocked,
             grip: race.grip,
             slipstream: feel.slipstream,
+            strikes: race.strikes,
+            offTrack: race.offTrack,
+            resetting: race.resetting,
+            resets: race.resets,
+            nota: notaDaProximaCurva(),
           })
         }
       }
 
       // A simulação já avançou: a partir daqui o quadro inteiro usa o mesmo
       // progresso, e portanto a mesma curva de referência.
-      curvaAqui = layout.centerOffset(race.progress)
-      rumoAqui = layout.heading(race.progress)
+      rumoAqui = layout.drawnHeading(race.progress)
       alturaAqui = layout.elevation(race.progress)
       inclinacaoAqui = layout.slope(race.progress)
+
+      // O mundo inteiro gira em torno do ponto em que o carro toca a pista —
+      // céu, pista, cenário, fantasma, efeitos e o próprio carro. O HUD fica
+      // de fora, e continua reto: quem inclina é a câmera, não a tela.
+      ctx.save()
+      if (rolagem !== 0) {
+        const pivoY = roadProjection(CAR_VIEW_DISTANCE, width, height).y
+        ctx.translate(width / 2, pivoY)
+        ctx.rotate(rolagem)
+        ctx.translate(-width / 2, -pivoY)
+      }
 
       drawBackdrop()
       drawRoad()
@@ -1290,12 +1782,12 @@ function RaceCanvas({
         if (atrasDaLomba(ahead)) continue
 
         if (!ghostDrawn && rivalAhead > ahead) {
-          drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt)
+          drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt, rivalSample!.speed)
           ghostDrawn = true
         }
         drawObstacle(ahead, obstaculo.lane, obstaculo.kind, obstaculo.id)
       }
-      if (!ghostDrawn) drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt)
+      if (!ghostDrawn) drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt, rivalSample!.speed)
 
       if (rivalSample && frame - lastRivalHud > 100) {
         lastRivalHud = frame
@@ -1341,7 +1833,8 @@ function RaceCanvas({
       // obstáculos, fantasma e chegada — e antes do carro e dos efeitos dele,
       // que estão sempre perto da câmera e continuam nítidos.
       ctx.fillStyle = gradienteDaBruma()
-      ctx.fillRect(0, height * (HORIZON_RATIO - 0.1), width, height * 0.75 - height * HORIZON_RATIO)
+      const margemDaBruma = margemDaRolagem()
+      ctx.fillRect(-margemDaBruma, height * (HORIZON_RATIO - 0.1), width + margemDaBruma * 2, height * 0.75 - height * HORIZON_RATIO)
 
       // Poeira, faíscas e rastro de boost passam por cima da pista e dos carros.
       for (const particula of efeitos) {
@@ -1365,10 +1858,11 @@ function RaceCanvas({
         // pressa e `steer` traz o lado, e é por isso que os dois se
         // multiplicam em vez de somar.
         poseDoJogador.tilt =
-          (feel.steer * 0.075 + feel.steer * feel.steerRate * 0.02) * forcaDoMovimento
+          (feel.steer * 0.075 + feel.steer * feel.steerRate * 0.02) * forcaDoMovimento + deitadaDoCarro
         poseDoJogador.suspension =
           (feel.accel * 0.05 - feel.impact * 0.1 + cargaDoRelevo() * feel.speed) * forcaDoMovimento
         poseDoJogador.steer = feel.steer * forcaDoMovimento
+        poseDoJogador.drift = derrapagemDoJogador
         poseDoJogador.boost = feel.boost
         poseDoJogador.travel = race.progress * forcaDoMovimento
         poseDoJogador.dirt = feel.dirt
@@ -1380,6 +1874,13 @@ function RaceCanvas({
             feel.impact * Math.sin(frame * 0.085) * 2.4 +
             feel.strain * Math.sin(frame * 0.21) * 0.7) *
           forcaDoMovimento
+        // Parado no reset, o carro pisca: é o sinal universal de "fora do jogo
+        // por um instante". Quem pediu menos movimento vê o carro translúcido,
+        // sem piscar.
+        if (race.resetting > 0) {
+          const aceso = Math.floor(race.resetting * 8) % 2 === 0
+          ctx.globalAlpha = forcaDoMovimento < 1 ? 0.5 : aceso ? 0.95 : 0.25
+        }
         drawCar(
           ctx,
           playerX,
@@ -1390,7 +1891,10 @@ function RaceCanvas({
           1,
           ambiente.nevoaRGB,
         )
+        ctx.globalAlpha = 1
       }
+      // Fim do mundo girado: dali em diante é tela.
+      ctx.restore()
 
       desenharRajadas(feel.boost * forcaDoMovimento, race.progress)
 
@@ -1461,6 +1965,14 @@ function RaceCanvas({
           >
             {mudo ? 'SOM ✕' : 'SOM ♪'}
           </button>
+          <button
+            className={`sound-button ${semMusica ? 'off' : ''}`}
+            onClick={alternarMusica}
+            aria-pressed={!semMusica}
+            aria-label={semMusica ? 'Ligar a música' : 'Desligar a música'}
+          >
+            {semMusica ? 'MÚSICA ✕' : 'MÚSICA ♫'}
+          </button>
           {onAbandon && phase === 'racing' && (
             <button className="abandon-button" onClick={onAbandon}>ABANDONAR</button>
           )}
@@ -1491,6 +2003,16 @@ function RaceCanvas({
       <div className="progress-wrap">
         <div className="progress-copy">
           <span>SETOR ÚNICO</span>
+          {/* As batidas que faltam para o reset, sempre à vista: a regra só é
+              justa se o piloto enxergar a conta antes de ela cobrar. Moram na
+              mesma linha do setor, e não embaixo dela: uma linha a mais
+              empurrava o bloco para cima do painel do rival. */}
+          <div className="strikes" aria-label={`${telemetry.strikes} de ${RESET_STRIKES} batidas até o reset`}>
+            <span>BATIDAS</span>
+            {Array.from({ length: RESET_STRIKES }, (_, i) => (
+              <i key={i} className={i < telemetry.strikes ? 'on' : ''} />
+            ))}
+          </div>
           <strong>{progressPercent.toFixed(0)}%</strong>
         </div>
         <div className="progress-track"><i style={{ width: `${progressPercent}%` }} /></div>
@@ -1535,13 +2057,57 @@ function RaceCanvas({
       )}
 
       {connectionNotice && <div className="connection-notice">{connectionNotice}</div>}
-      {telemetry.offRoad && phase === 'racing' && <div className="warning">FORA DA PISTA</div>}
+      {telemetry.offRoad && phase === 'racing' && telemetry.resetting === 0 && (
+        <div className="warning">
+          FORA DA PISTA
+          {/* O medidor que leva ao reset: enche na grama, esvazia no asfalto. */}
+          <span className="offtrack-track"><i style={{ width: `${Math.round(telemetry.offTrack * 100)}%` }} /></span>
+        </div>
+      )}
+      {telemetry.resetting > 0 && phase === 'racing' && (
+        <div className="reset-banner" role="alert">
+          RESET
+          <small>{motivoDoReset === 'crashes' ? `${RESET_STRIKES} BATIDAS` : 'FORA DA PISTA'} · −{RESET_SECONDS.toFixed(1).replace('.', ',')} S</small>
+          {/* A chave reinicia a animação a cada reset. */}
+          <span className="reset-track"><i key={telemetry.resets} style={{ animationDuration: `${RESET_SECONDS}s` }} /></span>
+        </div>
+      )}
       {/* A perda por esforço lateral precisa ser vista para ser justa: uma
           punição que o piloto não percebe é só um bug do ponto de vista dele. */}
       {!telemetry.offRoad && telemetry.grip < 0.97 && phase === 'racing' && (
         <div className="warning grip">PERDENDO ADERÊNCIA</div>
       )}
       {flash && <div className="impact">{flash}</div>}
+
+      {/* A nota de curva, do lado para onde a pista vai. Antes da curva ela
+          diz o que fazer; dentro, diz para segurar. */}
+      {telemetry.nota && phase === 'racing' && telemetry.resetting === 0 && (
+        <div
+          className={`pace-note ${telemetry.nota.lado > 0 ? 'right' : 'left'} ${telemetry.nota.dentro ? 'inside' : ''} ${!telemetry.nota.dentro && telemetry.nota.metros < 90 ? 'close' : ''}`}
+          role="status"
+        >
+          <b className="pace-arrows" aria-hidden="true">
+            {telemetry.nota.lado > 0 ? '›››' : '‹‹‹'}
+            {telemetry.nota.depois !== 0 && <i>{telemetry.nota.depois > 0 ? ' ›››' : ' ‹‹‹'}</i>}
+          </b>
+          <span className="pace-name">
+            {telemetry.nota.nome} <em>{telemetry.nota.graus}°</em>
+          </span>
+          <small>
+            {telemetry.nota.dentro
+              ? `SEGURE ${telemetry.nota.lado > 0 ? 'À DIREITA' : 'À ESQUERDA'}`
+              : telemetry.boosting
+                ? 'SOLTE O BOOST'
+                : `${telemetry.nota.metros} M · ENTRE POR DENTRO`}
+          </small>
+        </div>
+      )}
+      {tangencias > 0 && (
+        <div key={tangencias} className="tangency-flash" role="status">
+          TANGÊNCIA
+          <small>+{APEX_BOOST}% DE BOOST</small>
+        </div>
+      )}
 
       {phase === 'countdown' && (
         <div className="countdown-layer">

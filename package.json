@@ -7,6 +7,7 @@
     "dev": "concurrently -k -n SERVIDOR,JOGO -c yellow,cyan \"npm:dev:server\" \"npm:dev:web\"",
     "dev:web": "vite --port 5173 --strictPort",
     "dev:server": "cross-env PORT=3001 tsx watch server/index.ts",
+    "dev:paralelo": "concurrently -k -n SERVIDOR,JOGO -c yellow,cyan \"cross-env PORT=3002 tsx watch server/index.ts\" \"cross-env GAME_SERVER_URL=http://127.0.0.1:3002 vite --port 5175 --strictPort\"",
     "build": "tsc -b && tsc --noEmit -p tsconfig.server.json && vite build",
     "start": "tsx server/index.ts",
     "preview": "vite preview",

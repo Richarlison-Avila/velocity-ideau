@@ -205,6 +205,72 @@ const Z = {
 export const CAIXA_CARRO = { x: -34, y: -54, largura: 68, altura: 80 }
 
 /**
+ * Onde cada camada mora em profundidade, em metros à frente do eixo traseiro,
+ * e a altura típica dela.
+ *
+ * É o que a guinada precisa saber. O molde é desenhado de trás, com as peças
+ * simétricas em torno do eixo do carro, e girar ponto a ponto quebraria essa
+ * simetria em cada uma das centenas de faces. Mas numa projeção de câmera alta
+ * e distante, girar o carro sobre o eixo traseiro é, em boa aproximação,
+ * deslizar cada peça de lado na proporção da distância dela ao pivô: o bico vai
+ * para um lado, a traseira para o outro. As peças compridas — bico, pontões,
+ * cockpit — deslizam mais numa ponta que na outra, e é por isso que cada uma
+ * diz de onde a onde ela vai.
+ */
+const PROFUNDIDADE_DA_PARTE: Record<Part, { de: number; ate: number; altura: number }> = {
+  sombra: { de: 0, ate: 3.6, altura: 0 },
+  asaDianteira: { de: 4.5, ate: 4.95, altura: 0.26 },
+  dianteiraEsquerda: { de: 3.6, ate: 3.6, altura: 0.31 },
+  dianteiraDireita: { de: 3.6, ate: 3.6, altura: 0.31 },
+  bico: { de: 3.1, ate: 4.5, altura: 0.34 },
+  lateral: { de: 0, ate: 2.55, altura: 0.36 },
+  cockpit: { de: 1.5, ate: 3.1, altura: 0.6 },
+  piloto: { de: 2.0, ate: 2.0, altura: 0.95 },
+  motor: { de: 0, ate: 1.55, altura: 0.75 },
+  traseiraEsquerda: { de: 0, ate: 0, altura: 0.33 },
+  traseiraDireita: { de: 0, ate: 0, altura: 0.33 },
+  traseira: { de: -0.42, ate: 0, altura: 0.25 },
+  asaTraseira: { de: -0.72, ate: -0.22, altura: 0.85 },
+}
+
+/**
+ * Ponto em torno do qual o carro gira, em metros à frente do eixo traseiro.
+ *
+ * Pouco à frente do eixo, onde fica o centro de massa de um carro de motor
+ * central. Girando ali, o bico vai para dentro da curva e a traseira escapa
+ * para fora — que é a leitura da derrapagem. Girando no eixo traseiro, a
+ * traseira ficaria parada e o carro pareceria só apontar para o lado.
+ */
+export const PIVO_DA_GUINADA = 1.4
+
+/** Quanto um ponto a `z` metros do eixo traseiro anda de lado, em unidades, com o carro girado `guinada`. */
+function deslizeDaGuinada(z: number, guinada: number) {
+  const braco = z - PIVO_DA_GUINADA
+  return braco * Math.sin(guinada) * estacao(PIVO_DA_GUINADA + braco * Math.cos(guinada)).u
+}
+
+/**
+ * A guinada de uma camada, como transformação afim do desenho.
+ *
+ * Devolve `[a, b, c, d, e, f]` no formato de `CanvasRenderingContext2D.transform`:
+ * x' = a·x + c·y + e, y' = y. A camada encolhe na largura pelo cosseno do
+ * giro, desliza pelo que a profundidade dela manda e, se for comprida, é
+ * cisalhada: a ponta de longe, mais alta na tela, anda mais que a de perto.
+ * `guinada` positiva aponta o bico para a direita.
+ */
+export function yawTransform(part: Part, guinada: number): [number, number, number, number, number, number] {
+  if (guinada === 0) return [1, 0, 0, 1, 0, 0]
+  const { de, ate, altura } = PROFUNDIDADE_DA_PARTE[part]
+  const escala = Math.cos(guinada)
+  const yPerto = estacao(de).y(altura)
+  const yLonge = estacao(ate).y(altura)
+  const perto = deslizeDaGuinada(de, guinada)
+  if (Math.abs(yPerto - yLonge) < 1e-6) return [escala, 0, 0, 1, perto, 0]
+  const cisalhamento = (deslizeDaGuinada(ate, guinada) - perto) / (yLonge - yPerto)
+  return [escala, 0, cisalhamento, 1, perto - cisalhamento * yPerto, 0]
+}
+
+/**
  * Medidas das rodas, em metros.
  *
  * Duas licenças de desenho moram aqui. O pneu é mais estreito que o de um

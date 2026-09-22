@@ -168,6 +168,9 @@ describe('intensidades da apresentação', () => {
     const amostras: number[] = []
     for (let t = 0; t < 3; t += 1 / 60) {
       stepRace(race, DIREITA, 1 / 60)
+      // Aqui se mede a apresentação da grama, não o reset: o medidor de saída
+      // fica vazio para o carro poder ir ao fundo e ficar lá.
+      race.offTrack = 0
       updateFeel(feel, race, 1 / 60)
       amostras.push(feel.offRoad)
     }

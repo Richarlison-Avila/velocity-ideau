@@ -26,6 +26,7 @@
  * desenhar. Os dois continuam procedurais.
  */
 import type { Flora, Lugar } from './layout'
+import { lateralOffset, type ObstacleKind } from './track'
 import { LUZ, misturar, rampa, type Rampa } from './paleta'
 import { LADOS } from './pincel'
 import {
@@ -375,13 +376,13 @@ export function desenharBuraco(
   ctx: CanvasRenderingContext2D,
   x: number,
   chao: number,
-  tamanho: number,
+  rx: number,
+  ry: number,
   tons: Rampa,
 ) {
-  const raio = tamanho * 0.5
-  const elipse = (cx: number, cy: number, rx: number, ry: number) => {
+  const elipse = (cx: number, cy: number, ex: number, ey: number) => {
     ctx.beginPath()
-    ctx.ellipse(x + cx, chao + cy, Math.max(0.5, rx), Math.max(0.5, ry), 0, 0, Math.PI * 2)
+    ctx.ellipse(x + cx, chao + cy, Math.max(0.5, ex), Math.max(0.5, ey), 0, 0, Math.PI * 2)
     ctx.fill()
   }
 
@@ -390,20 +391,20 @@ export function desenharBuraco(
   // pedra solta recém-descoberta, e no tom escuro sumia dentro da pista.
   ctx.fillStyle = tons[3]
   for (const [bx, by, br] of CASCALHO) {
-    elipse(bx * raio, by * raio * 0.34, br * raio, br * raio * 0.4)
+    elipse(bx * rx, by * ry, br * rx, br * ry * 1.18)
   }
   // Borda: agregado exposto, mais claro que a pista. Dois anéis dão a
   // espessura da capa asfáltica.
   ctx.fillStyle = tons[3]
-  elipse(0, -tamanho * 0.02, raio, raio * 0.38)
+  elipse(0, -ry * 0.12, rx, ry * 1.12)
   ctx.fillStyle = tons[1]
-  elipse(0, -tamanho * 0.01, raio * 0.92, raio * 0.33)
+  elipse(0, -ry * 0.06, rx * 0.92, ry * 0.97)
   // Miolo. O anel escuro que sobra do lado de cá é a parede de dentro virada
   // para a câmera: sem ele o buraco fica chapado e vira adesivo.
   ctx.fillStyle = tons[0]
-  elipse(0, -tamanho * 0.04, raio * 0.86, raio * 0.3)
+  elipse(0, -ry * 0.24, rx * 0.86, ry * 0.88)
   ctx.fillStyle = FUNDO_DO_BURACO
-  elipse(0, -tamanho * 0.015, raio * 0.82, raio * 0.27)
+  elipse(0, -ry * 0.09, rx * 0.82, ry * 0.79)
 }
 
 /**
@@ -419,12 +420,12 @@ const LOBULOS: readonly (readonly [number, number, number])[] = [
 ]
 
 /** Desenha o contorno lobado, encolhido por `fator`. */
-function mancha(ctx: CanvasRenderingContext2D, x: number, chao: number, raio: number, fator: number) {
+function mancha(ctx: CanvasRenderingContext2D, x: number, chao: number, rx: number, ry: number, fator: number) {
   for (const [cx, cy, cr] of LOBULOS) {
     ctx.beginPath()
     ctx.ellipse(
-      x + cx * raio * fator, chao + cy * raio * 0.34 * fator,
-      Math.max(0.5, cr * raio * fator), Math.max(0.5, cr * raio * 0.34 * fator),
+      x + cx * rx * fator, chao + cy * ry * fator,
+      Math.max(0.5, cr * rx * fator), Math.max(0.5, cr * ry * fator),
       0, 0, Math.PI * 2,
     )
     ctx.fill()
@@ -449,21 +450,20 @@ const IRISADO = ['#4b3a72', '#2c5f63'] as const
  * As cores são fixas, e não tiradas do asfalto como as do buraco: óleo é
  * preto em qualquer hora do dia.
  */
-export function desenharOleo(ctx: CanvasRenderingContext2D, x: number, chao: number, tamanho: number) {
-  const raio = tamanho * 0.9
+export function desenharOleo(ctx: CanvasRenderingContext2D, x: number, chao: number, rx: number, ry: number) {
   ctx.fillStyle = OLEO[0]
-  mancha(ctx, x, chao, raio, 1)
+  mancha(ctx, x, chao, rx, ry, 1)
   ctx.fillStyle = OLEO[1]
-  mancha(ctx, x, chao, raio, 0.72)
+  mancha(ctx, x, chao, rx, ry, 0.72)
   // Irisado, na beira de cima e à esquerda, que é de onde vem a luz. Duas
   // lambidas bastam: mais do que isso vira poça de gasolina de desenho.
   ctx.fillStyle = IRISADO[0]
   ctx.beginPath()
-  ctx.ellipse(x - raio * 0.34, chao - raio * 0.15, raio * 0.3, raio * 0.07, 0, 0, Math.PI * 2)
+  ctx.ellipse(x - rx * 0.34, chao - ry * 0.44, rx * 0.3, Math.max(0.5, ry * 0.21), 0, 0, Math.PI * 2)
   ctx.fill()
   ctx.fillStyle = IRISADO[1]
   ctx.beginPath()
-  ctx.ellipse(x + raio * 0.24, chao - raio * 0.2, raio * 0.2, raio * 0.05, 0, 0, Math.PI * 2)
+  ctx.ellipse(x + rx * 0.24, chao - ry * 0.59, rx * 0.2, Math.max(0.5, ry * 0.15), 0, 0, Math.PI * 2)
   ctx.fill()
 }
 
@@ -480,21 +480,154 @@ export function desenharPoca(
   ctx: CanvasRenderingContext2D,
   x: number,
   chao: number,
-  tamanho: number,
+  rx: number,
+  ry: number,
   tons: Rampa,
   ceu: string,
 ) {
-  const raio = tamanho * 0.78
   ctx.fillStyle = tons[0]
-  mancha(ctx, x, chao, raio, 1)
+  mancha(ctx, x, chao, rx, ry, 1)
   ctx.fillStyle = ceu
-  mancha(ctx, x, chao, raio, 0.76)
+  mancha(ctx, x, chao, rx, ry, 0.76)
   // Brilho: dois riscos claros, deitados, onde a superfície devolve o sol.
   ctx.fillStyle = misturar(ceu, LUZ, 0.55)
   for (const [cx, cw] of [[-0.3, 0.26], [0.26, 0.17]] as const) {
     ctx.beginPath()
-    ctx.ellipse(x + cx * raio, chao - raio * 0.12, cw * raio, raio * 0.035, 0, 0, Math.PI * 2)
+    ctx.ellipse(x + cx * rx, chao - ry * 0.35, cw * rx, Math.max(0.5, ry * 0.1), 0, 0, Math.PI * 2)
     ctx.fill()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Obstáculos na pista
+// ---------------------------------------------------------------------------
+
+/** Um ponto da pista na tela, como a corrida o projeta — curva e relevo inclusos. */
+export type PontoDaPista = { center: number; y: number; roadWidth: number }
+
+/**
+ * Tamanho de referência de um obstáculo, em larguras de pista.
+ *
+ * Tudo o que um obstáculo mede é isto vezes a largura da pista **naquela
+ * distância**: a mesma régua de perspectiva da pista, do cenário e do
+ * fantasma. Antes ele tinha régua própria, uma curva quase linear na
+ * distância. A pista encolhe com `1/z` e o obstáculo encolhia bem menos, e a
+ * cem metros uma barreira cobria dois terços do asfalto que, na altura do
+ * carro, ela cobre um quinto. Chegava enorme e ia "diminuindo para dentro" da
+ * pista conforme se aproximava — o contrário de uma coisa apoiada nela.
+ *
+ * O valor é o que aquela curva dava na distância do carro. É ali que a colisão
+ * foi calibrada contra o desenho, e ali nada muda: a meia-largura desenhada de
+ * cada peça continua do tamanho do alcance da colisão dela.
+ */
+export const TAMANHO_DO_OBSTACULO = 0.143
+
+/** Altura das peças de pé, em tamanhos de referência. */
+const ALTURA_DE_PE = { barrier: 0.52, debris: 1.08 } as const
+
+/**
+ * As peças deitadas: meia-largura, em tamanhos de referência, e comprimento
+ * ao longo da pista, em metros.
+ *
+ * O comprimento é medida de verdade porque é projetado de verdade: a borda de
+ * cá e a de lá passam pela mesma conta que desenha as faixas do asfalto, que
+ * se alternam a cada doze metros. É o que as deita na pista. Antes elas tinham
+ * uma proporção fixa entre altura e largura e, ao longe, ficavam de pé como
+ * discos. Os comprimentos reproduzem, na altura do carro e numa tela 16:9, a
+ * proporção que elas tinham.
+ */
+const DEITADAS = {
+  pothole: { meiaLargura: 0.5, comprimento: 1.4 },
+  oleo: { meiaLargura: 0.9, comprimento: 2.5 },
+  poca: { meiaLargura: 0.78, comprimento: 2.1 },
+} as const
+
+/**
+ * Achatamento mínimo de uma peça deitada, altura sobre largura.
+ *
+ * A perspectiva de verdade achata um buraco a cinquenta metros até um pixel
+ * e meio de altura, e encostado na zebra ele some — medido na corrida, não
+ * suposto. Só que o buraco existe para fechar a beirada da pista, e o desvio
+ * mais apertado do profissional tem 0,63 s de folga: o piloto precisa vê-lo a
+ * tempo de escolher o lado. Então, até uns vinte e poucos metros, ele achata
+ * exatamente como as faixas em volta; dali para o fundo para de achatar e
+ * fica um traço deitado, com o dobro da altura que a projeção daria, que
+ * ainda se lê.
+ */
+export const ACHATAMENTO_MINIMO = 0.14
+
+export type MedidasDoObstaculo =
+  | { kind: 'barrier' | 'debris'; x: number; chao: number; altura: number }
+  | { kind: 'pothole' | 'oleo' | 'poca'; x: number; chao: number; rx: number; ry: number }
+
+/**
+ * Onde e de que tamanho um obstáculo aparece.
+ *
+ * `pistaEm` é a projeção da corrida — na corrida, a mesma `roadGeometry` que
+ * desenha o asfalto —, e é por ela que curva e relevo entram de graça: numa
+ * subida a mancha aparece mais alta, na crista mais achatada, exatamente como
+ * as faixas da pista em volta dela.
+ */
+export function medidasDoObstaculo(
+  kind: ObstacleKind,
+  lane: number,
+  distancia: number,
+  pistaEm: (distancia: number) => PontoDaPista,
+): MedidasDoObstaculo {
+  const aqui = pistaEm(distancia)
+  const tamanho = aqui.roadWidth * TAMANHO_DO_OBSTACULO
+  const x = aqui.center + lateralOffset(lane, aqui.roadWidth)
+  if (kind === 'barrier' || kind === 'debris') {
+    return { kind, x, chao: aqui.y, altura: tamanho * ALTURA_DE_PE[kind] }
+  }
+  const { meiaLargura, comprimento } = DEITADAS[kind]
+  const rx = tamanho * meiaLargura
+  const perto = pistaEm(Math.max(0, distancia - comprimento / 2)).y
+  const longe = pistaEm(distancia + comprimento / 2).y
+  return {
+    kind,
+    x,
+    chao: (perto + longe) / 2,
+    rx,
+    ry: Math.max(rx * ACHATAMENTO_MINIMO, (perto - longe) / 2),
+  }
+}
+
+/**
+ * Um obstáculo, já medido.
+ *
+ * Um caso por tipo e nenhuma saída padrão. As duas peças de pé saem da folha,
+ * com o banho de névoa dela; as três deitadas são procedurais, porque a caixa
+ * da folha — chão em zero, topo em menos um — não descreve peça sem altura.
+ * A variante da barreira sai do identificador do obstáculo, que é literal em
+ * `track.ts`: os dois pilotos veem a mesma no mesmo lugar.
+ */
+export function desenharObstaculo(
+  ctx: CanvasRenderingContext2D,
+  medidas: MedidasDoObstaculo,
+  id: number,
+  asfalto: Rampa,
+  ceu: string,
+) {
+  const m = medidas
+  switch (m.kind) {
+    case 'barrier':
+      desenharObjeto(ctx, 'barreira', id, 0, m.x, m.chao, m.altura)
+      break
+    case 'debris':
+      desenharObjeto(ctx, 'cone', 0, 0, m.x, m.chao, m.altura)
+      break
+    case 'pothole':
+      desenharBuraco(ctx, m.x, m.chao, m.rx, m.ry, asfalto)
+      break
+    case 'oleo':
+      desenharOleo(ctx, m.x, m.chao, m.rx, m.ry)
+      break
+    case 'poca':
+      desenharPoca(ctx, m.x, m.chao, m.rx, m.ry, asfalto, ceu)
+      break
+    default:
+      m satisfies never
   }
 }
 

@@ -1,7 +1,7 @@
 // A extensão .js é exigida pelo Node, que roda este módulo no servidor durante
 // os testes de aceitação. O Vite resolve para o arquivo .ts normalmente.
-import type { RaceInput, RaceState } from './simulation.js'
-import { OFF_ROAD_LIMIT } from './track.js'
+import { STEER_RATE, STEER_TAU, type RaceInput, type RaceState } from './simulation.js'
+import { HIT_HALF_WIDTH, OFF_ROAD_LIMIT, VIEW_DISTANCE } from './track.js'
 
 /**
  * Pilotos de referência.
@@ -50,4 +50,130 @@ export function noLimiteDoAsfalto(boost = false): Piloto {
     right: state.lateral < -borda,
     boost,
   })
+}
+
+/**
+ * Desvia do obstáculo mais próximo que estiver na sua faixa, para o lado que
+ * couber dentro da pista, e segura a curva enquanto isso.
+ *
+ * Com o reset por batidas, o piloto rápido deixou de ser o que acelera o tempo
+ * todo pelo meio da pista: esse bate nas barreiras do meio, e na terceira perde
+ * um segundo e meio parado. Rápido agora é quem desvia. Sem reflexo
+ * sobre-humano: ele só reage ao que já entrou no campo de visão.
+ *
+ * Guarda a faixa escolhida até o obstáculo passar, como um jogador faz. Uma
+ * regra sem memória — ir para o lado só enquanto se está na faixa do
+ * obstáculo — sai da faixa, volta para o meio, entra de novo e fica nesse vai
+ * e vem até o obstáculo passar: medido, trocava de lado seis vezes por segundo
+ * e pagava em aderência pelo próprio zigue-zague. Cada chamada devolve um
+ * piloto novo, com a própria memória: um por corrida.
+ */
+export function desviando(boost = false): Piloto {
+  let faixa = 0
+  return (state) => {
+    let ameaca = false
+    for (const o of state.rules.obstacles) {
+      const adiante = o.distance - state.progress
+      if (adiante <= 0 || adiante > VIEW_DISTANCE) continue
+      ameaca = true
+      const alcance = HIT_HALF_WIDTH[o.kind] + 0.1
+      // A faixa escolhida já passa ao largo deste: fica nela.
+      if (Math.abs(faixa - o.lane) >= alcance) break
+      const paraDireita = o.lane + alcance + 0.06
+      const paraEsquerda = o.lane - alcance - 0.06
+      const cabeDireita = Math.abs(paraDireita) < OFF_ROAD_LIMIT
+      const cabeEsquerda = Math.abs(paraEsquerda) < OFF_ROAD_LIMIT
+      // Entre os dois lados, o que fica mais perto de onde o carro já está.
+      faixa = cabeDireita && (!cabeEsquerda || Math.abs(paraDireita - state.lateral) <= Math.abs(paraEsquerda - state.lateral))
+        ? paraDireita
+        : paraEsquerda
+      break
+    }
+    // Sem nada à vista, volta para o meio, que é onde mais cabe o próximo.
+    if (!ameaca) faixa = 0
+    return { ...rumoA(faixa, state), boost }
+  }
+}
+
+/** Uma super curva, do ponto de vista de quem dirige: onde, e para que lado. */
+export type CurvaAnunciada = { start: number; end: number; side: 1 | -1 }
+
+/**
+ * Metros antes da super curva em que o piloto começa a se preparar.
+ *
+ * É menos do que a reta de aproximação que o traçado garante, e é o que a nota
+ * de curva dá de tempo a quem está em cruzeiro: pouco mais de um segundo e
+ * meio para soltar o boost e ir para o lado de dentro.
+ */
+const PREPARO_M = 110
+
+/**
+ * Fração da primeira metade de um S a partir da qual o piloto deixa o carro
+ * abrir para o lado de dentro da segunda.
+ *
+ * No meio da curva era cedo: o empurrão somava ao volante e jogava o carro na
+ * grama antes da emenda. A setenta por cento, ele chega à segunda metade pelo
+ * lado de dentro dela e ainda no asfalto.
+ */
+const SOLTAR_NO_S = 0.7
+
+/**
+ * Desvia como `desviando` e, nas super curvas, faz a tangência.
+ *
+ * Solta o boost antes da curva, vai para o lado de dentro e segura ali até a
+ * saída — que é a linha mais curta e a que dá o boost de volta. É o piloto que
+ * leu a nota de curva: o que os testes usam para dizer que a super curva é
+ * pesada, e não injusta. Recebe as curvas da prova porque o piloto humano as
+ * vê chegando; ele não conhece nada além disso.
+ */
+export function tangenciando(curvas: readonly CurvaAnunciada[], boost = false): Piloto {
+  let normal = desviando(boost)
+  let naCurva = false
+  const dentro = OFF_ROAD_LIMIT * 0.86
+  return (state) => {
+    const agoraNaCurva = curvas.some((curva) => state.progress >= curva.start - PREPARO_M && state.progress <= curva.end)
+    // Saindo da super curva, o desvio recomeça do zero. O lado que ele tinha
+    // escolhido foi escolhido de dentro da curva, e a curva jogou o carro para
+    // fora: guardá-lo faria o carro atravessar a pista por cima do obstáculo.
+    if (naCurva && !agoraNaCurva) normal = desviando(boost)
+    naCurva = agoraNaCurva
+    const comando = normal(state)
+    for (const curva of curvas) {
+      if (state.progress < curva.start - PREPARO_M || state.progress > curva.end) continue
+      // No S, depois do ápice da primeira metade, a boa linha deixa o carro
+      // abrir: o lado de fora dela é o de dentro da segunda, e brigar contra o
+      // empurrão até o fim faria o carro chegar à segunda metade pelo meio.
+      const emendada = curvas.find((outra) => outra.start === curva.end)
+      const soltar = curva.start + (curva.end - curva.start) * SOLTAR_NO_S
+      const lado = emendada && state.progress > soltar ? emendada.side : curva.side
+      // Um obstáculo logo adiante, na faixa de dentro, vem antes da curva: o
+      // piloto desvia dele primeiro e só então encosta. Ir para dentro por
+      // cima de uma barreira é trocar a tangência por uma batida.
+      const alvo = lado * dentro
+      for (const o of state.rules.obstacles) {
+        const adiante = o.distance - state.progress
+        if (adiante <= 0 || adiante > PREPARO_M * 0.6) continue
+        if (Math.abs(o.lane - alvo) < HIT_HALF_WIDTH[o.kind] + 0.14) return { ...comando, boost: false }
+      }
+      return { ...rumoA(alvo, state), boost: false }
+    }
+    return comando
+  }
+}
+
+/**
+ * Leva o carro a uma faixa soltando o comando antes de chegar.
+ *
+ * O volante tem inércia: solto, o carro ainda anda um pouco para o lado. Um
+ * controle que só solta ao chegar passa da faixa, corrige para o outro lado e
+ * passa de novo — medido, o piloto que desvia trocava de lado até oito vezes
+ * por segundo e perdia um quinto da aderência para o próprio zigue-zague, e
+ * saía mais lento do que quem batia em tudo. Um jogador de verdade dá toques.
+ * Aqui o comando decide pela posição em que o carro vai parar, e não pela de
+ * agora.
+ */
+function rumoA(alvo: number, state: RaceState) {
+  const deslizando = state.steerInput * (STEER_RATE + state.speed / 520) * STEER_TAU
+  const erro = alvo - (state.lateral + deslizando)
+  return { left: erro < -ZONA_MORTA, right: erro > ZONA_MORTA }
 }

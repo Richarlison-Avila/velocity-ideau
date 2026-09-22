@@ -1,5 +1,7 @@
 // A extensão .js segue a convenção do módulo: o Vite resolve para o .ts.
-import { TRACK_LENGTH, VIEW_DISTANCE } from './track.js'
+import { rulesFor } from './rules.js'
+import { MAX_CORNER_LOAD, type RaceContext } from './simulation.js'
+import { METERS_PER_LATERAL, TRACK_LENGTH, VIEW_DISTANCE } from './track.js'
 
 /**
  * Traçado e cenário gerados a partir da semente oficial da corrida.
@@ -12,9 +14,11 @@ import { TRACK_LENGTH, VIEW_DISTANCE } from './track.js'
  *
  * O relevo e o cenário são apresentação. A curvatura deixou de ser: ela entra
  * na simulação como força lateral, porque uma curva que não cobra nada não é
- * uma curva. Isso não abre brecha de justiça — a semente é estado oficial da
- * sala, os dois pilotos reconstroem o mesmo traçado, e curva só pode atrasar
- * um carro, nunca adiantá-lo, então o piso de tempo do servidor segue valendo.
+ * uma curva, e como linha — por dentro o caminho é mais curto. Isso não abre
+ * brecha de justiça: a semente é estado oficial da sala, os dois pilotos
+ * reconstroem o mesmo traçado, e a física nunca deixa a linha fazer o carro
+ * avançar mais depressa que o teto do nível, que é o que o piso de tempo do
+ * servidor usa.
  *
  * Os obstáculos, que são o layout competitivo, continuam fixos.
  */
@@ -48,6 +52,7 @@ export function hash32(seed: number, index: number) {
  * | 11 a 16 | vaga do cenário: existe, família, afastamento, escala, tom, variante |
  * | 21 | ambiente da corrida |
  * | 22, 23 | pórtico: se existe naquele marco e qual faixa leva |
+ * | 24, 25, 26 | super curva: onde começa, para que lado vira e de que tipo é |
  */
 export function randomAt(seed: number, index: number, canal = 0) {
   return hash32(seed ^ Math.imul(canal + 1, 0x27d4eb2f), index) / 0x100000000
@@ -58,26 +63,45 @@ export function randomAt(seed: number, index: number, canal = 0) {
 // ---------------------------------------------------------------------------
 
 /** Comprimento de cada trecho de rumo constante, em metros. */
-export const CURVE_SEGMENT = 130
+export const CURVE_SEGMENT = 100
 
 /**
- * Rumo máximo da pista em relação ao eixo da câmera, em radianos.
+ * Rumo máximo do traçado comum, em radianos.
  *
- * É o limite que substitui a ideia de "curva de 90 graus": numa projeção
- * pseudo-3D não existe malha para medir ângulo, mas existe o rumo da linha
- * central. Com 0,42 rad a pista nunca passa de 24° em relação à câmera, e a
- * maior inversão possível — de um extremo ao outro — dá 48°, longe dos 90.
+ * Nasceu como limite de desenho: com a câmera presa ao eixo do mundo, a pista
+ * não podia passar de 24° em relação a ela. A câmera foi para o referencial do
+ * carro, e o limite ficou como o que ele sempre foi para quem dirige — o ritmo
+ * das curvas comuns, cuja maior inversão, de um extremo ao outro, dá 48°.
+ * Virar 90° ou mais é trabalho das super curvas, que ficam fora desta conta.
  */
 export const HEADING_LIMIT = 0.42
 
 /** Maior mudança de rumo sorteada de um trecho para o seguinte. */
-export const HEADING_STEP = 0.3
+export const HEADING_STEP = 0.4
 
 /** Puxão de volta ao eixo, para o traçado não fugir sempre para o mesmo lado. */
 export const HEADING_RETURN = 0.34
 
 /** Proporção de trechos que mantêm o rumo do anterior: as retas. */
-export const STRAIGHT_SHARE = 0.28
+export const STRAIGHT_SHARE = 0.18
+
+/**
+ * Menor virada de um trecho que não é reta, em frações de `HEADING_STEP`.
+ *
+ * O sorteio uniforme deixava metade dos trechos com curva virando quase nada:
+ * nem reta de verdade, onde vale a pena soltar o boost, nem curva de verdade,
+ * que cobra alguma coisa. Com o piso, o que não é reta vira.
+ */
+export const MIN_TURN = 0.45
+
+/**
+ * Metros de reta na largada.
+ *
+ * A arrancada sai de uma velocidade baixa e precisa de uma referência sem
+ * curva para o ganho ser legível — e ninguém deve ter de brigar com a curva
+ * antes de o carro chegar ao ritmo.
+ */
+export const START_STRAIGHT = 260
 
 /**
  * Maior mudança de rumo possível de um trecho para o seguinte.
@@ -92,21 +116,187 @@ export const MAX_HEADING_DELTA = HEADING_STEP + HEADING_RETURN * HEADING_LIMIT
  *
  * Sai da própria construção: o rumo varia por uma suavização cuja inclinação
  * máxima é 1,5, então a curvatura nunca passa de 1,5 × ΔRumo ÷ comprimento.
- * Corresponde a um raio de cerca de 195 m — uma curva rápida, não uma quina.
+ * Corresponde a um raio de cerca de 123 m — uma curva rápida, não uma quina.
+ * O grampo chega a 21 m.
  */
 export const MAX_CURVATURE = (1.5 * MAX_HEADING_DELTA) / CURVE_SEGMENT
 
 /**
- * Curvatura na escala com que a física trabalha: de -1 a 1.
+ * Quanto da curvatura acima da maior curva comum vira carga, por unidade.
  *
- * A simulação não conhece radianos por metro nem os comprimentos de onda do
- * traçado — e não deve, senão passaria a depender do gerador. Recebe esta
- * fração, e a conversão fica aqui, ao lado do número que a define, com nome e
- * teste próprios.
+ * A super curva é cinco vezes mais fechada que a pior curva comum, e em carga
+ * cheia isso pediria um carro a 100 km/h — num jogo sem freio, a grama na
+ * certa. Acima da curva comum a carga cresce mais devagar: continua
+ * monótona, então o que parece mais fechado empurra mais, mas o grampo de 180°
+ * fica em pouco mais do dobro da pior curva comum, e não em cinco vezes ela.
+ */
+export const SUPER_LOAD_SLOPE = 0.36
+
+/**
+ * Curvatura na escala com que a física trabalha.
+ *
+ * De -1 a 1 nas curvas comuns; as super curvas passam disso, até
+ * `MAX_CORNER_LOAD`. A simulação não conhece radianos por metro nem os
+ * comprimentos de onda do traçado — e não deve, senão passaria a depender do
+ * gerador. Recebe esta fração, e a conversão fica aqui, ao lado do número que
+ * a define, com nome e teste próprios.
  */
 export function curvatureLoad(curvature: number) {
-  return clamp(curvature / MAX_CURVATURE, -1, 1)
+  const relativa = Math.abs(curvature) / MAX_CURVATURE
+  const carga = relativa <= 1 ? relativa : 1 + (relativa - 1) * SUPER_LOAD_SLOPE
+  return Math.sign(curvature) * Math.min(carga, MAX_CORNER_LOAD)
 }
+
+// ---------------------------------------------------------------------------
+// Super curvas
+// ---------------------------------------------------------------------------
+
+/**
+ * Uma curva que o traçado comum não faz: de 90 a 270 graus em pouco mais de
+ * cem metros.
+ *
+ * O traçado comum é uma sucessão de trechos de rumo suave e nunca vira mais de
+ * meio radiano num trecho — é o que dá ritmo à prova. A super curva é o
+ * contrário: rara, anunciada e brutal. Vira de uma vez, empurra o dobro da
+ * pior curva comum, e é nela que se decide se o piloto entrou do jeito certo.
+ *
+ * Não existia em pseudo-3D por um motivo técnico: a câmera ficava presa ao
+ * eixo do mundo, e uma pista de 90° em relação a ela vira uma linha deitada.
+ * Com a câmera no referencial do carro (`lateralAhead`), a pista pode dar a
+ * volta que quiser.
+ */
+export type SuperCurve = {
+  /** Número da curva na prova, a partir de 1. É a chave da tangência. */
+  id: number
+  /** Onde ela começa a virar, em metros. */
+  start: number
+  /** Onde termina de virar. */
+  end: number
+  /** Ponto de maior curvatura, no meio dela. */
+  apex: number
+  /** Onde começa o trecho da zebra de dentro que conta como tangência. */
+  kerbStart: number
+  /** Onde ele termina. */
+  kerbEnd: number
+  /** Para que lado vira: 1 à direita, -1 à esquerda. */
+  side: 1 | -1
+  /** Quanto o rumo muda, em radianos, sempre positivo. */
+  turn: number
+  /** Nome que a nota de curva anuncia. */
+  name: string
+  /** Carga no ápice, na escala da física: quanto ela empurra. */
+  peakLoad: number
+  /**
+   * Verdadeiro na segunda metade de um S: ela emenda na anterior, sem reta
+   * entre as duas, e vira para o outro lado.
+   */
+  linked: boolean
+}
+
+/** Um trecho de super curva: quanto vira, em quanta pista, e para que lado em relação ao sorteado. */
+type TrechoDeSuperCurva = { virada: number; comprimento: number; sentido: 1 | -1 }
+
+type TipoDeSuperCurva = { nome: string; trechos: readonly TrechoDeSuperCurva[] }
+
+/**
+ * Os quatro tipos.
+ *
+ * O raio no ápice é o comprimento dividido por 1,5 vez a virada — a inclinação
+ * máxima da suavização. Todos ficam entre 21 e 27 metros: é o que faz deles
+ * curvas de outra ordem, e não curvas comuns mais compridas. O grampo é o mais
+ * fechado; o caracol é quase tão fechado quanto ele, e dura o dobro.
+ *
+ * O S são duas curvas de 100° emendadas, uma para cada lado, sem reta no meio:
+ * quem sai da primeira por fora já está do lado de dentro da segunda — se
+ * sobreviveu à primeira.
+ */
+export const SUPER_CURVE_TYPES: readonly TipoDeSuperCurva[] = [
+  { nome: 'COTOVELO', trechos: [{ virada: Math.PI / 2, comprimento: 64, sentido: 1 }] },
+  { nome: 'GRAMPO', trechos: [{ virada: Math.PI, comprimento: 100, sentido: 1 }] },
+  { nome: 'CARACOL', trechos: [{ virada: (3 * Math.PI) / 2, comprimento: 165, sentido: 1 }] },
+  {
+    nome: 'S',
+    trechos: [
+      { virada: (5 * Math.PI) / 9, comprimento: 64, sentido: 1 },
+      { virada: (5 * Math.PI) / 9, comprimento: 64, sentido: -1 },
+    ],
+  },
+]
+
+/**
+ * Quantas super curvas cada prova tem: uma de cada tipo, em ordem sorteada.
+ *
+ * O número é fixo, e os tipos também, para o tempo de prova não depender da
+ * sorte da semente — a demonstração tem janela de 60 a 90 segundos em
+ * qualquer traçado. O sorteio decide a ordem, o lado e o lugar.
+ */
+export const SUPER_CURVE_UNITS = SUPER_CURVE_TYPES.length
+
+/** Quantos trechos de super curva a prova tem: o S conta dois. */
+export const SUPER_CURVE_COUNT = SUPER_CURVE_TYPES.reduce((soma, tipo) => soma + tipo.trechos.length, 0)
+
+/**
+ * Quanto o desenho exagera o giro das super curvas.
+ *
+ * A física vira o que o traçado diz; o desenho vira uma vez e meia isso. A
+ * régua da curva na tela já era uma escolha de arte — `CURVE_BEND_SCALE` —, e
+ * nas super curvas ela passa a pesar mais: a pista chicoteia para fora da
+ * tela e a paisagem gira mais do que o carro, que é o exagero de Top Gear e
+ * Outrun. Fora delas o desenho é o traçado, sem nada a mais.
+ */
+export const SUPER_CURVE_DRAW_EXAGGERATION = 1.5
+
+/**
+ * Metros de muro depois do fim de uma super curva.
+ *
+ * O carro sai da curva ainda escorregando para fora, e a saída é onde a boa
+ * linha mais chega perto da grama. Num S não há resto: o muro da primeira
+ * metade acaba onde a segunda começa, porque ali o lado de fora da primeira é o
+ * de dentro da segunda.
+ */
+export const SUPER_CURVE_WALL_TAIL = 25
+
+/**
+ * Metros de reta antes de cada super curva.
+ *
+ * É o tempo de leitura: a 250 km/h são dois segundos entre a nota de curva e
+ * a entrada, que é o que um piloto precisa para soltar o boost e escolher o
+ * lado. Uma curva comum emendada na super curva a esconderia atrás de si.
+ */
+export const SUPER_CURVE_APPROACH = 150
+
+/** Metros de reta depois dela, para o carro endireitar antes da próxima. */
+export const SUPER_CURVE_EXIT = 60
+
+/** A primeira super curva não começa antes daqui: a prova precisa esquentar. */
+export const SUPER_CURVE_FIRST = 800
+
+/** A última termina antes daqui, para a chegada ser disputada em reta. */
+export const SUPER_CURVE_LAST = 4_450
+
+/**
+ * Trecho da zebra de dentro que conta como tangência, em frações da curva.
+ *
+ * Não é o meio da curva, e isso foi medido. Sem freio, a super curva sempre
+ * leva o carro para fora: empurra o dobro do que o volante segura, e o pneu só
+ * tira velocidade aos poucos. Quem entra encostado por dentro e vira tudo
+ * cruza o centro da pista antes do meio da curva e sai raspando a grama de
+ * fora — no grampo, o melhor piloto de teste chega ao meio dele já na metade de
+ * fora. O ponto em que a boa linha encosta na zebra de dentro é a entrada, e é
+ * ali que a tangência mora: do primeiro doze avos da curva até pouco mais do
+ * primeiro terço.
+ *
+ * O trecho mais curto, o do cotovelo, tem 23 m — bem mais que o avanço de um
+ * quadro a vinte quadros por segundo, 3,5 m em cruzeiro. Menor que isso, um
+ * aparelho lento pularia a zona inteira.
+ */
+export const TANGENCY_FROM = 0.08
+export const TANGENCY_TO = 0.4
+
+/** Maior curvatura de super curva: a do trecho mais fechado, no ápice. */
+export const SUPER_MAX_CURVATURE = Math.max(
+  ...SUPER_CURVE_TYPES.flatMap((tipo) => tipo.trechos.map((trecho) => (1.5 * trecho.virada) / trecho.comprimento)),
+)
 
 // ---------------------------------------------------------------------------
 // Relevo
@@ -144,8 +334,11 @@ export const FLAT_SHARE = 0.26
 /** Maior mudança de inclinação possível, somando sorteio e retorno. */
 export const MAX_SLOPE_DELTA = SLOPE_STEP + SLOPE_RETURN * SLOPE_LIMIT
 
-/** Espaçamento da tabela de posições da linha central, em metros. */
+/** Espaçamento da tabela de alturas da linha central, em metros. */
 const SAMPLE_STEP = 8
+
+/** Espaçamento da tabela da integral do rumo, em metros. */
+const INTEGRAL_STEP = 2
 
 /** Folga além da linha de chegada, porque a câmera enxerga adiante dela. */
 const TAIL = VIEW_DISTANCE + 200
@@ -454,12 +647,50 @@ export type TrackLayout = {
   seed: number
   /** Céu, terreno e vegetação desta corrida. */
   ambient: Ambient
-  /** Deslocamento lateral da linha central, em metros. */
-  centerOffset: (distance: number) => number
-  /** Rumo da pista naquele ponto, em radianos. */
+  /**
+   * Deslocamento lateral da linha central a `ahead` metros do ponto
+   * `progress`, no referencial de quem está em `progress`, em metros.
+   *
+   * É a câmera de perseguição: o rumo de referência é o da pista sob o carro,
+   * e não o de um eixo fixo do mundo. Com o eixo fixo, uma pista a 90° da
+   * câmera virava uma linha deitada, e era isso que limitava as curvas a 24°.
+   * Aqui só conta o quanto a pista vira **dali em diante**, então ela pode dar
+   * a volta que quiser. Acumula o ângulo em vez do seno dele, como os
+   * pseudo-3D de sempre: depois de um grampo a pista foge para o lado da
+   * tela, em vez de voltar paralela, que numa projeção sem profundidade de
+   * verdade pareceria uma segunda pista.
+   */
+  lateralAhead: (progress: number, ahead: number) => number
+  /**
+   * Rumo da pista naquele ponto, em radianos.
+   *
+   * Sem limite: cada super curva soma a própria virada. É do rumo que sai o
+   * giro da paisagem, e um grampo gira o céu meia volta.
+   */
   heading: (distance: number) => number
   /** Curvatura naquele ponto, em radianos por metro. */
   curvature: (distance: number) => number
+  /** As super curvas da prova, em ordem de distância. */
+  superCurves: readonly SuperCurve[]
+  /** A super curva que contém aquela distância, se houver. */
+  superCurveAt: (distance: number) => SuperCurve | null
+  /**
+   * Como `lateralAhead`, mas no traçado desenhado: nas super curvas, com o
+   * exagero de `SUPER_CURVE_DRAW_EXAGGERATION`. É o que a tela mostra.
+   */
+  bendAhead: (progress: number, ahead: number) => number
+  /** Rumo do traçado desenhado: é dele que sai o giro da paisagem. */
+  drawnHeading: (distance: number) => number
+  /** A super curva cujo muro de fora cobre aquela distância, se houver. */
+  wallAt: (distance: number) => SuperCurve | null
+  /**
+   * Preenche o que a física precisa saber da pista naquele ponto.
+   *
+   * É o único caminho do traçado para a simulação: o jogo, os testes e o
+   * servidor montam o contexto por aqui, e nenhum deles esquece um campo.
+   * Preenche o objeto do chamador porque roda a cada quadro.
+   */
+  fillContext: (progress: number, out: RaceContext) => void
   /** Altura da linha central naquele ponto, em metros. */
   elevation: (distance: number) => number
   /** Inclinação naquele ponto, em metros por metro. Positiva na subida. */
@@ -478,47 +709,259 @@ export type TrackLayout = {
   gantry: (index: number, out: Gantry) => boolean
 }
 
+/**
+ * Obstáculos que existem em todos os níveis.
+ *
+ * O miolo de uma super curva foge deles. Uma barreira no ápice trancaria a
+ * única linha que passa, e isso não é dificuldade, é armadilha — no primeiro
+ * grampo que o visitante do workshop vê. Os níveis mais duros ainda põem
+ * peças extras ali, e é parte do que os torna mais duros.
+ */
+const OBSTACULOS_DE_TODOS_OS_NIVEIS = rulesFor('normal').obstacles
+
+/** Passo, em metros, com que a janela é varrida atrás de lugares livres. */
+const PASSO_DE_LUGAR = 5
+
+/**
+ * Trechos da curva que fogem dos obstáculos, em frações dela.
+ *
+ * O miolo, onde a carga passa da metade da de pico, foge de tudo: ali o carro
+ * atravessa a pista inteira, e qualquer peça está no caminho. A entrada, dos
+ * setenta metros antes dela até o fim da zebra, foge só do que estiver do lado
+ * de dentro — é por onde passa a boa linha, e é para lá que a nota de curva
+ * manda o piloto. Uma peça ali obrigava a desviar e encostar em meio segundo,
+ * e um buraco na beirada de dentro era exatamente o que a boa linha
+ * atropelava. Do lado de fora, uma peça é o problema de quem não leu a nota.
+ */
+const MIOLO_DE = 0.15
+const MIOLO_ATE = 0.85
+const ENTRADA_ANTES_M = 70
+
+/** Quantos obstáculos um lugar da janela atropela, para uma curva dada. */
+function conflitosNoLugar(inicio: number, comprimento: number, lado: 1 | -1) {
+  let conflitos = 0
+  for (const obstaculo of OBSTACULOS_DE_TODOS_OS_NIVEIS) {
+    const relativo = (obstaculo.distance - inicio) / comprimento
+    const noMiolo = relativo > MIOLO_DE && relativo < MIOLO_ATE
+    const naEntradaPorDentro =
+      obstaculo.distance > inicio - ENTRADA_ANTES_M && relativo <= MIOLO_DE && obstaculo.lane * lado > 0
+    if (noMiolo || naEntradaPorDentro) conflitos += 1
+  }
+  return conflitos
+}
+
+/**
+ * Onde ficam as super curvas de uma semente.
+ *
+ * A prova é dividida em três janelas, e cada uma recebe uma curva: é o que
+ * garante a reta de aproximação de todas, e que duas nunca se emendem. O tipo
+ * de cada janela sai de um embaralhamento dos três, então toda prova tem um
+ * cotovelo, uma curva fechada e um grampo — só não se sabe em que ordem.
+ */
+function sortearSuperCurvas(seed: number): SuperCurve[] {
+  const ordem = SUPER_CURVE_TYPES.map((_, indice) => indice)
+  for (let i = ordem.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(randomAt(seed, i, 26) * (i + 1))
+    const guardado = ordem[i]
+    ordem[i] = ordem[j]
+    ordem[j] = guardado
+  }
+
+  // O lado vem antes do lugar, porque o lugar depende de qual é o lado de
+  // dentro. Todas para o mesmo lado deixariam um dos lados da pista sem uso na
+  // hora que mais importa: a segunda troca, e o sorteio decide as outras.
+  const lados: (1 | -1)[] = ordem.map((_, i) => (randomAt(seed, i, 25) < 0.5 ? -1 : 1))
+  if (lados.every((lado) => lado === lados[0])) lados[1] = lados[1] === 1 ? -1 : 1
+
+  const janela = (SUPER_CURVE_LAST - SUPER_CURVE_FIRST) / SUPER_CURVE_UNITS
+  const curvas: SuperCurve[] = []
+  for (let i = 0; i < SUPER_CURVE_UNITS; i += 1) {
+    const tipo = SUPER_CURVE_TYPES[ordem[i]]
+    const lado = lados[i]
+    const extensao = tipo.trechos.reduce((soma, trecho) => soma + trecho.comprimento, 0)
+    // Metros inteiros: o lugar testado é o lugar gravado, sem arredondamento
+    // no meio que empurre uma barreira da borda do miolo para dentro dele.
+    const primeiro = Math.ceil(SUPER_CURVE_FIRST + i * janela + SUPER_CURVE_APPROACH)
+    const ultimo = Math.floor(SUPER_CURVE_FIRST + (i + 1) * janela - extensao - SUPER_CURVE_EXIT)
+
+    // Varre a janela inteira e guarda os lugares livres; o sorteio escolhe
+    // entre eles. Sortear lugares ao acaso e testar deixava, de vez em quando,
+    // uma janela com lugar livre sem encontrá-lo. Num S, os dois trechos
+    // precisam estar livres, cada um com o próprio lado de dentro.
+    const livres: number[] = []
+    let menosPior = primeiro
+    let menosConflitos = Number.POSITIVE_INFINITY
+    for (let inicio = primeiro; inicio <= ultimo; inicio += PASSO_DE_LUGAR) {
+      let conflitos = 0
+      let comeco = inicio
+      for (const trecho of tipo.trechos) {
+        conflitos += conflitosNoLugar(comeco, trecho.comprimento, lado * trecho.sentido as 1 | -1)
+        comeco += trecho.comprimento
+      }
+      if (conflitos === 0) livres.push(inicio)
+      if (conflitos < menosConflitos) {
+        menosPior = inicio
+        menosConflitos = conflitos
+      }
+    }
+    const sorteio = randomAt(seed, i, 24)
+    let comeco = livres.length > 0 ? livres[Math.floor(sorteio * livres.length)] : menosPior
+    tipo.trechos.forEach((trecho, indice) => {
+      curvas.push({
+        id: curvas.length + 1,
+        start: comeco,
+        end: comeco + trecho.comprimento,
+        apex: comeco + trecho.comprimento / 2,
+        kerbStart: comeco + trecho.comprimento * TANGENCY_FROM,
+        kerbEnd: comeco + trecho.comprimento * TANGENCY_TO,
+        side: (lado * trecho.sentido) as 1 | -1,
+        turn: trecho.virada,
+        name: tipo.nome,
+        peakLoad: curvatureLoad((1.5 * trecho.virada) / trecho.comprimento),
+        linked: indice > 0,
+      })
+      comeco += trecho.comprimento
+    })
+  }
+  return curvas
+}
+
+/** Verdadeiro quando o trecho [de, ate] encosta na janela de alguma super curva. */
+function encostaEmSuperCurva(curvas: readonly SuperCurve[], de: number, ate: number) {
+  return curvas.some((curva) => ate > curva.start - SUPER_CURVE_APPROACH && de < curva.end + SUPER_CURVE_EXIT)
+}
+
 export function createTrackLayout(seed: number): TrackLayout {
   const comprimento = TRACK_LENGTH + TAIL
   const trechos = Math.ceil(comprimento / CURVE_SEGMENT) + 2
 
-  // Rumo alvo de cada trecho. Os três primeiros ficam em zero, o que mantém os
-  // 260 m iniciais em linha reta: a arrancada sai de uma velocidade baixa e
-  // precisa de uma referência sem curva para o ganho ser legível.
+  // As super curvas vêm antes do traçado comum, porque ele precisa saber onde
+  // elas estão para deixar reta a aproximação de cada uma.
+  const superCurvas: readonly SuperCurve[] = sortearSuperCurvas(seed)
+
+  // Rumo alvo de cada trecho. Os primeiros ficam em zero, e o trecho seguinte
+  // só começa a virar depois de `START_STRAIGHT`: a transição de um rumo para
+  // outro acontece dentro do trecho, então a reta vai até o fim do último zero.
   const rumos = new Float64Array(trechos + 2)
-  for (let i = 3; i < rumos.length; i += 1) {
+  const trechosRetos = Math.ceil(START_STRAIGHT / CURVE_SEGMENT) + 1
+  for (let i = trechosRetos; i < rumos.length; i += 1) {
+    // O trecho que leva de `rumos[i - 1]` a `rumos[i]` é o i-ésimo menos um.
+    // Encostando numa super curva, ele fica reto de verdade — e não "reto com
+    // retorno ao eixo", que ainda viraria um pouco e tiraria a leitura da
+    // aproximação.
+    if (encostaEmSuperCurva(superCurvas, (i - 1) * CURVE_SEGMENT, i * CURVE_SEGMENT)) {
+      rumos[i] = rumos[i - 1]
+      continue
+    }
     const reta = randomAt(seed, i, 2) < STRAIGHT_SHARE
-    const bruto = reta ? 0 : (randomAt(seed, i, 1) * 2 - 1) * HEADING_STEP
+    // O mesmo número dá o lado e o quanto vira: o sinal decide o lado, e a
+    // magnitude, levada para além de `MIN_TURN`, faz a curva ser curva.
+    const sorteio = randomAt(seed, i, 1) * 2 - 1
+    const virada = (MIN_TURN + (1 - MIN_TURN) * Math.abs(sorteio)) * HEADING_STEP
+    const bruto = reta ? 0 : Math.sign(sorteio) * virada
     // O termo de retorno impede que o traçado derive sempre para o mesmo lado.
     const proposto = rumos[i - 1] * (1 - HEADING_RETURN) + bruto
     rumos[i] = clamp(proposto, -HEADING_LIMIT, HEADING_LIMIT)
   }
 
-  function rumoEm(distance: number) {
+  /** Rumo do traçado comum, que nunca passa de `HEADING_LIMIT`. */
+  function rumoComum(distance: number) {
     const bruto = clamp(distance, 0, comprimento) / CURVE_SEGMENT
     const trecho = Math.min(rumos.length - 2, Math.floor(bruto))
     const t = bruto - trecho
     return rumos[trecho] + (rumos[trecho + 1] - rumos[trecho]) * smoothstep(t)
   }
 
-  // Posição da linha central, integrada uma única vez e depois consultada por
-  // interpolação: o laço de quadro não pode integrar nada.
-  const amostras = Math.ceil(comprimento / SAMPLE_STEP) + 2
-  const offsets = new Float64Array(amostras)
-  let acumulado = 0
-  for (let i = 1; i < amostras; i += 1) {
-    const anterior = Math.tan(rumoEm((i - 1) * SAMPLE_STEP))
-    const atual = Math.tan(rumoEm(i * SAMPLE_STEP))
-    acumulado += ((anterior + atual) / 2) * SAMPLE_STEP
-    offsets[i] = acumulado
+  /**
+   * Quanto as super curvas já viraram até ali.
+   *
+   * Cada uma soma a própria virada pela mesma suavização do traçado comum:
+   * curvatura nula na entrada e na saída, máxima no meio. É o que põe o ápice
+   * exatamente no centro da curva, onde a zona da tangência o espera.
+   */
+  function rumoDasSuperCurvas(distance: number) {
+    let soma = 0
+    for (const curva of superCurvas) {
+      if (distance <= curva.start) break
+      const t = Math.min(1, (distance - curva.start) / (curva.end - curva.start))
+      soma += curva.side * curva.turn * smoothstep(t)
+    }
+    return soma
   }
 
-  function offsetEm(distance: number) {
-    const bruto = clamp(distance, 0, comprimento) / SAMPLE_STEP
-    const indice = Math.min(amostras - 2, Math.floor(bruto))
-    const t = bruto - indice
-    return offsets[indice] + (offsets[indice + 1] - offsets[indice]) * t
+  /** Derivada exata de `rumoDasSuperCurvas`. */
+  function curvaturaDasSuperCurvas(distance: number) {
+    for (const curva of superCurvas) {
+      if (distance <= curva.start || distance >= curva.end) continue
+      const extensao = curva.end - curva.start
+      const t = (distance - curva.start) / extensao
+      return (curva.side * curva.turn * 6 * t * (1 - t)) / extensao
+    }
+    return 0
   }
+
+  const rumoEm = (distance: number) => rumoComum(distance) + rumoDasSuperCurvas(distance)
+  const curvaturaEm = (distance: number) =>
+    rumoComum(distance + 0.5) - rumoComum(distance - 0.5) + curvaturaDasSuperCurvas(distance)
+
+  /**
+   * Integral de um rumo, feita uma única vez e depois consultada por
+   * interpolação: o laço de quadro não pode integrar nada. É dela que sai a
+   * pista no referencial do carro. O passo é de dois metros, e não de oito,
+   * porque num grampo o rumo muda um terço de radiano em oito metros, e o erro
+   * da interpolação apareceria logo à frente do carro.
+   */
+  const integrar = (rumo: (distance: number) => number) => {
+    const amostrasDaIntegral = Math.ceil(comprimento / INTEGRAL_STEP) + 2
+    const integral = new Float64Array(amostrasDaIntegral)
+    let acumulado = 0
+    let rumoAnterior = rumo(0)
+    for (let i = 1; i < amostrasDaIntegral; i += 1) {
+      const rumoAtual = rumo(i * INTEGRAL_STEP)
+      acumulado += ((rumoAnterior + rumoAtual) / 2) * INTEGRAL_STEP
+      integral[i] = acumulado
+      rumoAnterior = rumoAtual
+    }
+    return (distance: number) => {
+      const bruto = clamp(distance, 0, comprimento) / INTEGRAL_STEP
+      const indice = Math.min(amostrasDaIntegral - 2, Math.floor(bruto))
+      const t = bruto - indice
+      return integral[indice] + (integral[indice + 1] - integral[indice]) * t
+    }
+  }
+
+  const integralEm = integrar(rumoEm)
+  // O rumo desenhado: o traçado comum como ele é, e as super curvas com o
+  // exagero do desenho. A física nunca o lê.
+  const rumoDesenhadoEm = (distance: number) =>
+    rumoComum(distance) + SUPER_CURVE_DRAW_EXAGGERATION * rumoDasSuperCurvas(distance)
+  const integralDesenhadaEm = integrar(rumoDesenhadoEm)
+
+  function superCurvaEm(distance: number) {
+    for (const curva of superCurvas) {
+      if (distance >= curva.start && distance <= curva.end) return curva
+    }
+    return null
+  }
+
+  /**
+   * A super curva cujo muro cobre aquela distância.
+   *
+   * O muro vai da entrada até um pouco depois da saída — é na saída que o carro
+   * mais chega perto dele —, menos na primeira metade de um S, onde ele acaba
+   * exatamente no começo da segunda.
+   */
+  function muroEm(distance: number) {
+    for (let i = 0; i < superCurvas.length; i += 1) {
+      const curva = superCurvas[i]
+      const emendada = i + 1 < superCurvas.length && superCurvas[i + 1].linked
+      const fim = curva.end + (emendada ? 0 : SUPER_CURVE_WALL_TAIL)
+      if (distance >= curva.start && distance < fim) return curva
+    }
+    return null
+  }
+
+  const amostras = Math.ceil(comprimento / SAMPLE_STEP) + 2
 
   // Relevo, construído pela mesma máquina do rumo: inclinação alvo por trecho,
   // suavização com derivada nula nas pontas — o que zera a curvatura vertical
@@ -571,9 +1014,32 @@ export function createTrackLayout(seed: number): TrackLayout {
   return {
     seed,
     ambient: ambientFor(seed),
-    centerOffset: offsetEm,
+    lateralAhead: (progress, ahead) =>
+      integralEm(progress + ahead) - integralEm(progress) - ahead * rumoEm(progress),
+    bendAhead: (progress, ahead) =>
+      integralDesenhadaEm(progress + ahead) - integralDesenhadaEm(progress) - ahead * rumoDesenhadoEm(progress),
+    drawnHeading: rumoDesenhadoEm,
+    wallAt: muroEm,
     heading: rumoEm,
-    curvature: (distance) => rumoEm(distance + 0.5) - rumoEm(distance - 0.5),
+    curvature: curvaturaEm,
+    superCurves: superCurvas,
+    superCurveAt: superCurvaEm,
+    fillContext(progress, out) {
+      const curvatura = curvaturaEm(progress)
+      out.curvature = curvatureLoad(curvatura)
+      out.lineGain = curvatura * METERS_PER_LATERAL
+      // A zebra de dentro, na entrada, é o único trecho em que a tangência conta.
+      let apice: SuperCurve | null = null
+      for (const curva of superCurvas) {
+        if (progress >= curva.kerbStart && progress <= curva.kerbEnd) apice = curva
+      }
+      out.apexId = apice ? apice.id : 0
+      out.apexSide = apice ? apice.side : 0
+      // O muro fica por fora: do lado contrário ao da curva.
+      const muro = muroEm(progress)
+      out.wallId = muro ? muro.id : 0
+      out.wallSide = muro ? -muro.side : 0
+    },
     elevation: alturaEm,
     slope: inclinacaoEm,
     gantry(index, out) {
@@ -581,11 +1047,21 @@ export function createTrackLayout(seed: number): TrackLayout {
       // Nem todo marco recebe arco: em fila certinha o pórtico vira placa de
       // quilometragem, e o que se quer é que ele marque alguma coisa.
       if (randomAt(seed, index, 22) > 0.62) return false
+      // Nem dentro de uma super curva: o arco atravessaria a pista justo onde
+      // ela foge para o lado da tela, e taparia a leitura do grampo.
+      const distancia = index * SCENERY_SPACING
+      if (superCurvas.some((curva) => distancia > curva.start - 40 && distancia < curva.end + 20)) return false
       out.variant = Math.floor(randomAt(seed, index, 23) * 3)
       return true
     },
 
     scenery(index, side, out) {
+      // Por fora de uma super curva, o lugar é do muro e das placas de seta: um
+      // objeto ali disputaria a atenção com o único aviso que importa — e
+      // ficaria atrás do muro, cortado por ele.
+      const curva = muroEm(index * SCENERY_SPACING)
+      if (curva && side === -curva.side) return false
+
       const familia = familiaBruta(index, side)
       if (familia === null) return false
 
@@ -612,6 +1088,19 @@ export function createTrackLayout(seed: number): TrackLayout {
       return true
     },
   }
+}
+
+/**
+ * Contexto da física ligado a um traçado: a curva, a linha e a zebra da
+ * tangência são relidas a cada passo fixo, no ponto em que o carro está.
+ *
+ * É o único jeito de montar o contexto de uma corrida de verdade — o jogo, os
+ * testes de aceitação e os pilotos de referência passam por aqui. Um contexto
+ * montado à mão esquecia o leitor, e a física voltava a ler a pista uma vez
+ * por quadro sem que nada avisasse.
+ */
+export function createRaceContext(layout: TrackLayout): RaceContext {
+  return { curvature: 0, slipstream: 0, lineGain: 0, apexId: 0, apexSide: 0, sample: layout.fillContext }
 }
 
 /** Primeira vaga de cenário ainda à frente da câmera. */

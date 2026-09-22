@@ -6,9 +6,9 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": [
         "run",
-        "dev"
+        "dev:paralelo"
       ],
-      "port": 5173
+      "port": 5175
     },
     {
       "name": "bancada",

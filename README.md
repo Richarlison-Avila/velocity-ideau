@@ -25,6 +25,61 @@ parte — é consequência de a curva cobrar o quadrado da velocidade. Para um p
 que precisa desviar de obstáculos enquanto segura a curva, o custo medido é de
 0,35 s no normal, 1,3 s no difícil e 2,1 s no profissional.
 
+**Por dentro é mais curto.** Numa curva de raio R, a linha a n metros do centro
+tem raio R − n: quem vai por dentro avança na pista mais depressa na mesma
+velocidade, e quem vai por fora, mais devagar. Pela mesma conta, por dentro a
+curva empurra mais. É a escolha de toda curva de verdade, e pseudo-3D nenhum da
+linhagem de Top Gear e Horizon Chase a fazia: neles o carro avança pela linha
+central esteja onde estiver. O ganho nunca faz o carro passar do teto do nível, que
+é o que o servidor usa para o tempo mínimo da prova.
+
+**As super curvas.** Toda prova tem quatro, uma de cada tipo, em ordem e lado
+sorteados pela semente, todas com raio de 21 a 27 m no ápice:
+
+| Tipo | Virada | Pista | Carga no ápice |
+| --- | --- | --- | --- |
+| Cotovelo | 90° | 64 m | 2,27× a pior curva comum |
+| Grampo | 180° | 100 m | 2,72× — o mais fechado |
+| Caracol | 270° | 165 m | 2,53×, e dura o dobro |
+| S | 100° + 100°, emendadas | 2 × 64 m | 2,45× em cada metade |
+
+Sem freio, a super curva sempre leva o carro para fora — segurar o volante não
+basta. O que decide a curva é a entrada:
+
+- **A nota de curva avisa** 280 m antes, do lado para onde a pista vai, como o
+  copiloto de rali: nome, ângulo, distância e o que fazer (*SOLTE O BOOST*,
+  *ENTRE POR DENTRO*, *SEGURE*). No S ela mostra as duas setas e, passado o ápice
+  da primeira metade, já fala da segunda.
+- **Quem entra por dentro** e segura o volante passa no asfalto, raspando a grama
+  no máximo na saída do grampo e do caracol. Passar pela faixa âmbar da zebra de
+  dentro, na entrada, é a **tangência**: devolve 22% de boost, uma vez por curva.
+  No S, a boa linha deixa o carro abrir no fim da primeira metade — o lado de fora
+  dela é o de dentro da segunda.
+- **Por fora de cada super curva há um muro de pneus**, a 70 cm do asfalto.
+  Encostar nele é batida: conta para o reset, derruba a velocidade, solta faísca, e
+  colado nele o carro continua raspando velocidade. Quem entra pelo meio vai para a
+  grama e cai de ~250 para ~140 km/h; quem entra de boost, ou corrige tarde, bate.
+- Medido com os pilotos de teste: quem lê a nota faz todas as tangências e **nunca
+  bate no muro**, em todo nível e semente. No normal, é também a linha rápida. O
+  iniciante, que só corrige na borda do asfalto, bate no muro em toda semente e
+  ainda assim termina dentro da janela de 60 a 90 s em todos os níveis.
+
+A pista relida a cada passo fixo, e não uma vez por quadro, garante que a super
+curva chegue na mesma hora para aparelhos de 60, 30 e 20 quadros por segundo. O
+traçado põe o miolo de cada uma, e o lado de dentro da entrada, longe dos
+obstáculos que todos os níveis têm.
+
+**Para desenhar a volta, a câmera virou de verdade.** Ela ficava presa ao eixo do
+mundo, e era isso que limitava as curvas a 24°. Agora a pista é desenhada no
+referencial do carro, e a paisagem gira com o rumo dele. E o desenho exagera: nas
+super curvas a pista na tela vira uma vez e meia o que a física vira, chicoteando
+para fora da tela, e a paisagem gira junto — o caracol passa o céu inteiro diante
+do carro mais de uma vez. O horizonte inclina para dentro da curva na proporção da
+força lateral, dois graus nas curvas comuns e mais de dez num grampo embalado, e o
+carro deita com ela. O muro é uma parede contínua de pneus vermelhos e brancos com
+as placas de seta em cima, e o pneu que passa da carga da pior curva comum solta
+fumaça.
+
 **O vácuo do rival rende.** Vindo atrás e alinhado com o adversário, o carro ganha
 até 26 km/h no normal — cerca de 10% do cruzeiro nos três níveis —, mais forte
 quanto mais perto. Ultrapassar custa esse ganho, porque a esteira desaparece no
@@ -49,6 +104,8 @@ npm run dev
 O comando inicia o site (porta 5173) e o servidor Socket.IO (porta 3001). Abra o endereço do Vite; ele aceita conexões da rede local para facilitar testes no celular.
 
 Para apontar o jogo a outro servidor da partida, use `GAME_SERVER_URL` no desenvolvimento ou `VITE_SERVER_URL` na build.
+
+`npm run dev:paralelo` sobe o mesmo par nas portas 5175 e 3002, para quando outra cópia do projeto — outra worktree, outra sessão — já está com a 5173 e a 3001. É o que a entrada `corrida-fantasma` de `.claude/launch.json` usa.
 
 ## Publicar
 
@@ -89,7 +146,16 @@ Cada ponto do molde é dado em metros e projetado por uma câmera de teleobjetiv
 
 Nenhum volume usa degradê; todos são resolvidos em faixas de cor chapada, como um artista de pixel art resolve um cilindro, e a rampa de tons desliza com a luminância da pintura — numa cor clara o relevo vem de escurecer, numa escura de clarear. O que dá volume de verdade, porém, são as costuras: um vinco escuro em cada encontro de peça, mais largo do lado da sombra do que do lado do sol, com um fio claro na quina iluminada. É o vale entre os pontões e a tampa do motor, e o lábio escuro no contorno do pontão, que fazem o meio do carro deixar de ser uma chapa.
 
-`src/game/carSprites.ts` assa esse molde numa folha de sprites, uma tira de nove quadros de esterço, e o laço de corrida escolhe o quadro e faz um `drawImage`. O que varia continuamente — posição, escala com a distância, inclinação da carroceria, trepidação e brilho do boost — fica para a hora do desenho. A garagem e o lobby usam o SVG do mesmo molde, que amplia sem perder nada.
+`src/game/carSprites.ts` assa esse molde numa folha de sprites de quinze quadros, e o laço de corrida escolhe o quadro e faz um `drawImage`. O que varia continuamente — posição, escala com a distância, inclinação da carroceria, trepidação e brilho do boost — fica para a hora do desenho. A garagem e o lobby usam o SVG do mesmo molde, que amplia sem perder nada.
+
+Os quadros são poses de um eixo só, da derrapagem toda à esquerda à derrapagem toda à direita:
+
+- **Curva comum**: nove quadros, do volante todo virado para um lado ao outro. As rodas da frente esterçam, a carroceria rola, o piloto se joga para dentro da curva e o carro **gira no próprio eixo** até 7°.
+- **Derrapagem**: três quadros de cada lado. O carro atravessa até 13°, a traseira escapa para fora da curva e as rodas da frente **contraesterçam** — o desenho clássico do carro seguro no limite.
+
+O giro não é um recorte girado: cada camada do molde — asa, rodas, bico, pontões, cockpit, piloto, motor, traseira — desliza de lado na proporção da distância dela ao pivô, pouco à frente do eixo traseiro, e as camadas compridas são cisalhadas. É o que a projeção faria com o carro girado de verdade, sem mexer em nenhuma das centenas de faces.
+
+A pose sai da física: o esterço é o do volante, e a derrapagem começa quando a curva passa da carga da pior curva comum — só nas super curvas, ou entrando embalado demais. Ela entra em pouco mais de um décimo de segundo e sai em quase três, e é essa inércia que faz a troca de quadros virar movimento: na entrada de um grampo o carro vira, atravessa, escorrega e endireita. O rival derrapa pela mesma conta, com a curva de onde ele está e a velocidade que informou.
 
 A meia-largura do pneu traseiro é `CAR_SPRITE_HALF_WIDTH`, e um teste cobra isso: o carro ocupa na tela exatamente a largura que a regra de saída de pista cobra. O rival usa a mesma folha, banhada de azul, e nunca se confunde com o carro do próprio jogador.
 
@@ -146,13 +212,17 @@ Entre a serra e a grama corre uma faixa própria de cada lugar: linha de mata no
 
 Ela corre mais depressa que a serra e mais devagar que as árvores da beira da pista, e é essa diferença de velocidade que dá a leitura de camadas. O sorteio da tira não usa a semente da corrida: é decoração de horizonte, igual para todo mundo que correr naquele lugar.
 
-`banca.html` é a bancada de desenvolvimento: abre com `npm run dev` em `/banca.html` e mostra toda a folha em três tamanhos, os cinco obstáculos em cinco tamanhos, a poça nos quatro ambientes, uma tira de pórticos de cento e vinte metros até a vaga em que são cortados, as quatro faixas de fundo e o carro em seis poses; no rodapé, o tempo de assar e o tamanho da folha. `?familia=tree` isola uma família, `?flora=seca` troca a paleta. Não entra na build. Ela não precisa do servidor da partida, então a entrada `bancada` de `.claude/launch.json` sobe só o Vite, na porta 5174 — útil quando outra sessão já está com a 5173.
+`banca.html` é a bancada de desenvolvimento: abre com `npm run dev` em `/banca.html` e mostra toda a folha em três tamanhos, os obstáculos numa pista com a régua antiga e a nova lado a lado, os cinco obstáculos em cinco tamanhos, a poça nos quatro ambientes, uma tira de pórticos de cento e vinte metros até a vaga em que são cortados, as quatro faixas de fundo e o carro em seis poses; no rodapé, o tempo de assar e o tamanho da folha. `?familia=tree` isola uma família, `?flora=seca` troca a paleta. Não entra na build. Ela não precisa do servidor da partida, então a entrada `bancada` de `.claude/launch.json` sobe só o Vite, na porta 5174 — útil quando outra sessão já está com a 5173.
 
 O fundo tem duas cordilheiras, a de trás já lavada pela cor do céu, e cada uma é desenhada duas vezes com a mesma crista deslocada: o que sobra entre as duas é a lasca acesa na encosta voltada para o sol. Nuvens, o halo do sol em três degraus de opacidade e as rajadas de velocidade do boost completam o fundo. Tudo isso junto custa 0,4 ms por quadro.
 
 O que está longe recebe só a silhueta. Detalhe no horizonte vira ruído, e quem manda ali é a névoa.
 
 ### Obstáculos
+
+Todo obstáculo mede uma fração da largura da pista **naquela distância** — a mesma régua de perspectiva do asfalto, do cenário e do fantasma. Antes ele tinha régua própria, uma curva quase linear na distância: a pista encolhe com `1/z` e o obstáculo encolhia bem menos, e a cem metros uma barreira cobria dois terços do asfalto que, na altura do carro, ela cobre um quinto. Chegava enorme e ia "diminuindo para dentro" da pista conforme se aproximava, e é daí que vinha a impressão de peça colada por cima dela. Na altura do carro nada mudou — ali a colisão foi calibrada contra o desenho, e um teste cobra que o tamanho continue o de antes.
+
+As peças deitadas — buraco, óleo e poça — têm comprimento em metros ao longo da pista, e as duas bordas passam pela mesma projeção que desenha as faixas de doze metros do asfalto. É o que as deita: antes tinham proporção fixa entre altura e largura e, ao longe, ficavam de pé como discos. A perspectiva de verdade, porém, achata um buraco a cinquenta metros até um pixel e meio, e encostado na zebra ele sumia — o que não pode acontecer com a peça que fecha a beirada da pista. Então, dali em diante, o achatamento para em 14% e a peça fica um traço deitado que ainda se lê. `banca.html` mostra a mesma cena com as duas réguas, lado a lado.
 
 Barreira e cone saem da folha, como o resto do cenário. Eram os últimos desenhos ao vivo de pé sobre o chão, e os únicos fora do banho de névoa da folha: em cor cheia, apareciam recortados de outra cena à medida que a pista escurecia. A barreira tem duas pinturas, de galões e de blocos, e a variante sai do identificador do obstáculo — que é literal em `track.ts`, então os dois pilotos veem a mesma barreira no mesmo lugar. Buraco, óleo e poça seguem procedurais, deitados no asfalto.
 
@@ -217,6 +287,16 @@ Ele entra na sala como segundo jogador, confirma presença, corre no ritmo pedid
 - `A` / `D` ou setas: direção
 - `Espaço`: boost
 - Celular: botões de direção e boost na tela
+- **SOM** liga e desliga todo o áudio; **MÚSICA** liga e desliga só a trilha, e as duas escolhas ficam guardadas na aba
+
+### Trilha sonora
+
+Rock de corrida, gerado na hora como o resto do som — sem arquivo nenhum. `src/game/trilha.ts` guarda a composição como partitura, testada sem navegador, e a sintetiza pelo mesmo contexto de áudio do motor:
+
+- Mi menor, 150 batidas por minuto, em quatro seções de oito compassos: **estrofe** com a guitarra abafada em galope, **refrão** com acordes soltos e a guitarra solo por cima, **estrofe** de novo e **ponte** com o bumbo nos quatro tempos até a virada de caixa que devolve ao começo. São 51 segundos, e a trilha dá a volta.
+- Bateria de seno e ruído filtrado, baixo em serra, power chords de seis serras desafinadas somadas antes de uma saturação e de uma caixa de som simulada, e a guitarra solo com vibrato e eco.
+- Entra no "VAI!" com o prato do primeiro compasso — no duelo, a mesma largada nos dois aparelhos — e some aos poucos na bandeirada. Fica sob o motor, que é retorno de jogo.
+- As notas são agendadas pouco adiante, no relógio do áudio, e não no de animação: a música não atrasa quando o quadro engasga. Renderizada fora de tempo real, a trilha inteira custa cerca de 8% de um núcleo de computador de mesa.
 
 ## Como a largada é sincronizada
 
@@ -245,6 +325,8 @@ A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resu
 
 - [x] Fluxo menu → largada → corrida → resultado → nova tentativa
 - [x] Pista pseudo-3D e aceleração automática
+- [x] Super curvas de 90° a 270° e S emendado, com nota de curva, tangência, muro de pneus e câmera no referencial do carro
+- [x] Reset depois de três batidas ou de tempo demais fora da pista
 - [x] Controles por teclado e toque
 - [x] Limites da pista, obstáculos e penalidades
 - [x] Boost com consumo, recarga e bloqueio ao esgotar
@@ -271,6 +353,8 @@ A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resu
 - [x] Sala de demonstração que se cria sozinha
 - [x] Fontes servidas pelo projeto, sem depender de internet
 - [x] Garagem com cinco carros: a escolha vale no treino e no duelo, e o fantasma usa a pintura do rival
+- [x] Quadros de curva e de derrapagem com contraesterço, com transição guiada pela física da curva
+- [x] Trilha sonora de rock procedural, com botão próprio
 - [x] QR code definitivo e roteiro do workshop
 
 ## Limitações conhecidas

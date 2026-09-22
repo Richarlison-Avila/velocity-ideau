@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createGameServer, type GameServer } from './app.js'
 import type { PublicRoom, RaceOutcome } from './rooms.js'
 import { GhostTracker, INTERPOLATION_DELAY_MS, type GhostSnapshot } from '../src/game/ghost.js'
-import { createTrackLayout, curvatureLoad } from '../src/game/layout.js'
-import { noLimiteDoAsfalto, segurandoAFaixa, type Piloto } from '../src/game/piloto.js'
+import { createRaceContext, createTrackLayout } from '../src/game/layout.js'
+import { desviando, noLimiteDoAsfalto, segurandoAFaixa, tangenciando, type Piloto } from '../src/game/piloto.js'
 import { DIFFICULTIES, type Difficulty } from '../src/game/rules.js'
 import { createRaceState, stepRace, type RaceContext } from '../src/game/simulation.js'
 import { TRACK_LENGTH } from '../src/game/track.js'
@@ -27,19 +27,40 @@ import { TRACK_LENGTH } from '../src/game/track.js'
  * Os dois pilotos da demonstração.
  *
  * Desde que a curva empurra o carro, uma prova sem ninguém no volante termina
- * na grama e não representa o que o público vai ver. O piloto atento com boost
+ * na grama e não representa o que o público vai ver. O que desvia com boost
  * faz o papel de quem já pegou o jeito; o que corrige só na borda do asfalto
  * faz o papel do visitante que pegou o celular agora — e é ele que define o
  * piso: se este completa a prova no tempo previsto, qualquer pessoa completa.
+ *
+ * O rápido era o que segurava o meio da pista com o boost ligado. Com o reset
+ * na terceira batida ele deixou de ser rápido — bate nas barreiras do meio e
+ * perde um segundo e meio parado —, e rápido passou a ser quem desvia. O que
+ * desvia guarda a faixa que escolheu, então é criado um por corrida.
  */
-const ATENTO_COM_BOOST: Piloto = segurandoAFaixa(0, true)
+const QUEM_DESVIA_COM_BOOST = () => desviando(true)
 const INICIANTE: Piloto = noLimiteDoAsfalto()
 
 let server: GameServer
 let port = 0
 const clients: Socket[] = []
 
-type Corrida = { tempo: number; topSpeed: number; colisoes: number; foraDaPista: number }
+type Corrida = {
+  tempo: number
+  topSpeed: number
+  colisoes: number
+  foraDaPista: number
+  tangencias: number
+  /** Segundos gastos nas janelas das super curvas, da nota à saída. */
+  tempoNasSuperCurvas: number
+  /** Fração desse tempo com as rodas fora do asfalto. */
+  foraNasSuperCurvas: number
+  /** Batidas no muro das super curvas. */
+  muros: number
+}
+
+/** Onde começa e termina a janela de uma super curva, para medir o que ela cobra. */
+const ANTES_DA_SUPER_CURVA = 110
+const DEPOIS_DA_SUPER_CURVA = 60
 
 /** Semente usada nas provas simuladas deste arquivo. */
 const SEMENTE_DA_DEMO = 20_250
@@ -54,22 +75,40 @@ const SEMENTE_DA_DEMO = 20_250
 function correr(piloto: Piloto, difficulty: Difficulty = 'normal', semente = SEMENTE_DA_DEMO): Corrida {
   const layout = createTrackLayout(semente)
   const state = createRaceState(difficulty)
-  const context: RaceContext = { curvature: 0, slipstream: 0 }
+  // O contexto da corrida de verdade: a pista relida a cada passo fixo, com as
+  // super curvas, a linha e a zebra da tangência.
+  const context = createRaceContext(layout)
   let tempo = 0
   let quadrosForaDaPista = 0
   let quadros = 0
+  let quadrosNasCurvas = 0
+  let foraNasCurvas = 0
+  let muros = 0
   while (!state.finished && tempo < 300) {
-    context.curvature = curvatureLoad(layout.curvature(state.progress))
-    stepRace(state, piloto(state), 1 / 60, context)
+    for (const evento of stepRace(state, piloto(state), 1 / 60, context)) {
+      if (evento.type === 'wall') muros += 1
+    }
     tempo += 1 / 60
     quadros += 1
     if (state.offRoad) quadrosForaDaPista += 1
+    const naJanela = layout.superCurves.some(
+      (curva) =>
+        state.progress > curva.start - ANTES_DA_SUPER_CURVA && state.progress < curva.end + DEPOIS_DA_SUPER_CURVA,
+    )
+    if (naJanela) {
+      quadrosNasCurvas += 1
+      if (state.offRoad) foraNasCurvas += 1
+    }
   }
   return {
     tempo,
     topSpeed: state.topSpeed,
     colisoes: state.collisions,
     foraDaPista: quadrosForaDaPista / Math.max(1, quadros),
+    tangencias: state.apexes.size,
+    tempoNasSuperCurvas: quadrosNasCurvas / 60,
+    foraNasSuperCurvas: foraNasCurvas / Math.max(1, quadrosNasCurvas),
+    muros,
   }
 }
 
@@ -125,7 +164,7 @@ afterEach(async () => {
 describe('roteiro da demonstração', () => {
   it('duas pessoas entram na mesma sala, correm, veem o mesmo vencedor e jogam de novo', async () => {
     // Passo 0: as duas provas, com a física real do jogo.
-    const rapido = correr(ATENTO_COM_BOOST)
+    const rapido = correr(QUEM_DESVIA_COM_BOOST())
     const lento = correr(INICIANTE)
     const diferenca = lento.tempo - rapido.tempo
 
@@ -227,6 +266,82 @@ describe('roteiro da demonstração', () => {
     expect(server.rooms.outcomeFor('DEMO1')).toBeNull()
   }, 60_000)
 
+  /**
+   * Desviar compensa.
+   *
+   * É o que dá sentido ao reset. Se bater em tudo custasse menos do que
+   * desviar, a punição seria só um enfeite, e o jeito certo de jogar seria o
+   * errado. Medido numa pista gerada de verdade, em qualquer nível e semente.
+   */
+  it('desviar compensa: quem desvia chega antes de quem bate, em qualquer nível', () => {
+    for (const nivel of DIFFICULTIES) {
+      for (const semente of [1, 7, 42, 20_250, 99_999]) {
+        const desviou = correr(desviando(), nivel, semente)
+        const bateu = correr(segurandoAFaixa(0), nivel, semente)
+        expect(bateu.colisoes, `nível ${nivel}, semente ${semente}`).toBeGreaterThan(desviou.colisoes)
+        expect(desviou.tempo, `nível ${nivel}, semente ${semente}`).toBeLessThan(bateu.tempo)
+      }
+    }
+  })
+
+  /**
+   * A super curva cobra, e a nota de curva ensina a pagar menos.
+   *
+   * É o que separa uma curva perigosa de uma injusta. Quem lê a nota — solta o
+   * boost, vai para o lado de dentro, segura, e no S deixa o carro abrir para a
+   * segunda metade — faz todas as tangências e nunca encosta no muro, em
+   * qualquer nível e semente. Se isto falhar, o muro virou armadilha.
+   */
+  it('quem lê a nota de curva faz todas as tangências e nunca bate no muro', () => {
+    for (const nivel of DIFFICULTIES) {
+      for (const semente of [1, 7, 42, 20_250, 99_999]) {
+        const curvas = createTrackLayout(semente).superCurves
+        const leuANota = correr(tangenciando(curvas), nivel, semente)
+        const onde = `nível ${nivel}, semente ${semente}`
+        expect(leuANota.tangencias, onde).toBe(curvas.length)
+        expect(leuANota.muros, onde).toBe(0)
+      }
+    }
+  })
+
+  /**
+   * No nível da demonstração, a tangência também é a linha rápida.
+   *
+   * Contra quem desvia do mesmo jeito mas entra pelo meio: passa menos tempo
+   * na grama das super curvas, gasta menos tempo nelas e chega antes. Nos
+   * níveis de cima há peças extras na linha de dentro, e o piloto de teste, que
+   * não é um jogador, às vezes paga por elas mais do que a tangência rende.
+   */
+  it('no nível da demonstração, a tangência é a linha rápida', () => {
+    for (const semente of [1, 7, 42, 20_250, 99_999]) {
+      const curvas = createTrackLayout(semente).superCurves
+      const leuANota = correr(tangenciando(curvas), 'normal', semente)
+      const ignorou = correr(desviando(), 'normal', semente)
+      const onde = `semente ${semente}`
+      expect(leuANota.tempoNasSuperCurvas, onde).toBeLessThan(ignorou.tempoNasSuperCurvas)
+      expect(leuANota.foraNasSuperCurvas, onde).toBeLessThan(ignorou.foraNasSuperCurvas)
+      expect(leuANota.tempo, onde).toBeLessThan(ignorou.tempo)
+    }
+  })
+
+  /**
+   * O muro existe de verdade.
+   *
+   * Sem esta garantia, uma recalibração da curva que deixasse o muro longe
+   * demais passaria calada: as super curvas voltariam a só jogar o carro na
+   * grama. O iniciante — que só corrige na borda do asfalto — bate nele em
+   * toda semente do nível da demonstração, e ainda assim termina a prova na
+   * janela do plano, que o teste seguinte cobra.
+   */
+  it('o iniciante encontra o muro, e quem entra de boost também', () => {
+    let deBoost = 0
+    for (const semente of [1, 7, 42, 20_250, 99_999]) {
+      expect(correr(INICIANTE, 'normal', semente).muros, `semente ${semente}`).toBeGreaterThan(0)
+      deBoost += correr(desviando(true), 'normal', semente).muros
+    }
+    expect(deBoost).toBeGreaterThan(0)
+  })
+
   it('a prova tem o comprimento previsto no plano', () => {
     const iniciante = correr(INICIANTE)
     expect(TRACK_LENGTH).toBe(4_800)
@@ -275,12 +390,11 @@ describe('roteiro da demonstração', () => {
     const desvioMedio = (comCurva: boolean, semente: number) => {
       const layout = createTrackLayout(semente)
       const state = createRaceState()
-      const context: RaceContext = { curvature: 0, slipstream: 0 }
+      const context: RaceContext = comCurva ? createRaceContext(layout) : { curvature: 0, slipstream: 0 }
       const piloto = segurandoAFaixa(0)
       let soma = 0
       let quadros = 0
       while (!state.finished && quadros < 18_000) {
-        context.curvature = comCurva ? curvatureLoad(layout.curvature(state.progress)) : 0
         stepRace(state, piloto(state), 1 / 60, context)
         soma += Math.abs(state.lateral)
         quadros += 1

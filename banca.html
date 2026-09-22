@@ -10,11 +10,11 @@
 <div id="saida"></div>
 <p class="nota" id="nota"></p>
 <script type="module">
-  import { prepararCenario, desenharObjeto, desenharBuraco, desenharOleo, desenharPoca, memoriaDaFolha } from '/src/game/cenarioSprites.ts'
+  import { prepararCenario, desenharObjeto, desenharBuraco, desenharOleo, desenharPoca, desenharObstaculo, medidasDoObstaculo, memoriaDaFolha } from '/src/game/cenarioSprites.ts'
   import { VARIANTES, TONS, MEIA_LARGURA } from '/src/game/cenarioModel.ts'
   import { rampa } from '/src/game/paleta.ts'
   import { desenharPortico, desenharFaixaDeFundo } from '/src/game/cenarioSprites.ts'
-  import { roadProjection, BOTTOM_RATIO } from '/src/game/track.ts'
+  import { roadProjection, BOTTOM_RATIO, CAR_VIEW_DISTANCE, VIEW_DISTANCE, lateralOffset } from '/src/game/track.ts'
   import { ambientFor, AMBIENT_COUNT } from '/src/game/layout.ts'
   import { drawCar, prepareCar } from '/src/game/carSprites.ts'
 
@@ -72,13 +72,108 @@
   }
 
   /**
-   * Os três obstáculos, do tamanho de longe ao de perto.
+   * Os obstáculos na pista, antes e depois da régua de perspectiva.
+   *
+   * A mesma cena duas vezes: pista reta com as faixas de doze metros, os
+   * mesmos obstáculos nas mesmas distâncias e o carro no lugar dele. À
+   * esquerda, a curva antiga, que dava a cada obstáculo um tamanho próprio da
+   * distância; à direita, o tamanho saído da mesma projeção da pista, com as
+   * peças deitadas achatando como as faixas em volta delas. As duas usam os
+   * mesmos desenhos — só as medidas mudam —, então a diferença que se vê é
+   * só a da régua.
+   */
+  {
+    const titulo = document.createElement('h1')
+    titulo.textContent = 'obstáculos na pista — antes e depois'
+    saida.append(titulo)
+
+    const L = 600
+    const A = 338
+    const VAO = 14
+    const tela = document.createElement('canvas')
+    tela.width = L * 2 + VAO
+    tela.height = A + 24
+    const ctx = tela.getContext('2d')
+    ctx.imageSmoothingQuality = 'high'
+    const tonsDoAsfalto = rampa('#4a5157')
+    const ceu = '#cfe8f5'
+    // Do longe para o perto, que é a ordem de profundidade.
+    const CENA = [
+      ['barrier', 0.42, 196, 2], ['debris', -0.48, 160, 0], ['oleo', 0.12, 128, 0],
+      ['pothole', 0.95, 100, 0], ['barrier', -0.52, 76, 3], ['poca', 0.5, 56, 0],
+      ['debris', 0.02, 40, 0], ['pothole', -0.95, 27, 0], ['barrier', 0.42, 16, 5],
+    ]
+    // A curva antiga, só para a comparação: o tamanho vinha da distância por
+    // uma conta própria, e as peças deitadas tinham achatamento fixo.
+    const medidasAntigas = (kind, lane, distancia, pistaEm) => {
+      const aqui = pistaEm(distancia)
+      const perto = Math.max(0, 1 - distancia / VIEW_DISTANCE)
+      const tamanho = (5 + Math.pow(perto, 1.5) * 48) * Math.max(0.76, L / 620)
+      const x = aqui.center + lateralOffset(lane, aqui.roadWidth)
+      if (kind === 'barrier') return { kind, x, chao: aqui.y, altura: tamanho * 0.52 }
+      if (kind === 'debris') return { kind, x, chao: aqui.y, altura: tamanho * 1.08 }
+      const meia = { pothole: 0.5, oleo: 0.9, poca: 0.78 }[kind] * tamanho
+      return { kind, x, chao: aqui.y, rx: meia, ry: meia * 0.34 }
+    }
+    const neutra = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
+    prepareCar('senna', '')
+
+    const cena = (ox, medir, rotulo) => {
+      const pistaEm = (distancia) => {
+        const p = roadProjection(distancia, L, A)
+        return { center: ox + L / 2, y: p.y, roadWidth: p.roadWidth }
+      }
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(ox, 0, L, A)
+      ctx.clip()
+      ctx.fillStyle = '#9cc6de'
+      ctx.fillRect(ox, 0, L, A)
+      ctx.fillStyle = '#2a5a34'
+      ctx.fillRect(ox, pistaEm(VIEW_DISTANCE).y, L, A)
+      // Grama e asfalto de doze em doze metros, do perto para o longe, pela
+      // mesma projeção da corrida.
+      let perto = pistaEm(0)
+      for (let d = 0.5; d <= VIEW_DISTANCE; d += d < 20 ? 0.5 : d < 80 ? 1 : 2) {
+        const longe = pistaEm(d)
+        const faixa = Math.floor(d / 12) % 2 === 0
+        ctx.fillStyle = faixa ? '#2f6338' : '#2a5a34'
+        ctx.fillRect(ox, longe.y, L, Math.max(1, perto.y - longe.y + 1))
+        ctx.fillStyle = faixa ? '#4a5157' : '#434a51'
+        ctx.beginPath()
+        ctx.moveTo(longe.center - longe.roadWidth / 2, longe.y)
+        ctx.lineTo(longe.center + longe.roadWidth / 2, longe.y)
+        ctx.lineTo(perto.center + perto.roadWidth / 2, perto.y)
+        ctx.lineTo(perto.center - perto.roadWidth / 2, perto.y)
+        ctx.closePath()
+        ctx.fill()
+        perto = longe
+      }
+      for (const [kind, lane, distancia, id] of CENA) {
+        desenharObstaculo(ctx, medir(kind, lane, distancia, pistaEm), id, tonsDoAsfalto, ceu)
+      }
+      const carro = pistaEm(CAR_VIEW_DISTANCE)
+      drawCar(ctx, carro.center, carro.y, Math.max(0.76, L / 620), 'senna', neutra)
+      ctx.restore()
+      ctx.fillStyle = '#e8ecef'
+      ctx.font = '12px system-ui, sans-serif'
+      ctx.fillText(rotulo, ox + 8, A + 17)
+    }
+    cena(0, medidasAntigas, 'antes — régua própria de tamanho')
+    cena(L + VAO, medidasDoObstaculo, 'depois — na régua da pista')
+    saida.append(tela)
+  }
+
+  /**
+   * Os cinco tipos de obstáculo, do tamanho de longe ao de perto.
    *
    * Ficam juntos e sobre asfalto porque é assim que aparecem: o que importa
    * aqui não é cada um isolado, é se dá para dizer qual é qual no tamanho em
-   * que o jogador ainda tem tempo de desviar. As alturas são as mesmas que
-   * `drawObstacle` usa — barreira 0,52, cone 1,08 —, então o que se vê é o
-   * tamanho de jogo e não uma escala de bancada.
+   * que o jogador ainda tem tempo de desviar. Cada linha é um tamanho de
+   * referência, com as proporções de jogo entre as peças, e as deitadas
+   * aparecem com o achatamento que têm na altura do carro. A perspectiva de
+   * verdade — elas achatando ao longe, como as faixas da pista — está na cena
+   * de antes e depois, logo acima.
    */
   {
     const titulo = document.createElement('h1')
@@ -92,9 +187,9 @@
       ['barreira', (ctx, x, y, t) => desenharObjeto(ctx, 'barreira', 0, 0, x, y, t * 0.52)],
       ['barreira', (ctx, x, y, t) => desenharObjeto(ctx, 'barreira', 1, 0, x, y, t * 0.52)],
       ['cone', (ctx, x, y, t) => desenharObjeto(ctx, 'cone', 0, 0, x, y, t * 1.08)],
-      ['buraco', (ctx, x, y, t) => desenharBuraco(ctx, x, y, t, ASFALTO_TONS)],
-      ['óleo', (ctx, x, y, t) => desenharOleo(ctx, x, y, t)],
-      ['poça', (ctx, x, y, t) => desenharPoca(ctx, x, y, t, ASFALTO_TONS, '#e2a46a')],
+      ['buraco', (ctx, x, y, t) => desenharBuraco(ctx, x, y, t * 0.5, t * 0.17, ASFALTO_TONS)],
+      ['óleo', (ctx, x, y, t) => desenharOleo(ctx, x, y, t * 0.9, t * 0.306)],
+      ['poça', (ctx, x, y, t) => desenharPoca(ctx, x, y, t * 0.78, t * 0.265, ASFALTO_TONS, '#e2a46a')],
     ]
 
     const COLUNA = 290
@@ -156,7 +251,7 @@
       ctx.fillRect(x, 0, COLUNA, ALTURA)
       ctx.fillStyle = ambiente.asfaltoClaro
       ctx.fillRect(x, ALTURA / 2, COLUNA, ALTURA / 2)
-      desenharPoca(ctx, x + COLUNA / 2, ALTURA - 24, 88, rampa(ambiente.asfaltoClaro), ambiente.ceuBaixo)
+      desenharPoca(ctx, x + COLUNA / 2, ALTURA - 24, 68.6, 23.3, rampa(ambiente.asfaltoClaro), ambiente.ceuBaixo)
       ctx.fillStyle = '#e8ecef'
       ctx.fillText(`${ambiente.nome} · ${ambiente.lugar}`, x + 8, ALTURA + 15)
     })

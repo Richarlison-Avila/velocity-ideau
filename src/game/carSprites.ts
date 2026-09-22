@@ -5,9 +5,9 @@
  * quadro, para dois carros, custaria caro num celular — e não haveria nenhum
  * ganho, porque entre um quadro e o outro quase nada muda no desenho. Então o
  * carro é assado uma vez numa folha de sprites, do jeito que um jogo de pista
- * sempre fez: uma tira de quadros de esterço, do volante todo à esquerda ao
- * volante todo à direita. O laço de corrida escolhe o quadro e faz um
- * `drawImage`.
+ * sempre fez: uma tira de quadros de curva, da derrapagem toda à esquerda à
+ * derrapagem toda à direita, passando pelo carro reto no meio. O laço de
+ * corrida escolhe o quadro e faz um `drawImage`.
  *
  * O que sobra para a hora do desenho é o que varia continuamente e não caberia
  * em quadro nenhum: a posição, a escala com a distância, a inclinação da
@@ -26,10 +26,12 @@ import {
   SOMBRA_DE_CONTATO,
   WHEEL_CENTERS,
   carModel,
+  yawTransform,
   type CarModel,
   type Part,
 } from './carModel'
 
+const RODAS_TRASEIRAS = ['traseiraEsquerda', 'traseiraDireita'] as const
 const RODA_ESQUERDA = 'dianteiraEsquerda'
 const RODA_DIREITA = 'dianteiraDireita'
 
@@ -94,6 +96,13 @@ export type CarPose = {
   suspension: number
   /** Esterço visual das rodas dianteiras, de -1 a 1. */
   steer: number
+  /**
+   * Derrapagem, de -1 a 1, com o sinal do lado para onde o carro gira.
+   *
+   * Soma ao esterço no eixo de poses da folha: com o volante todo virado e a
+   * derrapagem cheia, o carro está atravessado, com as rodas contraesterçando.
+   */
+  drift: number
   /** Brilho da luz de chuva e do escapamento durante o boost, de 0 a 1. */
   boost: number
   /** Trepidação fora do asfalto, em unidades do desenho. */
@@ -105,13 +114,69 @@ export type CarPose = {
 }
 
 /**
- * Quantos quadros de esterço a folha guarda.
+ * As poses da folha, num eixo só: de -2 a 2.
  *
- * Nove é o menor número em que a passagem de um quadro ao seguinte não se nota
- * a olho na velocidade em que o volante se move. Com cinco, a roda pula; com
- * quinze, a folha dobra de tamanho sem que ninguém veja diferença.
+ * De -1 a 1 é a curva comum, e são os nove quadros de sempre: nove é o menor
+ * número em que a passagem de um ao seguinte não se nota na velocidade em que
+ * o volante anda. Além de 1 é a derrapagem, em três quadros de cada lado: o
+ * carro gira mais do que a curva pede, a traseira escapa e as rodas da frente
+ * voltam para o outro lado. Três bastam porque a derrapagem entra e sai em
+ * dois décimos de segundo, e ninguém conta quadros nesse tempo.
  */
-const QUADROS = 9
+const POSES = [-2, -5 / 3, -4 / 3, -1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1, 4 / 3, 5 / 3, 2]
+const QUADROS = POSES.length
+/** Índice do quadro reto, no meio da tira. */
+const QUADRO_RETO = POSES.indexOf(0)
+
+/** Guinada do carro no esterço máximo da curva comum: sete graus. */
+const GUINADA_NA_CURVA = 0.122
+
+/** Guinada a mais na derrapagem cheia: o carro chega a treze graus atravessado. */
+const GUINADA_NA_DERRAPAGEM = 0.105
+
+/**
+ * Quanto as rodas da frente contraesterçam na derrapagem cheia, em frações do
+ * esterço máximo. É o detalhe que diz "o piloto está segurando o carro" e não
+ * "o carro está só virando mais".
+ */
+const CONTRAESTERCO = 0.65
+
+/** Rolagem a mais na derrapagem cheia, em frações da rolagem do esterço máximo. */
+const ROLAGEM_NA_DERRAPAGEM = 0.6
+
+/** Guinada de uma pose, em radianos: positiva com o bico para a direita. */
+function guinadaDaPose(pose: number) {
+  const a = Math.min(2, Math.abs(pose))
+  return Math.sign(pose) * (a <= 1 ? a * GUINADA_NA_CURVA : GUINADA_NA_CURVA + (a - 1) * GUINADA_NA_DERRAPAGEM)
+}
+
+/** Esterço das rodas da frente em relação à carroceria, de -1 a 1. */
+function estercoDaPose(pose: number) {
+  const a = Math.min(2, Math.abs(pose))
+  return Math.sign(pose) * (a <= 1 ? a : 1 - (a - 1) * (1 + CONTRAESTERCO))
+}
+
+/** Rolagem da carroceria sobre a suspensão, em radianos. */
+function rolagemDaPose(pose: number) {
+  const a = Math.min(2, Math.abs(pose))
+  return Math.sign(pose) * INCLINACAO * (a <= 1 ? a : 1 + (a - 1) * ROLAGEM_NA_DERRAPAGEM)
+}
+
+/** Quadro da folha mais perto de uma pose contínua. */
+export function frameForPose(pose: number) {
+  const valida = Number.isFinite(pose) ? pose : 0
+  const a = Math.min(2, Math.abs(valida))
+  const passos = a <= 1 ? Math.round(a * 4) : 4 + Math.round((a - 1) * 3)
+  return QUADRO_RETO + Math.sign(valida) * passos
+}
+
+/** A pose que um quadro da folha guarda. */
+export function poseOfFrame(quadro: number) {
+  return POSES[quadro]
+}
+
+/** Quantos quadros a folha tem. */
+export const CAR_FRAMES = QUADROS
 
 /**
  * Pixels por unidade do desenho na folha.
@@ -146,8 +211,62 @@ const ESTERCO_DA_RODA = 0.3
 /** Quanto o piloto se joga para dentro da curva, em unidades do desenho. */
 const PILOTO_NA_CURVA = 1.4
 
-const LARGURA_QUADRO = Math.ceil(CAIXA_CARRO.largura * RESOLUCAO)
-const ALTURA_QUADRO = Math.ceil(CAIXA_CARRO.altura * RESOLUCAO)
+/**
+ * Caixa de cada quadro da folha, mais larga que a do retrato.
+ *
+ * Atravessado, o carro sai da caixa da garagem: o bico vai para um lado e a
+ * traseira para o outro. A folga é medida, e não chutada — é a roda de fora,
+ * a peça mais larga do carro, no quadro mais girado.
+ */
+const MEIA_LARGURA_DA_FOLHA = (() => {
+  let maior = -CAIXA_CARRO.x
+  for (const pose of POSES) {
+    const guinada = guinadaDaPose(pose)
+    for (const roda of ['dianteiraEsquerda', 'dianteiraDireita', 'traseiraEsquerda', 'traseiraDireita'] as const) {
+      const [a, , c, , e] = yawTransform(roda, guinada)
+      const [x, y] = WHEEL_CENTERS[roda]
+      const fora = x + Math.sign(x) * 7
+      maior = Math.max(maior, Math.abs(a * fora + c * y + e))
+    }
+  }
+  return Math.ceil(maior + 2)
+})()
+const CAIXA_DA_FOLHA = { x: -MEIA_LARGURA_DA_FOLHA, y: CAIXA_CARRO.y, largura: MEIA_LARGURA_DA_FOLHA * 2, altura: CAIXA_CARRO.altura }
+
+const LARGURA_QUADRO = Math.ceil(CAIXA_DA_FOLHA.largura * RESOLUCAO)
+const ALTURA_QUADRO = Math.ceil(CAIXA_DA_FOLHA.altura * RESOLUCAO)
+
+/**
+ * Quadros por fileira da folha.
+ *
+ * Em fileira única, os quinze quadros davam uma tela de quase seis mil pixels
+ * de largura — dentro do limite de área de qualquer celular, mas acima do de
+ * largura de alguns navegadores antigos, que é de quatro mil e poucos. Em duas
+ * fileiras de oito, ela fica com pouco mais de três mil.
+ */
+const COLUNAS = 8
+const LINHAS = Math.ceil(QUADROS / COLUNAS)
+
+/** Canto de cima à esquerda de um quadro dentro da folha, em pixels. */
+function origemDoQuadro(indice: number): [number, number] {
+  return [(indice % COLUNAS) * LARGURA_QUADRO, Math.floor(indice / COLUNAS) * ALTURA_QUADRO]
+}
+
+type Afim = readonly [number, number, number, number, number, number]
+
+/**
+ * A guinada de cada camada em cada quadro, e a origem de cada quadro na folha,
+ * calculadas uma vez. O carro é desenhado duas vezes por quadro de jogo, e o
+ * laço de quadro não aloca: a sombra de cada roda, as marcas de rolamento, a
+ * terra e o brilho do boost leem daqui.
+ */
+const GUINADAS: readonly Record<Part, Afim>[] = POSES.map((pose) => {
+  const guinada = guinadaDaPose(pose)
+  const porParte = {} as Record<Part, Afim>
+  for (const part of PARTS) porParte[part] = yawTransform(part, guinada)
+  return porParte
+})
+const ORIGENS: readonly (readonly [number, number])[] = POSES.map((_, indice) => origemDoQuadro(indice))
 
 type Desenho = {
   faces: { caminho: Path2D; fill: string; opacity: number }[]
@@ -161,9 +280,9 @@ const desenhos = new Map<CarId, Map<Part, Desenho>>()
 /**
  * Folhas assadas, com teto.
  *
- * Cada folha são uns três megabytes de textura, e a chave junta carro,
+ * Cada folha são uns sete megabytes de textura, e a chave junta carro,
  * ambiente e fantasma: cinco carros em quatro ambientes dariam quarenta
- * folhas, mais de cem megabytes. Numa corrida solta isso nunca aparece — mas
+ * folhas, perto de trezentos megabytes. Numa corrida solta isso nunca aparece — mas
  * o jogo é feito para um workshop, onde a mesma aba fica aberta a tarde
  * inteira trocando de carro e sorteando ambiente. Quatro é o que uma corrida
  * usa: a folha do jogador e a do rival, e mais um par de folga para a
@@ -207,17 +326,21 @@ function desenharParte(ctx: CanvasRenderingContext2D, desenho: Desenho) {
 }
 
 /**
- * Um quadro da folha, com o volante numa posição.
+ * Um quadro da folha, numa pose do eixo de curva.
  *
- * São três pistas de leitura, e nenhuma delas mexe na posição do carro na
- * pista: a roda dianteira deita para o lado do comando, a carroceria rola
- * sobre a suspensão e o piloto se joga para dentro da curva. Juntas, dão a
- * impressão de um carro que está virando mesmo parado no meio da tela.
+ * São quatro pistas de leitura, e nenhuma delas mexe na posição do carro na
+ * pista: o carro gira no próprio eixo, a roda dianteira deita para o lado do
+ * comando — ou para o lado contrário, na derrapagem —, a carroceria rola sobre
+ * a suspensão e o piloto se joga para dentro da curva. Juntas, dão a impressão
+ * de um carro que está virando mesmo parado no meio da tela.
  */
-function desenharQuadro(ctx: CanvasRenderingContext2D, desenho: Map<Part, Desenho>, esterco: number) {
+function desenharQuadro(ctx: CanvasRenderingContext2D, desenho: Map<Part, Desenho>, pose: number) {
+  const guinada = guinadaDaPose(pose)
+  const esterco = estercoDaPose(pose)
+  const piloto = Math.max(-1, Math.min(1, pose))
   ctx.save()
   ctx.translate(0, LINHA_DO_CHAO)
-  ctx.rotate(esterco * INCLINACAO)
+  ctx.rotate(rolagemDaPose(pose))
   ctx.translate(0, -LINHA_DO_CHAO)
   for (const part of PARTS) {
     // A sombra fica de fora da folha: ela é desenhada ao vivo em `drawCar`,
@@ -226,6 +349,10 @@ function desenharQuadro(ctx: CanvasRenderingContext2D, desenho: Map<Part, Desenh
     // parado e nada tem por que se descolar dele.
     if (part === 'sombra') continue
     ctx.save()
+    // A guinada vem antes de tudo: é ela que põe a peça no lugar em que o carro
+    // girado a deixa, e o que vier depois — o centro da roda, o esterço, o
+    // piloto se jogando — acontece dentro desse lugar.
+    if (guinada !== 0) ctx.transform(...yawTransform(part, guinada))
     if (ehRoda(part)) {
       const [x, y] = WHEEL_CENTERS[part]
       ctx.translate(x, y)
@@ -233,17 +360,12 @@ function desenharQuadro(ctx: CanvasRenderingContext2D, desenho: Map<Part, Desenh
         ctx.transform(1, 0, esterco * ESTERCO_DA_RODA, 1, 0, 0)
       }
     } else if (part === 'piloto') {
-      ctx.translate(-esterco * PILOTO_NA_CURVA, 0)
+      ctx.translate(-piloto * PILOTO_NA_CURVA, 0)
     }
     desenharParte(ctx, desenho.get(part)!)
     ctx.restore()
   }
   ctx.restore()
-}
-
-/** Esterço do quadro `indice`, de -1 (todo à esquerda) a 1 (todo à direita). */
-function estercoDoQuadro(indice: number) {
-  return (indice / (QUADROS - 1)) * 2 - 1
 }
 
 /**
@@ -259,15 +381,15 @@ function banhar(ctx: CanvasRenderingContext2D, cor: string, opacidade: number) {
   ctx.globalCompositeOperation = 'source-atop'
   ctx.globalAlpha = opacidade
   ctx.fillStyle = cor
-  ctx.fillRect(0, 0, LARGURA_QUADRO * QUADROS, ALTURA_QUADRO)
+  ctx.fillRect(0, 0, LARGURA_QUADRO * COLUNAS, ALTURA_QUADRO * LINHAS)
   ctx.restore()
 }
 
 function assar(id: CarId, ambiente: string, fantasma: boolean): Folha {
   const desenho = desenhoDe(id)
   const tela = document.createElement('canvas')
-  tela.width = LARGURA_QUADRO * QUADROS
-  tela.height = ALTURA_QUADRO
+  tela.width = LARGURA_QUADRO * COLUNAS
+  tela.height = ALTURA_QUADRO * LINHAS
   const ctx = tela.getContext('2d')!
   ctx.textAlign = 'center'
 
@@ -277,12 +399,13 @@ function assar(id: CarId, ambiente: string, fantasma: boolean): Folha {
     // quadro vazaria para dentro do vizinho quando a inclinação a joga para
     // fora da caixa.
     ctx.beginPath()
-    ctx.rect(indice * LARGURA_QUADRO, 0, LARGURA_QUADRO, ALTURA_QUADRO)
+    const [x, y] = origemDoQuadro(indice)
+    ctx.rect(x, y, LARGURA_QUADRO, ALTURA_QUADRO)
     ctx.clip()
-    ctx.translate(indice * LARGURA_QUADRO, 0)
+    ctx.translate(x, y)
     ctx.scale(RESOLUCAO, RESOLUCAO)
-    ctx.translate(-CAIXA_CARRO.x, -CAIXA_CARRO.y)
-    desenharQuadro(ctx, desenho, estercoDoQuadro(indice))
+    ctx.translate(-CAIXA_DA_FOLHA.x, -CAIXA_DA_FOLHA.y)
+    desenharQuadro(ctx, desenho, POSES[indice])
     ctx.restore()
   }
 
@@ -318,7 +441,7 @@ function folhaDe(id: CarId, ambiente: string, fantasma: boolean) {
 /**
  * Assa a folha antes da largada.
  *
- * Assar custa alguns milissegundos e uns três megabytes de textura por carro.
+ * Assar custa alguns milissegundos e uns sete megabytes de textura por carro.
  * Feito no primeiro quadro da corrida, engasgaria justamente na arrancada;
  * feito durante a contagem, não aparece. `fantasma` diz qual das duas folhas
  * aquele carro precisa: no modo treino não existe rival, e assar a azulada
@@ -336,11 +459,14 @@ export function prepareCar(id: CarId, ambiente: string, fantasma = false) {
  * a fase à distância, e não ao número do quadro, é o que faz o pneu parar
  * quando o carro para e não acelerar quando a taxa de quadros muda.
  */
-function desenharRolamento(ctx: CanvasRenderingContext2D, travel: number) {
+function desenharRolamento(ctx: CanvasRenderingContext2D, travel: number, guinadas: Record<Part, Afim>) {
   ctx.fillStyle = 'rgba(190,206,198,.12)'
   const fase = ((travel * 0.9) % 4 + 4) % 4
-  for (const roda of ['traseiraEsquerda', 'traseiraDireita'] as const) {
-    const [x, y] = WHEEL_CENTERS[roda]
+  for (const roda of RODAS_TRASEIRAS) {
+    // A roda de trás também escorrega quando o carro atravessa: a marca vai com ela.
+    const t = guinadas[roda]
+    const [cx, y] = WHEEL_CENTERS[roda]
+    const x = t[0] * cx + t[2] * y + t[4]
     for (let passo = -9 + fase; passo < 9; passo += 4) {
       ctx.fillRect(x - 5.2, y + passo, 10.4, 0.5)
     }
@@ -366,12 +492,17 @@ export function drawCar(
   ambiente = '',
 ) {
   const folha = folhaDe(id, ambiente, ghostAlpha < 1)
+  // O esterço e a derrapagem se somam num eixo só: com o volante todo virado e
+  // a traseira escapando, o carro está atravessado.
   const esterco = Math.max(-1, Math.min(1, pose.steer))
-  const quadro = Math.round(((esterco + 1) / 2) * (QUADROS - 1))
-  // Cada quadro da folha já traz o carro rolado pelo esterço dele, assado. O
-  // que se desenha por cima dele depois — terra, sombra dos pneus — precisa
-  // do mesmo giro para continuar no mesmo lugar do desenho.
-  const giroDoQuadro = ((quadro / (QUADROS - 1)) * 2 - 1) * INCLINACAO
+  const quadro = frameForPose(esterco + Math.max(-1, Math.min(1, pose.drift)))
+  const poseDoQuadro = POSES[quadro]
+  // Cada quadro da folha já traz o carro rolado e girado, assado. O que se
+  // desenha por cima dele depois — terra, sombra dos pneus — precisa do mesmo
+  // giro e do mesmo deslize para continuar no mesmo lugar do desenho.
+  const giroDoQuadro = rolagemDaPose(poseDoQuadro)
+  const guinadas = GUINADAS[quadro]
+  const deslizeDoMeio = guinadas.lateral
 
   ctx.save()
   ctx.globalAlpha *= ghostAlpha
@@ -399,12 +530,16 @@ export function drawCar(
   const cosseno = Math.cos(giro)
   const seno = Math.sin(giro)
   for (const m of SOMBRA_DE_CONTATO) {
-    let cx = m.x - pose.tilt * SOMBRA_POR_INCLINACAO
+    // A mancha vai para onde a guinada leva a peça dela: a de cada roda com a
+    // roda, a do assoalho com o meio do carro.
+    const t = m.roda ? guinadas[m.roda] : deslizeDoMeio
+    const gx = t[0] * m.x + t[2] * m.y + t[4]
+    let cx = gx - pose.tilt * SOMBRA_POR_INCLINACAO
     let cy = m.y
     if (m.roda) {
       const acima = m.y - LINHA_DO_CHAO
-      cx = m.x * cosseno - acima * seno
-      cy = m.x * seno + acima * cosseno + LINHA_DO_CHAO
+      cx = gx * cosseno - acima * seno
+      cy = gx * seno + acima * cosseno + LINHA_DO_CHAO
     }
     ctx.globalAlpha = opacidadeBase * m.alpha * forca
     ctx.fillStyle = m.cor
@@ -422,10 +557,10 @@ export function drawCar(
   }
   ctx.drawImage(
     folha.tela,
-    quadro * LARGURA_QUADRO, 0, LARGURA_QUADRO, ALTURA_QUADRO,
-    CAIXA_CARRO.x, CAIXA_CARRO.y, CAIXA_CARRO.largura, CAIXA_CARRO.altura,
+    ORIGENS[quadro][0], ORIGENS[quadro][1], LARGURA_QUADRO, ALTURA_QUADRO,
+    CAIXA_DA_FOLHA.x, CAIXA_DA_FOLHA.y, CAIXA_DA_FOLHA.largura, CAIXA_DA_FOLHA.altura,
   )
-  desenharRolamento(ctx, pose.travel)
+  desenharRolamento(ctx, pose.travel, guinadas)
 
   /**
    * Terra da grama, por cima da pintura.
@@ -444,6 +579,8 @@ export function drawCar(
     ctx.translate(0, LINHA_DO_CHAO)
     ctx.rotate(giroDoQuadro)
     ctx.translate(0, -LINHA_DO_CHAO)
+    // E a guinada: as manchas moram nos pontões, que deslizam com o meio do carro.
+    ctx.transform(deslizeDoMeio[0], deslizeDoMeio[1], deslizeDoMeio[2], deslizeDoMeio[3], deslizeDoMeio[4], deslizeDoMeio[5])
     ctx.globalAlpha = opacidadeBase * Math.min(1, pose.dirt) * 0.72
     ctx.fillStyle = COR_DA_TERRA
     for (const m of MANCHAS_DE_TERRA) {
@@ -458,6 +595,9 @@ export function drawCar(
   // folha e em modo aditivo: soma luz à pintura em vez de cobri-la.
   if (pose.boost > 0.01) {
     const modelo = carModel(id)
+    // A traseira desliza com a guinada, e a luz e o fogo moram nela.
+    const traseira = guinadas.traseira
+    ctx.transform(traseira[0], traseira[1], traseira[2], traseira[3], traseira[4], traseira[5])
     ctx.globalCompositeOperation = 'lighter'
     ctx.fillStyle = '#ff3a2a'
     ctx.globalAlpha *= pose.boost

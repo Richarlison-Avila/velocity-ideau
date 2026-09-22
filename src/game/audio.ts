@@ -8,7 +8,11 @@
  * A parte que decide *o quê* tocar é pura e fica aqui em cima, separada da
  * parte que fala com o Web Audio. É o que permite testar a marcha, a rotação
  * e a mistura sem precisar de um navegador.
+ *
+ * A trilha de rock mora em `trilha.ts`, e toca pelo mesmo contexto e pelo
+ * mesmo volume geral: desligar o som desliga a música junto.
  */
+import { TrilhaRock } from './trilha'
 
 /** O que a corrida informa ao som a cada quadro. */
 export type AudioLevels = {
@@ -113,6 +117,8 @@ export type AudioHost = Pick<
   | 'createBiquadFilter'
   | 'createBufferSource'
   | 'createBuffer'
+  | 'createWaveShaper'
+  | 'createDelay'
   | 'currentTime'
   | 'destination'
   | 'sampleRate'
@@ -134,6 +140,7 @@ export class RaceAudio {
   private readonly rollGain: GainNode
   private readonly gravelGain: GainNode
   private readonly boostGain: GainNode
+  private readonly trilha: TrilhaRock
   private silenciado = false
   private encerrado = false
   /** Marcha do quadro anterior, para marcar a troca. */
@@ -181,6 +188,10 @@ export class RaceAudio {
     this.gravelGain = this.camadaDeRuido(ctx, 'bandpass', 1_900, 1.6)
     this.boostGain = this.camadaDeRuido(ctx, 'highpass', 2_600, 0.7)
     this.ruido.start()
+
+    // A trilha usa o mesmo ruído para a bateria: é o mesmo chiado que vira
+    // vento, só que cortado em golpes.
+    this.trilha = new TrilhaRock(ctx, this.master, this.ruido.buffer!)
   }
 
   private camadaDeRuido(ctx: AudioHost, tipo: BiquadFilterType, frequencia: number, q: number) {
@@ -252,6 +263,21 @@ export class RaceAudio {
     osc.stop(agora + duracao + 0.02)
   }
 
+  /** Começa a trilha do primeiro compasso: é o "VAI!" da largada. */
+  startMusic() {
+    if (!this.encerrado) this.trilha.start()
+  }
+
+  /** A trilha some aos poucos, na bandeirada. */
+  stopMusic() {
+    if (!this.encerrado) this.trilha.stop()
+  }
+
+  /** Liga ou desliga só a música, deixando motor e efeitos como estão. */
+  setMusicEnabled(ligada: boolean) {
+    if (!this.encerrado) this.trilha.setEnabled(ligada)
+  }
+
   get muted() {
     return this.silenciado
   }
@@ -269,6 +295,7 @@ export class RaceAudio {
 
   close() {
     if (this.encerrado) return
+    this.trilha.close()
     this.encerrado = true
     for (const osc of this.osciladores) {
       try {

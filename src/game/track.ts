@@ -108,6 +108,22 @@ export const HIT_HALF_WIDTH: Record<ObstacleKind, number> = {
  * Cair num buraco é um tranco, não uma batida: custa pouco mais da metade do
  * que custa acertar uma barreira de concreto.
  */
+/**
+ * O que conta como batida para o reset.
+ *
+ * Só as peças: bater numa barreira ou num cone é batida. Cair num buraco é um
+ * tranco, e passar por cima de óleo ou de água é escorregar — custam o que já
+ * custam, mas não se acumulam para o reset. Contá-los faria a mancha, que foi
+ * posta na pista justamente para valer a pena atravessar, virar uma armadilha.
+ */
+export const HIT_IS_CRASH: Record<ObstacleKind, boolean> = {
+  barrier: true,
+  debris: true,
+  pothole: false,
+  oleo: false,
+  poca: false,
+}
+
 export const HIT_PENALTY_SHARE: Record<ObstacleKind, number> = {
   barrier: 1,
   debris: 1,
@@ -167,6 +183,18 @@ export function lateralOffset(lateral: number, roadWidth: number) {
  */
 export const ROAD_EDGE = 0.5 / LATERAL_SCALE
 
+/**
+ * Meia-largura do asfalto, em metros: duas faixas de 5,5 m.
+ *
+ * A projeção não precisa dela — a pista é desenhada em frações da tela. Quem
+ * precisa é a tangência: numa curva, a linha por dentro é mais curta que a de
+ * fora, e a diferença é a curvatura vezes a distância ao centro **em metros**.
+ */
+export const ROAD_HALF_WIDTH_M = 5.5
+
+/** Metros por unidade de posição lateral, na mesma régua da borda do asfalto. */
+export const METERS_PER_LATERAL = ROAD_HALF_WIDTH_M / ROAD_EDGE
+
 /** Meia-largura do carro desenhado, em unidades de posição lateral. */
 export const CAR_HALF_LATERAL =
   CAR_SPRITE_HALF_WIDTH /
@@ -184,6 +212,18 @@ export const OFF_ROAD_LIMIT = ROAD_EDGE - CAR_HALF_LATERAL
 
 /** Até onde o carro chega na grama antes de o limite físico segurá-lo. */
 export const LATERAL_LIMIT = ROAD_EDGE + 0.16
+
+/**
+ * Face do muro de pneus por fora das super curvas, em posição lateral.
+ *
+ * Um metro de grama depois do asfalto, e o muro: é a área de escape curta de
+ * Mônaco, e é de propósito. Na curva comum, sair largo custa grama; na super
+ * curva, custa uma batida.
+ */
+export const SUPER_CURVE_WALL = ROAD_EDGE + 0.17
+
+/** Até onde o centro do carro chega antes de encostar no muro. */
+export const WALL_LIMIT = SUPER_CURVE_WALL - CAR_HALF_LATERAL
 
 /**
  * Marcadores na lateral da pista.

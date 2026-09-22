@@ -1,20 +1,27 @@
 import { describe, expect, it } from 'vitest'
 import { rulesFor } from './rules'
 import {
+  APEX_BOOST,
+  APEX_LATERAL,
   createRaceState,
   gripFor,
+  lineFactorFor,
+  MAX_CORNER_LOAD,
   LATERAL_LIMIT,
   OFF_ROAD_LIMIT,
+  RESET_SECONDS,
   slipstreamFrom,
   SLIPSTREAM_RANGE_M,
   SLIPSTREAM_WIDTH,
   speedForState,
   stepRace,
+  WALL_IMPACT_KEEP,
+  type RaceContext,
   type RaceEvent,
   type RaceInput,
   type RaceState,
 } from './simulation'
-import { HIT_HALF_WIDTH, obstacles, TRACK_LENGTH } from './track'
+import { HIT_HALF_WIDTH, obstacles, TRACK_LENGTH, WALL_LIMIT, type Obstacle } from './track'
 
 /** Regras do nível de referência: é sobre elas que esta suíte fala. */
 const REGRAS = rulesFor('normal')
@@ -62,6 +69,21 @@ function correr(policy: (t: number, state: RaceState) => RaceInput, dt = 1 / 60,
     time += dt
   }
   return { time, state, events }
+}
+
+/**
+ * Avança mantendo vazio o medidor de saída de pista.
+ *
+ * Serve aos testes que medem a grama em si — quanto ela tira de velocidade,
+ * quanto a profundidade pesa, como se volta dela. Sem isso, o reset por saída
+ * de pista devolve o carro ao meio antes de a medida terminar, e o teste passa
+ * a medir o reset. O reset tem os testes dele, mais abaixo.
+ */
+function naGrama(state: RaceState, input: RaceInput, segundos: number, dt = 1 / 60) {
+  for (let t = 0; t < segundos; t += dt) {
+    stepRace(state, input, dt)
+    state.offTrack = 0
+  }
 }
 
 function avancar(state: RaceState, input: RaceInput, segundos: number, dt = 1 / 60) {
@@ -116,7 +138,7 @@ describe('limites da pista', () => {
 
   it('reduz a velocidade fora da pista sem destruir o carro', () => {
     const state = createRaceState()
-    avancar(state, { left: false, right: true, boost: false }, 6)
+    naGrama(state, { left: false, right: true, boost: false }, 6)
     expect(state.offRoad).toBe(true)
     expect(state.speed).toBeLessThan(180)
     expect(state.finished).toBe(false)
@@ -124,7 +146,7 @@ describe('limites da pista', () => {
 
   it('o carro não fica preso fora da pista', () => {
     const state = createRaceState()
-    avancar(state, { left: false, right: true, boost: false }, 6)
+    naGrama(state, { left: false, right: true, boost: false }, 6)
     expect(state.offRoad).toBe(true)
 
     // Corrige a direção até voltar ao asfalto e então segue reto.
@@ -207,6 +229,158 @@ describe('obstáculos e penalidades', () => {
     expect(state.speed).toBeGreaterThan(CRUZEIRO * 0.95)
     avancar(state, PARADO, 4)
     expect(state.speed).toBeGreaterThan(CRUZEIRO * 0.995)
+  })
+})
+
+describe('reset', () => {
+  /** Estado com uma lista de obstáculos própria, para a batida cair onde o teste quer. */
+  function comObstaculos(lista: Obstacle[]) {
+    const state = createRaceState()
+    state.rules = { ...state.rules, obstacles: lista }
+    return state
+  }
+
+  const barreira = (id: number, distance: number, kind: Obstacle['kind'] = 'barrier'): Obstacle =>
+    ({ id, distance, lane: 0, kind })
+
+  it('a terceira batida reseta o carro, no meio da pista', () => {
+    const state = comObstaculos([barreira(1, 300), barreira(2, 600), barreira(3, 900)])
+    const eventos = avancar(state, PARADO, 40)
+    const resets = eventos.filter((e) => e.type === 'reset')
+    expect(state.collisions).toBe(3)
+    expect(resets).toEqual([{ type: 'reset', reason: 'crashes' }])
+    expect(state.resets).toBe(1)
+    // As batidas voltam a zero: a contagem recomeça depois do reset.
+    expect(state.strikes).toBe(0)
+  })
+
+  it('as duas primeiras batidas são só penalidade de velocidade', () => {
+    const state = comObstaculos([barreira(1, 300), barreira(2, 600)])
+    avancar(state, PARADO, 30)
+    expect(state.collisions).toBe(2)
+    expect(state.strikes).toBe(2)
+    expect(state.resets).toBe(0)
+  })
+
+  it('o reset custa exatamente o tempo prometido: parado, e depois na mesma velocidade', () => {
+    const state = comObstaculos([barreira(1, 300), barreira(2, 600), barreira(3, 900)])
+    let antes = NaN
+    let progresso = NaN
+    let parado = 0
+    for (let t = 0; t < 60 && Number.isNaN(antes); t += 1 / 60) {
+      const velocidade = state.speed
+      const eventos = stepRace(state, PARADO, 1 / 60)
+      if (eventos.some((e) => e.type === 'reset')) {
+        antes = velocidade
+        progresso = state.progress
+      }
+    }
+    expect(state.resetting).toBeGreaterThan(0)
+    expect(state.speed).toBe(0)
+    while (state.resetting > 0) {
+      // Com o volante virado de propósito: parado de verdade, nem anda nem vira.
+      expect(state.progress).toBe(progresso)
+      expect(state.lateral).toBe(0)
+      stepRace(state, DIREITA, 1 / 60)
+      parado += 1 / 60
+    }
+    // O reset acaba no meio de um quadro, e o resto dele já anda: a conta fica
+    // dentro de um quadro do prometido.
+    expect(Math.abs(parado - RESET_SECONDS)).toBeLessThanOrEqual(1 / 60 + 1e-9)
+    // Volta na velocidade que tinha, e o resto daquele quadro já é tração
+    // normal: o reset não cobra mais do que promete.
+    expect(state.speed).toBeGreaterThanOrEqual(antes - 1e-6)
+    expect(state.speed).toBeLessThan(antes + 1)
+  })
+
+  it('ficar na grama enche o medidor e reseta o carro', () => {
+    const state = semObstaculos(createRaceState())
+    avancar(state, PARADO, 8)
+    const eventos = avancar(state, DIREITA, 3)
+    expect(eventos).toContainEqual({ type: 'reset', reason: 'offTrack' })
+    expect(state.resets).toBe(1)
+  })
+
+  it('uma escapada curta custa velocidade, mas não reseta', () => {
+    const state = semObstaculos(createRaceState())
+    avancar(state, PARADO, 8)
+    // Até a grama, um instante lá, e de volta ao asfalto.
+    for (let t = 0; t < 4 && !state.offRoad; t += 1 / 60) stepRace(state, DIREITA, 1 / 60)
+    avancar(state, DIREITA, 0.3)
+    for (let t = 0; t < 4 && state.offRoad; t += 1 / 60) stepRace(state, ESQUERDA, 1 / 60)
+    expect(state.offRoad).toBe(false)
+    expect(state.resets).toBe(0)
+    // E o medidor se esvazia sozinho no asfalto.
+    avancar(state, PARADO, 4)
+    expect(state.offTrack).toBe(0)
+  })
+
+  it('raspar a borda demora mais para resetar que ir ao fundo da grama', () => {
+    const ateResetar = (lateral: number) => {
+      const state = semObstaculos(createRaceState())
+      avancar(state, PARADO, 8)
+      state.lateral = lateral
+      for (let t = 0; t < 30; t += 1 / 60) {
+        if (stepRace(state, PARADO, 1 / 60).some((e) => e.type === 'reset')) return t
+      }
+      return Infinity
+    }
+    const fundo = ateResetar(LATERAL_LIMIT)
+    const borda = ateResetar(OFF_ROAD_LIMIT + 0.01)
+    expect(fundo).toBeLessThan(1.5)
+    expect(borda).toBeGreaterThan(fundo * 2)
+    // Mas a beirada não é lugar para morar: raspando também reseta.
+    expect(borda).toBeLessThan(Infinity)
+  })
+
+  it('buraco, óleo e poça não contam como batida', () => {
+    const state = comObstaculos([
+      barreira(1, 300, 'pothole'), barreira(2, 600, 'oleo'), barreira(3, 900, 'poca'), barreira(4, 1_200, 'pothole'),
+    ])
+    avancar(state, PARADO, 40)
+    expect(state.collisions).toBe(4)
+    expect(state.strikes).toBe(0)
+    expect(state.resets).toBe(0)
+  })
+
+  it('depois do reset, o carro não bate no que o reset pôs na frente dele', () => {
+    // O reset devolve o carro ao meio da pista, e há outra barreira no meio a
+    // dez metros: o piloto não escolheu estar ali, e não teria como desviar.
+    const state = comObstaculos([
+      barreira(1, 300), barreira(2, 600), barreira(3, 900), barreira(4, 910),
+    ])
+    avancar(state, PARADO, 40)
+    expect(state.resets).toBe(1)
+    expect(state.collisions).toBe(3)
+  })
+
+  it('parado no reset, o carro não bate em nada nem avança', () => {
+    const state = comObstaculos([barreira(1, 300), barreira(2, 600), barreira(3, 900)])
+    for (let t = 0; t < 60 && state.resetting === 0; t += 1 / 60) stepRace(state, PARADO, 1 / 60)
+    const progresso = state.progress
+    const colisoes = state.collisions
+    avancar(state, DIREITA, RESET_SECONDS * 0.9)
+    expect(state.progress).toBe(progresso)
+    expect(state.collisions).toBe(colisoes)
+  })
+
+  it('o reset é o mesmo em 60, 30 e 20 quadros por segundo', () => {
+    // Contagem inteira de quadros: somar `dt` em ponto flutuante até 30 roda um
+    // quadro a mais em algumas taxas, e o teste passaria a comparar tempos de
+    // prova diferentes.
+    const final = (quadrosPorSegundo: number) => {
+      const state = comObstaculos([barreira(1, 300), barreira(2, 600), barreira(3, 900)])
+      for (let i = 0; i < 30 * quadrosPorSegundo; i += 1) stepRace(state, PARADO, 1 / quadrosPorSegundo)
+      return state
+    }
+    const [a, b, c] = [final(60), final(30), final(20)]
+    expect(a.resets).toBe(1)
+    expect(b.resets).toBe(1)
+    expect(c.resets).toBe(1)
+    // As três taxas percorrem a mesma sequência de passos fixos, batidas
+    // inclusive: o carro para no mesmo lugar, e não a um quadro de distância.
+    expect(b.progress).toBeCloseTo(a.progress, 6)
+    expect(c.progress).toBeCloseTo(a.progress, 6)
   })
 })
 
@@ -341,12 +515,12 @@ describe('perdas de velocidade', () => {
     avancar(naBorda, PARADO, 20)
     // Posiciona o carro logo depois da borda e deixa a velocidade assentar.
     naBorda.lateral = OFF_ROAD_LIMIT + 0.01
-    avancar(naBorda, PARADO, 6)
+    naGrama(naBorda, PARADO, 6)
 
     const fundo = createRaceState()
     avancar(fundo, PARADO, 20)
     fundo.lateral = LATERAL_LIMIT
-    avancar(fundo, PARADO, 6)
+    naGrama(fundo, PARADO, 6)
 
     expect(naBorda.offRoad).toBe(true)
     expect(fundo.offRoad).toBe(true)
@@ -586,6 +760,63 @@ describe('a curva cobra velocidade', () => {
     expect(Number.isFinite(state.speed)).toBe(true)
   })
 
+  it('a curva também freia: o pneu que escapa esfrega', () => {
+    // Segurando a linha na curva mais fechada, o carro não sustenta o
+    // cruzeiro. Na reta, sustenta.
+    const naCurva = semObstaculos(createRaceState())
+    naCurva.speed = CRUZEIRO
+    for (let t = 0; t < 3; t += 1 / 60) stepRace(naCurva, DIREITA, 1 / 60, { curvature: 1, slipstream: 0 })
+    naCurva.offTrack = 0
+
+    const naReta = semObstaculos(createRaceState())
+    naReta.speed = CRUZEIRO
+    avancar(naReta, PARADO, 3)
+
+    expect(naReta.speed).toBeCloseTo(CRUZEIRO, 1)
+    expect(naCurva.speed).toBeLessThan(CRUZEIRO - 8)
+  })
+
+  it('esfrega aos poucos: quem entra embalado é jogado para fora antes de frear', () => {
+    // Se a velocidade caísse de uma vez, a força da curva cairia junto, e
+    // ninguém sairia da pista nem entrando de boost — era o que acontecia
+    // quando o esfregão cortava a velocidade-alvo em vez de frear.
+    const state = semObstaculos(createRaceState())
+    state.speed = REGRAS.boostSpeed
+    stepRace(state, PARADO, 0.25, { curvature: 1, slipstream: 0 })
+    expect(state.speed).toBeGreaterThan(CRUZEIRO)
+  })
+
+  it('a pior curva, em cruzeiro, cabe na pista para quem vira o volante desde o meio', () => {
+    // É a garantia que torna a curva pesada, e não injusta: na curvatura
+    // máxima o carro abre antes de o pneu esfregar a velocidade para baixo —
+    // no profissional, três décimos de faixa —, mas quem vinha pelo meio e
+    // virou tudo não chega nem à metade do caminho até a grama. A outra metade
+    // fica para quem vinha um pouco de fora.
+    for (const nivel of ['normal', 'dificil', 'profissional'] as const) {
+      const state = semObstaculos(createRaceState(nivel))
+      state.speed = state.rules.cruiseSpeed
+      let pior = 0
+      for (let t = 0; t < 3; t += 1 / 60) {
+        // Curva à direita empurra para a esquerda: segura à direita.
+        stepRace(state, DIREITA, 1 / 60, { curvature: 1, slipstream: 0 })
+        pior = Math.min(pior, state.lateral)
+      }
+      expect(Math.abs(pior), nivel).toBeLessThan(OFF_ROAD_LIMIT / 2)
+    }
+  })
+
+  it('de boost, a curva mais fechada joga o carro para fora mesmo com o volante todo virado', () => {
+    // A lição de toda curva de verdade: o boost é para a reta.
+    const state = semObstaculos(createRaceState())
+    state.speed = REGRAS.boostSpeed
+    stepRace(state, { left: false, right: true, boost: true }, 0.05, { curvature: 1, slipstream: 0 })
+    const antes = state.lateral
+    for (let t = 0; t < 0.3; t += 1 / 60) {
+      stepRace(state, { left: false, right: true, boost: true }, 1 / 60, { curvature: 1, slipstream: 0 })
+    }
+    expect(state.lateral).toBeLessThan(antes)
+  })
+
   it('os níveis mais duros dão menos aderência na curva', () => {
     const normal = rulesFor('normal').cornerGrip
     const dificil = rulesFor('dificil').cornerGrip
@@ -663,5 +894,248 @@ describe('vácuo do rival', () => {
     expect(com.progress).toBeGreaterThan(sem.progress)
     expect(quebrado.slipstream).toBe(0)
     expect(quebrado.speed).toBeCloseTo(sem.speed, 6)
+  })
+})
+
+describe('super curvas e tangência', () => {
+  /** Uma curva à direita que o pneu não segura: carga de super curva. */
+  const SUPER = 2.2
+  /** Ganho da linha de um grampo no ápice: 1/R em unidades laterais. */
+  const GANHO = 0.17
+
+  it('por dentro o caminho é mais curto, por fora é mais longo', () => {
+    // Curva à direita: o lado de dentro é o de posição positiva.
+    expect(lineFactorFor(GANHO, 1)).toBeGreaterThan(1)
+    expect(lineFactorFor(GANHO, -1)).toBeLessThan(1)
+    expect(lineFactorFor(GANHO, 0)).toBe(1)
+    // Na reta, a linha não muda nada.
+    expect(lineFactorFor(0, 1.1)).toBe(1)
+    // É a conta do raio: a linha a n do centro tem raio R − n.
+    expect(lineFactorFor(GANHO, 1)).toBeCloseTo(1 / (1 - GANHO), 9)
+    // E nunca inverte o sinal nem explode, nem com entrada absurda.
+    expect(lineFactorFor(50, 1)).toBeGreaterThan(1)
+    expect(lineFactorFor(50, 1)).toBeLessThanOrEqual(1.5)
+    expect(lineFactorFor(Number.NaN, 1)).toBe(1)
+    expect(lineFactorFor(GANHO, Number.POSITIVE_INFINITY)).toBe(1)
+  })
+
+  it('na mesma velocidade, quem vai por dentro avança mais na pista', () => {
+    const avanco = (lateral: number) => {
+      const state = semObstaculos(createRaceState())
+      state.speed = 160
+      state.lateral = lateral
+      // Carga abaixo da aderência, para o carro não escapar e a medida ser só
+      // a da linha.
+      stepRace(state, PARADO, 0.05, { curvature: REGRAS.cornerGrip * 0.5, slipstream: 0, lineGain: GANHO })
+      return state.progress
+    }
+    const dentro = avanco(0.9)
+    const meio = avanco(0)
+    const fora = avanco(-0.9)
+    expect(dentro).toBeGreaterThan(meio * 1.1)
+    expect(fora).toBeLessThan(meio * 0.9)
+  })
+
+  it('por dentro a curva empurra mais: o raio é menor', () => {
+    const empurrao = (lateral: number) => {
+      const state = semObstaculos(createRaceState())
+      state.speed = CRUZEIRO
+      state.lateral = lateral
+      stepRace(state, PARADO, 1 / 60, { curvature: 1, slipstream: 0, lineGain: GANHO })
+      return lateral - state.lateral
+    }
+    expect(empurrao(0.8)).toBeGreaterThan(empurrao(0) * 1.1)
+    expect(empurrao(-0.8)).toBeLessThan(empurrao(0) * 0.9)
+  })
+
+  it('a linha nunca faz o carro avançar mais depressa que o teto que o servidor conhece', () => {
+    // O servidor recusa chegadas mais rápidas que a pista inteira no teto do
+    // nível. Por dentro de uma curva o fator passa de 1, então é o teto que
+    // segura a garantia — com boost, vácuo cheio e a linha mais curta que há.
+    for (const nivel of ['normal', 'dificil', 'profissional'] as const) {
+      const state = semObstaculos(createRaceState(nivel))
+      const teto = speedForState(false, 0, true, state.rules, 1)
+      state.speed = teto
+      state.lateral = 1.1
+      const antes = state.progress
+      stepRace(state, SO_BOOST, 0.05, { curvature: 0, slipstream: 1, lineGain: 0.3 })
+      expect((state.progress - antes) / 0.05, nivel).toBeLessThanOrEqual(teto / 3.6 + 1e-9)
+    }
+  })
+
+  it('a carga da super curva passa da curva comum, mas é presa no teto da física', () => {
+    const deslocamento = (curvature: number) => {
+      const state = semObstaculos(createRaceState())
+      state.speed = CRUZEIRO
+      stepRace(state, PARADO, 1 / 60, { curvature, slipstream: 0 })
+      return -state.lateral
+    }
+    expect(deslocamento(SUPER)).toBeGreaterThan(deslocamento(1) * 1.5)
+    // Acima do teto não empurra mais: é a guarda contra entrada corrompida.
+    expect(deslocamento(MAX_CORNER_LOAD * 4)).toBeCloseTo(deslocamento(MAX_CORNER_LOAD), 9)
+  })
+
+  it('em cruzeiro, a super curva leva o carro para fora mesmo com o volante todo virado', () => {
+    // É o que a torna super: segurar não basta, é preciso entrar por dentro.
+    const state = semObstaculos(createRaceState())
+    state.speed = CRUZEIRO
+    for (let t = 0; t < 0.6; t += 1 / 60) stepRace(state, DIREITA, 1 / 60, { curvature: SUPER, slipstream: 0 })
+    expect(state.lateral).toBeLessThan(-0.5)
+    // E o pneu esfrega: a velocidade cai de verdade.
+    expect(state.speed).toBeLessThan(CRUZEIRO - 15)
+  })
+
+  it('a tangência devolve boost, uma vez por curva, só por dentro e no asfalto', () => {
+    const zebra = (apexId: number): RaceContext => ({ curvature: 0, slipstream: 0, apexId, apexSide: 1 })
+    const state = semObstaculos(createRaceState())
+    state.speed = CRUZEIRO
+    state.boost = 40
+    state.lateral = APEX_LATERAL + 0.1
+    const eventos = stepRace(state, PARADO, 1 / 60, zebra(1))
+    expect(eventos).toContainEqual({ type: 'apex', curveId: 1 })
+    expect(state.boost).toBeCloseTo(40 + APEX_BOOST, 0)
+
+    // A mesma curva não paga duas vezes.
+    const deNovo = stepRace(state, PARADO, 1 / 60, zebra(1))
+    expect(deNovo.some((evento) => evento.type === 'apex')).toBe(false)
+
+    // Pelo lado de fora não conta.
+    const porFora = semObstaculos(createRaceState())
+    porFora.lateral = -0.9
+    expect(stepRace(porFora, PARADO, 1 / 60, zebra(2)).some((evento) => evento.type === 'apex')).toBe(false)
+
+    // Nem no meio da pista: a tangência é uma escolha, não um acaso.
+    const noMeio = semObstaculos(createRaceState())
+    noMeio.lateral = APEX_LATERAL * 0.5
+    expect(stepRace(noMeio, PARADO, 1 / 60, zebra(3)).some((evento) => evento.type === 'apex')).toBe(false)
+
+    // Nem com as rodas na grama.
+    const naGrama = semObstaculos(createRaceState())
+    naGrama.lateral = LATERAL_LIMIT - 0.01
+    expect(stepRace(naGrama, PARADO, 1 / 60, zebra(4)).some((evento) => evento.type === 'apex')).toBe(false)
+  })
+
+  it('o leitor da pista é chamado a cada passo fixo, no ponto do carro', () => {
+    const lidos: number[] = []
+    const context: RaceContext = {
+      curvature: 0,
+      slipstream: 0,
+      sample: (progress, out) => {
+        lidos.push(progress)
+        out.curvature = 0
+      },
+    }
+    const state = semObstaculos(createRaceState())
+    state.speed = CRUZEIRO
+    stepRace(state, PARADO, 0.05, context)
+    // 0,05 s em passos de 1/120 s são seis passos.
+    expect(lidos).toHaveLength(6)
+    for (let i = 1; i < lidos.length; i += 1) expect(lidos[i]).toBeGreaterThan(lidos[i - 1])
+  })
+
+  it('a super curva vale o mesmo em 60, 30 e 20 quadros por segundo', () => {
+    // Uma super curva sintética de 90 m: a carga sobe e desce com a distância.
+    // Relida a cada passo fixo, ela chega na mesma hora para os três.
+    const curva = (progress: number, out: RaceContext) => {
+      const t = (progress - 60) / 90
+      const dentro = t > 0 && t < 1
+      out.curvature = dentro ? SUPER * 4 * t * (1 - t) : 0
+      out.lineGain = dentro ? GANHO * 4 * t * (1 - t) : 0
+      out.apexId = t > 0.08 && t < 0.4 ? 1 : 0
+      out.apexSide = out.apexId ? 1 : 0
+    }
+    const final = (dt: number) => {
+      const state = semObstaculos(createRaceState())
+      state.speed = CRUZEIRO
+      state.lateral = 0.99
+      const context: RaceContext = { curvature: 0, slipstream: 0, sample: curva }
+      // Passos inteiros de cada taxa, somando exatamente quatro segundos.
+      const passos = Math.round(4 / dt)
+      for (let i = 0; i < passos; i += 1) stepRace(state, DIREITA, dt, context)
+      return state
+    }
+    const rapido = final(1 / 60)
+    const medio = final(1 / 30)
+    const lento = final(1 / 20)
+    for (const outro of [medio, lento]) {
+      expect(outro.progress).toBeCloseTo(rapido.progress, 6)
+      expect(outro.lateral).toBeCloseTo(rapido.lateral, 6)
+      expect(outro.speed).toBeCloseTo(rapido.speed, 6)
+      expect(outro.apexes.size).toBe(rapido.apexes.size)
+    }
+    expect(rapido.apexes.size).toBe(1)
+  })
+})
+
+describe('muro da super curva', () => {
+  /** Uma super curva à direita, com o muro por fora — do lado esquerdo. */
+  const COM_MURO: RaceContext = { curvature: 2.4, slipstream: 0, wallId: 7, wallSide: -1 }
+
+  /** Carro embalado, sem ninguém no volante, jogado contra o muro. */
+  function contraOMuro(segundos: number, context: RaceContext = COM_MURO) {
+    const state = semObstaculos(createRaceState())
+    state.speed = REGRAS.boostSpeed
+    const eventos: RaceEvent[] = []
+    for (let t = 0; t < segundos; t += 1 / 60) eventos.push(...stepRace(state, PARADO, 1 / 60, context))
+    return { state, eventos }
+  }
+
+  it('segura o carro antes do limite físico da grama', () => {
+    const { state } = contraOMuro(1)
+    expect(WALL_LIMIT).toBeLessThan(LATERAL_LIMIT)
+    expect(state.lateral).toBeGreaterThanOrEqual(-WALL_LIMIT - 1e-9)
+    expect(state.lateral).toBeCloseTo(-WALL_LIMIT, 6)
+  })
+
+  it('a primeira encostada é batida: conta para o reset e derruba a velocidade', () => {
+    const state = semObstaculos(createRaceState())
+    state.speed = REGRAS.boostSpeed
+    state.lateral = -WALL_LIMIT + 0.01
+    const antes = state.speed
+    const eventos = stepRace(state, PARADO, 1 / 60, COM_MURO)
+    expect(eventos).toContainEqual({ type: 'wall', curveId: 7 })
+    expect(state.strikes).toBe(1)
+    expect(state.collisions).toBe(1)
+    expect(state.speed).toBeLessThan(antes * WALL_IMPACT_KEEP + 1)
+    expect(state.penalty).toBeGreaterThan(0)
+  })
+
+  it('raspar no muro não conta outra batida, mas continua cobrando velocidade', () => {
+    const { state, eventos } = contraOMuro(1.2)
+    expect(eventos.filter((evento) => evento.type === 'wall')).toHaveLength(1)
+    expect(state.strikes).toBe(1)
+    // Encostado, o carro raspa: termina mais lento que o mesmo carro na grama
+    // sem muro, que só perde o que a grama tira.
+    const semMuro = contraOMuro(1.2, { curvature: 2.4, slipstream: 0 })
+    expect(state.speed).toBeLessThan(semMuro.state.speed)
+  })
+
+  it('outra super curva é outro muro: a batida conta de novo', () => {
+    const state = semObstaculos(createRaceState())
+    state.speed = REGRAS.boostSpeed
+    state.lateral = -WALL_LIMIT
+    stepRace(state, PARADO, 1 / 60, COM_MURO)
+    state.lateral = -WALL_LIMIT
+    stepRace(state, PARADO, 1 / 60, { ...COM_MURO, wallId: 8 })
+    expect(state.strikes).toBe(2)
+  })
+
+  it('a terceira batida, no muro, reseta o carro', () => {
+    const state = semObstaculos(createRaceState())
+    state.speed = REGRAS.boostSpeed
+    state.strikes = 2
+    state.lateral = -WALL_LIMIT
+    const eventos = stepRace(state, PARADO, 1 / 60, COM_MURO)
+    expect(eventos).toContainEqual({ type: 'reset', reason: 'crashes' })
+    expect(state.resetting).toBeGreaterThan(0)
+    expect(state.lateral).toBe(0)
+  })
+
+  it('o muro só existe do lado de fora: por dentro, o carro vai até a grama', () => {
+    const state = semObstaculos(createRaceState())
+    state.lateral = WALL_LIMIT + 0.05
+    const eventos = stepRace(state, PARADO, 1 / 60, { curvature: 0, slipstream: 0, wallId: 7, wallSide: -1 })
+    expect(eventos.some((evento) => evento.type === 'wall')).toBe(false)
+    expect(state.lateral).toBeGreaterThan(WALL_LIMIT)
   })
 })

@@ -123,6 +123,43 @@ button { cursor: pointer; }
 /* Aviso de aderência: âmbar, para não competir com o vermelho de fora da pista. */
 .warning.grip { background: rgba(242,181,46,.9); color: #1b1205; }
 .impact { top: 35%; background: #f2a600; color: #17120a; }
+.warning .offtrack-track { display: block; height: 3px; margin-top: 6px; background: rgba(255,255,255,.28); }
+.warning .offtrack-track i { display: block; height: 100%; background: #fff; transition: width .1s linear; }
+/* As batidas moram na linha do setor, entre o nome e a porcentagem: embaixo
+   dela, empurravam o bloco para cima do painel do rival. O rótulo pega o
+   estilo de `.progress-copy span`, como os outros rótulos do HUD. */
+.strikes { display: flex; align-items: center; gap: 5px; margin: 0 10px 0 auto; }
+.strikes span { margin-right: 3px; }
+.strikes i { width: 8px; height: 8px; border: 1px solid rgba(255,255,255,.45); transform: skewX(-12deg); transition: background .15s, box-shadow .15s; }
+.strikes i.on { background: #ff4b37; border-color: #ff4b37; box-shadow: 0 0 10px #ff4b37; }
+.reset-banner { position: absolute; z-index: 6; top: 30%; left: 50%; transform: translateX(-50%) skewX(-8deg); min-width: 220px; padding: 10px 22px 12px; background: #ff4b37; color: #fff; text-align: center; font: 900 italic clamp(40px, 8vw, 72px)/1 'Barlow Condensed', sans-serif; letter-spacing: .04em; box-shadow: 8px 8px 0 rgba(0,0,0,.35); }
+.reset-banner small { display: block; margin-top: 5px; font: 800 12px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .18em; }
+.reset-banner .reset-track { display: block; height: 4px; margin-top: 9px; background: rgba(0,0,0,.28); }
+/* A duração vem de RESET_SECONDS, no próprio elemento. */
+.reset-banner .reset-track i { display: block; height: 100%; background: #fff; animation: reset-esvazia 1.5s linear forwards; }
+@keyframes reset-esvazia { from { width: 100%; } to { width: 0; } }
+
+/* Nota de curva: do lado para onde a pista vai, à meia altura, longe do meio
+   da pista e dos controles de toque. Âmbar, que é a cor da faixa da tangência
+   pintada no asfalto — o aviso e o alvo falam a mesma língua. */
+.pace-note { position: absolute; z-index: 5; top: 38%; display: grid; justify-items: start; gap: 3px; padding: 9px 15px 10px; border-left: 4px solid #ffc630; background: rgba(6,10,15,.8); color: #fff; font: 900 italic 21px/1 'Barlow Condensed', sans-serif; letter-spacing: .05em; pointer-events: none; animation: nota-entra .22s ease-out; }
+.pace-note.left { left: 18px; }
+.pace-note.right { right: 18px; border-left: 0; border-right: 4px solid #ffc630; justify-items: end; text-align: right; }
+.pace-note em { color: #ffc630; font-style: italic; }
+.pace-note small { color: #ffd98a; font: 800 10px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.pace-arrows { color: #ffc630; font: 900 36px/.72 'Barlow Condensed', sans-serif; letter-spacing: -.1em; }
+.pace-note.close .pace-arrows { animation: nota-pisca .32s steps(2, jump-none) infinite; }
+/* No S, as setas da segunda metade vêm atrás, mais apagadas: é o que vem depois. */
+.pace-arrows i { font-style: normal; opacity: .5; }
+.pace-note.inside { border-color: #fff; background: rgba(226,54,43,.9); }
+.pace-note.inside em, .pace-note.inside small, .pace-note.inside .pace-arrows { color: #fff; }
+@keyframes nota-entra { from { opacity: 0; translate: 0 8px; } to { opacity: 1; translate: 0 0; } }
+@keyframes nota-pisca { 50% { opacity: .35; } }
+
+/* Tangência: o único prêmio da pista, acima do centro e sumindo sozinho. */
+.tangency-flash { position: absolute; z-index: 6; top: 29%; left: 50%; transform: translateX(-50%) skewX(-8deg); padding: 8px 20px 9px; background: #ffc630; color: #1b1205; text-align: center; font: 900 italic 30px/1 'Barlow Condensed', sans-serif; letter-spacing: .06em; box-shadow: 6px 6px 0 rgba(0,0,0,.35); pointer-events: none; animation: tangencia 1.5s ease-out forwards; }
+.tangency-flash small { display: block; margin-top: 3px; font: 800 11px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .18em; }
+@keyframes tangencia { 0% { opacity: 0; scale: .7; } 12% { opacity: 1; scale: 1.08; } 22% { scale: 1; } 75% { opacity: 1; } 100% { opacity: 0; translate: 0 -14px; } }
 .countdown-layer { position: absolute; z-index: 7; inset: 0; display: grid; place-content: center; text-align: center; background: rgba(2,5,8,.2); }
 .countdown-layer p { margin: 18px 0 0; font: 800 13px 'Barlow Condensed', sans-serif; letter-spacing: .2em; text-shadow: 0 2px 10px #000; }
 .countdown-sync { color: #45e7ad; font-size: 10px !important; letter-spacing: .16em !important; }
@@ -252,7 +289,14 @@ button { cursor: pointer; }
   .timer-block { padding: 7px 12px; }
   .timer-block strong { font-size: 17px; }
   .speed-block strong { font-size: 40px; }
-  .progress-wrap { top: 124px; width: 52vw; }
+  .progress-wrap { top: 124px; width: 60vw; }
+  /* Abaixo dos avisos centrais, que no celular ocupam a largura toda: a 33% a
+     nota encostava no aviso de batida. */
+  .pace-note { top: 44%; padding: 7px 11px 8px; font-size: 17px; }
+  .pace-note.left { left: 12px; }
+  .pace-note.right { right: 12px; }
+  .pace-arrows { font-size: 28px; }
+  .tangency-flash { top: 27%; font-size: 24px; }
   .rival-panel { top: 156px; min-width: 0; width: calc(100% - 26px); padding: 7px 10px; }
   .rival-panel strong { font-size: 13px; }
   .touch-controls { left: 13px; right: 13px; bottom: max(16px, env(safe-area-inset-bottom)); grid-template-columns: 58px 58px 1fr 80px; gap: 7px; }
@@ -360,8 +404,13 @@ button { cursor: pointer; }
 .score-row { grid-template-columns: 42px 34px 1fr auto; }
 .score-car { width: 34px; height: 37px; object-fit: contain; }
 
+@media (max-width: 340px) {
+  .strikes span { display: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .garage-car img, .garage-info { animation: none; }
+  .pace-note, .pace-note.close .pace-arrows { animation: none; }
   .garage-card:hover { transform: none; }
 }
 
