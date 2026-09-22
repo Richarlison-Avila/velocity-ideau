@@ -24,7 +24,8 @@ type LobbyProps = {
 function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeave, onError, onChangeCar }: LobbyProps) {
   const me = room.players.find((player) => player.id === playerId)
   const souAnfitriao = room.hostId === playerId
-  const rival = room.players.find((player) => player.id !== playerId)
+  const rivals = room.players.filter((player) => player.id !== playerId)
+  const haPilotoSemSinal = rivals.some((player) => !player.connected)
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${room.code}`
   const [copied, setCopied] = useState(false)
   const [remaining, setRemaining] = useState<number | null>(null)
@@ -45,7 +46,7 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
   /**
    * Trocar a dificuldade vale para a sala inteira e desfaz as confirmações —
    * ninguém deve largar num nível que não viu. Por isso o servidor zera o
-   * pronto dos dois, e por isso o botão some depois que a contagem começa.
+   * pronto de todos, e por isso o botão some depois que a contagem começa.
    */
   const escolherDificuldade = (difficulty: Difficulty) => {
     if (difficulty === room.difficulty || !souAnfitriao) return
@@ -101,16 +102,17 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
 
   const headline = () => {
     if (room.status === 'countdown') return 'Largada a caminho.'
-    if (room.players.length === 1) return 'Aguardando rival.'
-    if (rival && !rival.connected) return 'Rival reconectando.'
-    return 'Grid completo.'
+    if (room.players.length === 1) return 'Aguardando pilotos.'
+    if (haPilotoSemSinal) return 'Piloto reconectando.'
+    if (room.players.length === 6) return 'Grid completo.'
+    return `${room.players.length} pilotos no grid.`
   }
 
   const statusLine = () => {
-    if (room.status === 'countdown') return 'As cinco luzes já estão acesas nos dois aparelhos.'
-    if (rival && !rival.connected) return 'O rival perdeu a conexão e tem alguns segundos para voltar.'
-    if (room.players.length === 1) return 'Compartilhe o código, link ou QR code com o segundo piloto.'
-    return 'Confirme quando estiver pronto. O servidor marca a largada assim que os dois confirmarem.'
+    if (room.status === 'countdown') return 'As cinco luzes já estão acesas em todos os aparelhos.'
+    if (haPilotoSemSinal) return 'Um piloto perdeu a conexão e tem alguns segundos para voltar.'
+    if (room.players.length === 1) return 'Compartilhe o código, link ou QR code com até cinco pilotos.'
+    return 'Confirme quando estiver pronto. O servidor marca a largada assim que todos confirmarem.'
   }
 
   const relogio = clock.synced ? `RELÓGIO SINCRONIZADO ±${Math.round(clock.roundTrip / 2)} MS` : 'SINCRONIZANDO RELÓGIO…'
@@ -129,7 +131,7 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
             {notice && <p className="lobby-notice">{notice}</p>}
 
             <div className="driver-list">
-              {[0, 1].map((position) => {
+              {Array.from({ length: 6 }, (_, position) => {
                 const player = room.players[position]
                 const offline = player && !player.connected
                 const carro = player ? carById(player.car) : null
@@ -153,7 +155,7 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                       )}
                     </div>
                     {souEu ? (
-                      // Da contagem em diante o carro fica travado: o rival já o viu no grid.
+                      // Da contagem em diante o carro fica travado: os rivais já o viram no grid.
                       <button
                         type="button"
                         className="slot-change"
@@ -206,8 +208,8 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                 disabled={
                   room.players.length < 2 ||
                   connection !== 'connected' ||
-                  // Com o rival sem sinal ainda é possível desfazer a própria confirmação.
-                  (!me?.ready && Boolean(rival && !rival.connected))
+                  // Com alguém sem sinal ainda é possível desfazer a própria confirmação.
+                  (!me?.ready && haPilotoSemSinal)
                 }
                 onClick={toggleReady}
               >

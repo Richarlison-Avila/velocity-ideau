@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CAR_ART, CARS, carById, DEFAULT_CAR, isCarId, toCarId } from './cars'
+import { CAR_ART, CARS, PILOTS, carById, DEFAULT_CAR, isCarId, toCarId } from './cars'
 
 describe('garagem', () => {
   it('cada carro tem um identificador próprio', () => {
@@ -27,6 +27,19 @@ describe('garagem', () => {
       expect(car.code).toMatch(/^[A-Z]{3}$/)
       expect(car.accent).toMatch(/^#[0-9a-f]{6}$/i)
     }
+  })
+
+  it('mostra cada piloto uma vez e agrupa suas pinturas', () => {
+    expect(new Set(PILOTS.map((pilot) => pilot.driver)).size).toBe(PILOTS.length)
+    expect(PILOTS.flatMap((pilot) => pilot.cars)).toHaveLength(CARS.length)
+    expect(PILOTS.find((pilot) => pilot.driver === 'Ayrton Senna')?.cars.map((car) => car.team)).toEqual([
+      'Lotus',
+      'McLaren',
+    ])
+    expect(PILOTS.find((pilot) => pilot.driver === 'Fernando Alonso')?.cars.map((car) => car.team)).toEqual([
+      'Aston Martin',
+      'Renault',
+    ])
   })
 })
 

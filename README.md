@@ -186,7 +186,7 @@ A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resu
 - [x] Publicação em processo único, com Dockerfile e endereços da rede local
 - [x] Sala de demonstração que se cria sozinha
 - [x] Fontes servidas pelo projeto, sem depender de internet
-- [x] Garagem com cinco carros: a escolha vale no treino e no duelo, e o fantasma usa a pintura do rival
+- [x] Garagem com dezesseis carros: a escolha vale no treino e no duelo, e o fantasma usa a pintura do rival
 - [x] QR code definitivo e roteiro do workshop
 
 ## Limitações conhecidas

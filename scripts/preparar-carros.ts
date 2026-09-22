@@ -17,7 +17,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { PNG } from 'pngjs'
-import { CAR_ART, CARS } from '../src/game/cars.js'
+import { CAR_ART, CARS, type CarId } from '../src/game/cars.js'
 
 const ORIGEM = resolve('arte/carros')
 const DESTINO = resolve('public/carros')
@@ -44,6 +44,18 @@ const LIMIAR_DO_FUNDO = 12
 const TOLERANCIA = 8
 
 type Imagem = { largura: number; altura: number; dados: Buffer }
+type Caixa = ReturnType<typeof contorno>
+
+/**
+ * Artes recebidas em outro tamanho, mas desenhadas no mesmo enquadramento.
+ *
+ * O ajuste fica explícito por carro para uma arte realmente fora do molde não
+ * ser aceita por acidente. Depois desta normalização ela passa pela mesma
+ * validação rigorosa das demais.
+ */
+const AJUSTES_DE_ENQUADRAMENTO: Partial<Record<CarId, Caixa>> = {
+  'raikkonen-mercedes': { x0: 29, y0: 168, x1: 1055, y1: 1295 },
+}
 
 /**
  * Apaga o fundo a partir das bordas.
@@ -89,6 +101,42 @@ function contorno(largura: number, altura: number, fundo: Uint8Array) {
     }
   }
   return { x0, y0, x1, y1 }
+}
+
+/** Reenquadra uma arte excepcional no canvas padrão, com interpolação bilinear. */
+function normalizarEnquadramento(imagem: Imagem, origem: Caixa, destino: Caixa): Imagem {
+  const largura = 1086
+  const altura = 1448
+  const dados = Buffer.alloc(largura * altura * 4)
+
+  // O exterior continua sendo fundo preto opaco, como nas artes originais.
+  for (let pixel = 0; pixel < largura * altura; pixel += 1) dados[pixel * 4 + 3] = 255
+
+  const escalaX = (origem.x1 - origem.x0) / (destino.x1 - destino.x0)
+  const escalaY = (origem.y1 - origem.y0) / (destino.y1 - destino.y0)
+  for (let y = destino.y0; y <= destino.y1; y += 1) {
+    const sy = origem.y0 + (y - destino.y0) * escalaY
+    const y0 = Math.floor(sy)
+    const y1 = Math.min(imagem.altura - 1, y0 + 1)
+    const fy = sy - y0
+    for (let x = destino.x0; x <= destino.x1; x += 1) {
+      const sx = origem.x0 + (x - destino.x0) * escalaX
+      const x0 = Math.floor(sx)
+      const x1 = Math.min(imagem.largura - 1, x0 + 1)
+      const fx = sx - x0
+      const saida = (y * largura + x) * 4
+      for (let canal = 0; canal < 4; canal += 1) {
+        const superior =
+          imagem.dados[(y0 * imagem.largura + x0) * 4 + canal] * (1 - fx) +
+          imagem.dados[(y0 * imagem.largura + x1) * 4 + canal] * fx
+        const inferior =
+          imagem.dados[(y1 * imagem.largura + x0) * 4 + canal] * (1 - fx) +
+          imagem.dados[(y1 * imagem.largura + x1) * 4 + canal] * fx
+        dados[saida + canal] = Math.round(superior * (1 - fy) + inferior * fy)
+      }
+    }
+  }
+  return { largura, altura, dados }
 }
 
 /**
@@ -207,9 +255,14 @@ async function main() {
   for (const car of CARS) {
     const bruto = await readFile(resolve(ORIGEM, `${car.id}.png`))
     const png = PNG.sync.read(bruto)
-    const imagem: Imagem = { largura: png.width, altura: png.height, dados: png.data }
+    let imagem: Imagem = { largura: png.width, altura: png.height, dados: png.data }
 
-    const fundo = apagarFundo(imagem)
+    let fundo = apagarFundo(imagem)
+    const ajuste = AJUSTES_DE_ENQUADRAMENTO[car.id]
+    if (ajuste) {
+      imagem = normalizarEnquadramento(imagem, contorno(imagem.largura, imagem.altura, fundo), ajuste)
+      fundo = apagarFundo(imagem)
+    }
     conferirMolde(car.id, contorno(imagem.largura, imagem.altura, fundo))
 
     const sprite = recortarEReduzir(imagem, fundo, LARGURA)

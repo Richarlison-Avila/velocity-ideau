@@ -86,15 +86,21 @@ describe('sala pelo socket', () => {
     expect(visaoDaAna.players.every((player) => player.connected)).toBe(true)
   })
 
-  it('recusa um terceiro piloto e uma sala inexistente', async () => {
+  it('aceita seis pilotos e recusa o sétimo e uma sala inexistente', async () => {
     const { code } = await gridCompleto()
-    const caio = await connect()
+    for (const [id, name] of [['caio', 'Caio'], ['duda', 'Duda'], ['eva', 'Eva'], ['fabio', 'Fábio']]) {
+      const client = await connect()
+      const entrada = await ask<RoomAck>(client, 'room:join', { code, name, playerId: id })
+      expect(entrada.ok).toBe(true)
+    }
+    expect(server.rooms.get(code)?.players).toHaveLength(6)
 
-    const cheia = await ask<RoomAck>(caio, 'room:join', { code, name: 'Caio', playerId: 'caio' })
+    const gabi = await connect()
+    const cheia = await ask<RoomAck>(gabi, 'room:join', { code, name: 'Gabi', playerId: 'gabi' })
     expect(cheia.ok).toBe(false)
     expect(cheia.error).toContain('cheia')
 
-    const inexistente = await ask<RoomAck>(caio, 'room:join', { code: 'ZZZZZ', name: 'Caio', playerId: 'caio' })
+    const inexistente = await ask<RoomAck>(gabi, 'room:join', { code: 'ZZZZZ', name: 'Gabi', playerId: 'gabi' })
     expect(inexistente.ok).toBe(false)
     expect(inexistente.error).toContain('não encontrada')
   })

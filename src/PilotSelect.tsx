@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
-import { CARS, carById, type CarId } from './game/cars'
+import { PILOTS, carById, type CarId } from './game/cars'
 import { carImageUrl } from './game/carSprites'
 
 type PilotSelectProps = {
   /** Carro com que o piloto chegou à garagem. */
   selected: CarId
-  /** Carro do rival, marcado na grade quando a escolha é feita dentro da sala. */
-  rivalCar?: CarId | null
+  /** Carros dos rivais, marcados na grade quando a escolha é feita na sala. */
+  rivalCars?: CarId[]
   /** O caminho de volta muda com a origem: paddock ou lobby. */
   backLabel: string
   onConfirm: (car: CarId) => void
@@ -29,26 +29,34 @@ function separarNome(nome: string) {
  * isso com todas as letras, para ninguém achar que perdeu por ter escolhido
  * errado.
  */
-function PilotSelect({ selected, rivalCar = null, backLabel, onConfirm, onBack }: PilotSelectProps) {
+function PilotSelect({ selected, rivalCars = [], backLabel, onConfirm, onBack }: PilotSelectProps) {
   const [preview, setPreview] = useState<CarId>(selected)
-  const cartoes = useRef(new Map<CarId, HTMLButtonElement>())
+  const cartoes = useRef(new Map<string, HTMLButtonElement>())
+  const pinturasPorPiloto = useRef(new Map([[carById(selected).driver, selected]]))
   const previewRef = useRef(preview)
   previewRef.current = preview
 
-  const indice = CARS.findIndex((item) => item.id === preview)
   const car = carById(preview)
+  const indice = PILOTS.findIndex((item) => item.driver === car.driver)
+  const pilot = PILOTS[indice]
   const [nome, sobrenome] = separarNome(car.driver)
+
+  const selecionarPintura = useCallback((next: CarId) => {
+    pinturasPorPiloto.current.set(carById(next).driver, next)
+    setPreview(next)
+  }, [])
 
   /**
    * Anda pela grade em círculo. Se o foco estava num cartão, ele acompanha,
    * como pede um grupo de opções operado pelo teclado.
    */
   const andar = useCallback((passo: number) => {
-    const atual = CARS.findIndex((item) => item.id === previewRef.current)
-    const proximo = CARS[(atual + passo + CARS.length) % CARS.length].id
+    const atual = PILOTS.findIndex((item) => item.driver === carById(previewRef.current).driver)
+    const proximoPiloto = PILOTS[(atual + passo + PILOTS.length) % PILOTS.length]
+    const proximo = pinturasPorPiloto.current.get(proximoPiloto.driver) ?? proximoPiloto.cars[0].id
     setPreview(proximo)
     if (document.activeElement instanceof HTMLElement && document.activeElement.classList.contains('garage-card')) {
-      cartoes.current.get(proximo)?.focus()
+      cartoes.current.get(proximoPiloto.driver)?.focus()
     }
   }, [])
 
@@ -88,9 +96,32 @@ function PilotSelect({ selected, rivalCar = null, backLabel, onConfirm, onBack }
           <p className="eyebrow">GRID DE PILOTOS</p>
           <h1>ESCOLHA SEU <em>PILOTO.</em></h1>
         </div>
-        <span className="garage-counter">
-          {String(indice + 1).padStart(2, '0')} / {String(CARS.length).padStart(2, '0')}
-        </span>
+        <div className="garage-header-tools">
+          {pilot.cars.length > 1 && (
+            <fieldset className="garage-skins">
+              <legend>TROCAR EQUIPE</legend>
+              <div role="radiogroup" aria-label={`Equipe de ${pilot.driver}`}>
+                {pilot.cars.map((skin) => (
+                  <button
+                    key={skin.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={skin.id === preview}
+                    className={skin.id === preview ? 'on' : ''}
+                    style={destaque(skin.accent)}
+                    onClick={() => selecionarPintura(skin.id)}
+                  >
+                    <img src={carImageUrl(skin.id)} alt="" />
+                    <span><small>EQUIPE</small>{skin.team}</span>
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+          )}
+          <span className="garage-counter">
+            {String(indice + 1).padStart(2, '0')} / {String(PILOTS.length).padStart(2, '0')}
+          </span>
+        </div>
       </header>
 
       <section className="garage-stage" aria-label="Carro em destaque">
@@ -115,28 +146,38 @@ function PilotSelect({ selected, rivalCar = null, backLabel, onConfirm, onBack }
       </section>
 
       <div className="garage-grid" role="radiogroup" aria-label="Pilotos">
-        {CARS.map((item) => (
-          <button
-            key={item.id}
-            ref={(elemento) => {
-              if (elemento) cartoes.current.set(item.id, elemento)
-              else cartoes.current.delete(item.id)
-            }}
-            type="button"
-            role="radio"
-            aria-checked={item.id === preview}
-            tabIndex={item.id === preview ? 0 : -1}
-            className={`garage-card ${item.id === preview ? 'on' : ''}`}
-            style={destaque(item.accent)}
-            onClick={() => setPreview(item.id)}
-            onDoubleClick={() => onConfirm(item.id)}
-          >
-            <img src={carImageUrl(item.id)} alt="" />
-            <span>{item.code} <i>#{item.number}</i></span>
-            <strong>{item.team}</strong>
-            {rivalCar === item.id && <em className="garage-rival">RIVAL</em>}
-          </button>
-        ))}
+        {PILOTS.map((item) => {
+          const itemCar = item.driver === car.driver
+            ? car
+            : carById(pinturasPorPiloto.current.get(item.driver) ?? item.cars[0].id)
+          const idsDoPiloto = new Set(item.cars.map((skin) => skin.id))
+          const rivaisNesteCarro = rivalCars.filter((rival) => idsDoPiloto.has(rival)).length
+          return (
+            <button
+              key={item.driver}
+              ref={(elemento) => {
+                if (elemento) cartoes.current.set(item.driver, elemento)
+                else cartoes.current.delete(item.driver)
+              }}
+              type="button"
+              role="radio"
+              aria-checked={item.driver === car.driver}
+              tabIndex={item.driver === car.driver ? 0 : -1}
+              className={`garage-card ${item.driver === car.driver ? 'on' : ''}`}
+              style={destaque(itemCar.accent)}
+              onClick={() => selecionarPintura(itemCar.id)}
+              onDoubleClick={() => onConfirm(itemCar.id)}
+            >
+              <img src={carImageUrl(itemCar.id)} alt="" />
+              <span>{item.code} <i>#{itemCar.number}</i></span>
+              <strong>{item.driver}</strong>
+              {item.cars.length > 1 && <small className="garage-skin-count">{item.cars.length} EQUIPES</small>}
+              {rivaisNesteCarro > 0 && (
+                <em className="garage-rival">{rivaisNesteCarro === 1 ? 'RIVAL' : `${rivaisNesteCarro} RIVAIS`}</em>
+              )}
+            </button>
+          )
+        })}
       </div>
 
       <footer className="garage-actions">
