@@ -43,6 +43,12 @@ export type RaceState = {
    * acumula. É daqui que sai a perda de aderência.
    */
   agitation: number
+  /**
+   * Lado em que o volante assentou por último: -1, 1, ou zero antes do
+   * primeiro comando. Só o volante indo para o outro lado conta como
+   * zigue-zague.
+   */
+  steerSide: number
   /** Aderência de 0 a 1, derivada da agitação. Multiplica a velocidade-alvo. */
   grip: number
   /** Força do vácuo aproveitada neste passo, de 0 a 1. */
@@ -158,6 +164,13 @@ export const STEER_TAU = 0.1
 export const AGITATION_TAU = 1
 
 /**
+ * Posição do volante, na direção do comando, a partir da qual ele assentou
+ * daquele lado. Perto do batente: a troca de lado conta inteira, como contava
+ * antes de o pulso deixar de contar.
+ */
+export const STEER_SETTLED = 0.9
+
+/**
  * Faixa de agitação entre a primeira perda e a perda máxima.
  *
  * A zona morta e a perda máxima mudam com a dificuldade; a largura da rampa
@@ -171,10 +184,16 @@ export const AGITATION_RANGE = 3.4
  *
  * Multiplica apenas o excedente, não a carga inteira: a parte que o pneu
  * segura não desloca o carro. Calibrado contra a autoridade de esterço, que
- * vale `STEER_RATE + velocidade / 520` — os percentuais medidos estão no
- * README, junto da explicação de como se dirige.
+ * vale `STEER_RATE + velocidade / 520`, pela regra de Top Gear: **quem segura o
+ * volante segura a curva**. Em cruzeiro, a pior curva comum pede 72% do
+ * volante e a super curva, no centro da pista, pouco mais de 90%; só de boost
+ * a curva passa do que o volante segura, e aí ela joga o carro para fora.
+ *
+ * Já foi 2,55, e com ele a pior curva comum pedia 114% do volante e o grampo,
+ * 354%: o carro era arremessado para fora fizesse o piloto o que fizesse. Uma
+ * curva que não se consegue fazer não é pesada — é aleatória.
  */
-export const CORNER_PUSH = 2.55
+export const CORNER_PUSH = 1.6
 
 /**
  * Quanto a curva freia o carro, em km/h por segundo, por unidade do que escapa
@@ -189,8 +208,24 @@ export const CORNER_PUSH = 2.55
  * curva caía junto, e nem entrando de boost na curva mais fechada alguém saía
  * da pista — medido. Esfregando aos poucos, quem entra embalado é jogado para
  * fora antes de perder a velocidade, que é o que a curva de verdade faz.
+ *
+ * Caiu de 45 para 22 junto com o empurrão. Com 45 o grampo tirava cem km/h por
+ * segundo, e o carro saía de toda super curva se arrastando: a curva de Top
+ * Gear é rápida, e custa velocidade a quem erra a linha, não a quem a faz.
  */
-export const CORNER_SCRUB = 45
+export const CORNER_SCRUB = 22
+
+/**
+ * Quanto o boost aumenta a carga da curva.
+ *
+ * De boost, o motor manda às rodas mais força do que o pneu segura de lado, e a
+ * traseira escapa: é a lição de Top Gear, em que o nitro numa curva é o jeito
+ * mais rápido de sair da pista. Sem este fator, entrar embalado num grampo só
+ * abria a linha — medido, o carro nunca chegava à grama, e o boost na curva não
+ * custava nada. Com ele, a super curva de boost passa de 170% do que o volante
+ * segura, e quem entra assim vai para o muro.
+ */
+export const BOOST_IN_CORNER = 1.3
 
 /**
  * Batidas que resetam o carro.
@@ -286,6 +321,7 @@ export function createRaceState(difficulty: Difficulty = 'normal'): RaceState {
     boostLocked: false,
     steerInput: 0,
     agitation: 0,
+    steerSide: 0,
     grip: 1,
     slipstream: 0,
     cornerLoad: 0,
@@ -314,9 +350,9 @@ export function createRaceState(difficulty: Difficulty = 'normal'): RaceState {
  * Nenhum pseudo-3D fazia isso: neles o carro avança pela linha central esteja
  * onde estiver, e a posição lateral só decide em que se bate. Aqui, a
  * tangência encurta o caminho de verdade — e, como a mesma conta é a do raio,
- * a linha por dentro também empurra mais. Por dentro é mais curto e mais
- * difícil de segurar; por fora é mais longo e mais folgado. É a escolha de
- * toda curva de verdade.
+ * a linha por dentro também empurra um pouco mais. Por dentro é mais curto e
+ * mais difícil de segurar; por fora é mais longo e mais folgado. É a escolha
+ * de toda curva de verdade.
  */
 export function lineFactorFor(lineGain: number, lateral: number) {
   if (!Number.isFinite(lineGain) || !Number.isFinite(lateral)) return 1
@@ -343,6 +379,7 @@ function resetar(state: RaceState) {
   state.offRoad = false
   state.steerInput = 0
   state.agitation = 0
+  state.steerSide = 0
   state.grip = 1
   state.penalty = 0
   state.boosting = false
@@ -563,9 +600,19 @@ export function stepRace(
     // O volante tem inércia, e o esforço lateral é o quanto ele andou. Medir
     // o curso do volante — e não a posição do carro na pista — é o que separa
     // a correção necessária numa curva do zigue-zague deliberado.
+    //
+    // Só conta o volante indo para o outro lado. Com tecla ou toque não existe
+    // meio volante: segura-se uma linha de curva pulsando o mesmo lado, e
+    // punir o pulso era punir justamente quem está fazendo a curva direito —
+    // quatro toques por segundo já acendiam o aviso de aderência.
     const antesDoGiro = state.steerInput
     state.steerInput += (comando - antesDoGiro) * (1 - Math.exp(-h / STEER_TAU))
-    state.agitation = state.agitation * Math.exp(-h / AGITATION_TAU) + Math.abs(state.steerInput - antesDoGiro)
+    const trocandoDeLado = comando !== 0 && state.steerSide !== 0 && comando !== state.steerSide
+    state.agitation =
+      state.agitation * Math.exp(-h / AGITATION_TAU) + (trocandoDeLado ? Math.abs(state.steerInput - antesDoGiro) : 0)
+    // O volante assenta do outro lado quando chega perto do batente: é o fim
+    // da troca, e o que vier depois dela para o mesmo lado é pulso.
+    if (comando !== 0 && state.steerInput * comando > STEER_SETTLED) state.steerSide = comando
     state.grip = gripFor(state.agitation, state.rules)
 
     // Força lateral da curva.
@@ -582,10 +629,15 @@ export function stepRace(
     // cada quadro terminava a prova na grama — o que é punição, não jogo.
     //
     // A linha entra na carga: por dentro o raio é menor, e a mesma velocidade
-    // pede mais do pneu.
+    // pede mais do pneu. Entra pela raiz do fator, e não por ele inteiro: com o
+    // fator inteiro, o caminho mais curto e o empurrão maior se anulavam, e a
+    // tangência não rendia nada a quem não usava o boost que ela devolve —
+    // medido. Pela raiz, por dentro continua mais difícil de segurar, e passa a
+    // ser o caminho rápido, que é o que a nota de curva promete.
     const proporcao = state.speed / state.rules.cruiseSpeed
     state.lineFactor = lineFactorFor(ganhoDaLinha, state.lateral)
-    const carga = curvatura * proporcao * proporcao * state.lineFactor
+    const carga =
+      curvatura * proporcao * proporcao * Math.sqrt(state.lineFactor) * (state.boosting ? BOOST_IN_CORNER : 1)
     state.cornerLoad = Math.min(1, Math.abs(carga))
     const escapa = Math.max(0, Math.abs(carga) - state.rules.cornerGrip)
     // Curva à direita joga o carro para a esquerda, daí o sinal invertido.

@@ -108,12 +108,13 @@ export type CurvaAnunciada = { start: number; end: number; side: 1 | -1 }
 const PREPARO_M = 110
 
 /**
- * Fração da primeira metade de um S a partir da qual o piloto deixa o carro
- * abrir para o lado de dentro da segunda.
+ * Fração da primeira metade de um S a partir da qual o piloto larga o lado de
+ * dentro dela e vai para o da segunda.
  *
- * No meio da curva era cedo: o empurrão somava ao volante e jogava o carro na
- * grama antes da emenda. A setenta por cento, ele chega à segunda metade pelo
- * lado de dentro dela e ainda no asfalto.
+ * Depois da zebra da tangência, que termina a dois terços da primeira metade:
+ * largar antes custaria a tangência, que no S é a da primeira metade só. Daí em
+ * diante, o carro atravessa para o lado de dentro da segunda, que é a linha
+ * mais curta dela.
  */
 const SOLTAR_NO_S = 0.7
 
@@ -146,14 +147,17 @@ export function tangenciando(curvas: readonly CurvaAnunciada[], boost = false): 
       const emendada = curvas.find((outra) => outra.start === curva.end)
       const soltar = curva.start + (curva.end - curva.start) * SOLTAR_NO_S
       const lado = emendada && state.progress > soltar ? emendada.side : curva.side
-      // Um obstáculo logo adiante, na faixa de dentro, vem antes da curva: o
-      // piloto desvia dele primeiro e só então encosta. Ir para dentro por
-      // cima de uma barreira é trocar a tangência por uma batida.
+      // Um obstáculo logo adiante, no caminho até a faixa de dentro, vem antes
+      // da curva: o piloto desvia dele primeiro e só então encosta. Ir para
+      // dentro por cima de uma barreira é trocar a tangência por uma batida —
+      // e o que conta é o trajeto inteiro, não só a faixa de chegada.
       const alvo = lado * dentro
       for (const o of state.rules.obstacles) {
         const adiante = o.distance - state.progress
         if (adiante <= 0 || adiante > PREPARO_M * 0.6) continue
-        if (Math.abs(o.lane - alvo) < HIT_HALF_WIDTH[o.kind] + 0.14) return { ...comando, boost: false }
+        const folga = HIT_HALF_WIDTH[o.kind] + 0.14
+        const noCaminho = o.lane > Math.min(state.lateral, alvo) - folga && o.lane < Math.max(state.lateral, alvo) + folga
+        if (noCaminho) return { ...comando, boost: false }
       }
       return { ...rumoA(alvo, state), boost: false }
     }

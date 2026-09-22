@@ -3,6 +3,7 @@ import { rulesFor } from './rules'
 import {
   APEX_BOOST,
   APEX_LATERAL,
+  BOOST_IN_CORNER,
   createRaceState,
   gripFor,
   lineFactorFor,
@@ -628,6 +629,15 @@ describe('esforço lateral', () => {
     expect(agitado.time).toBeGreaterThan(reto.time * 1.08)
   })
 
+  it('pulsar o mesmo lado não é zigue-zague: é como se segura uma curva com tecla', () => {
+    // Com tecla ou toque não existe meio volante. Quatro toques por segundo
+    // para o mesmo lado — o jeito de segurar uma linha de curva — não podem
+    // custar aderência; antes, custavam, e o aviso acendia em quem dirigia certo.
+    const pulsando = provaCom((t) => (t % 0.25 < 0.1 ? DIREITA : PARADO))
+    expect(pulsando.maiorAgitacao).toBeLessThan(AGITATION_DEADBAND)
+    expect(pulsando.piorAderencia).toBe(1)
+  })
+
   it('a correção necessária numa curva não é punida', () => {
     const corrigindo = provaCom(correcaoDeCurva)
     expect(corrigindo.maiorAgitacao).toBeLessThan(AGITATION_DEADBAND)
@@ -898,8 +908,8 @@ describe('vácuo do rival', () => {
 })
 
 describe('super curvas e tangência', () => {
-  /** Uma curva à direita que o pneu não segura: carga de super curva. */
-  const SUPER = 2.2
+  /** Uma super curva à direita: a carga do grampo no ápice. */
+  const SUPER = 1.25
   /** Ganho da linha de um grampo no ápice: 1/R em unidades laterais. */
   const GANHO = 0.17
 
@@ -944,8 +954,10 @@ describe('super curvas e tangência', () => {
       stepRace(state, PARADO, 1 / 60, { curvature: 1, slipstream: 0, lineGain: GANHO })
       return lateral - state.lateral
     }
-    expect(empurrao(0.8)).toBeGreaterThan(empurrao(0) * 1.1)
-    expect(empurrao(-0.8)).toBeLessThan(empurrao(0) * 0.9)
+    // Um pouco mais, e não na proporção do caminho: é o que faz o lado de
+    // dentro ser mais difícil de segurar e, ainda assim, o mais rápido.
+    expect(empurrao(0.8)).toBeGreaterThan(empurrao(0) * 1.04)
+    expect(empurrao(-0.8)).toBeLessThan(empurrao(0) * 0.96)
   })
 
   it('a linha nunca faz o carro avançar mais depressa que o teto que o servidor conhece', () => {
@@ -970,19 +982,48 @@ describe('super curvas e tangência', () => {
       stepRace(state, PARADO, 1 / 60, { curvature, slipstream: 0 })
       return -state.lateral
     }
-    expect(deslocamento(SUPER)).toBeGreaterThan(deslocamento(1) * 1.5)
+    expect(deslocamento(SUPER)).toBeGreaterThan(deslocamento(1) * 1.2)
     // Acima do teto não empurra mais: é a guarda contra entrada corrompida.
     expect(deslocamento(MAX_CORNER_LOAD * 4)).toBeCloseTo(deslocamento(MAX_CORNER_LOAD), 9)
   })
 
-  it('em cruzeiro, a super curva leva o carro para fora mesmo com o volante todo virado', () => {
-    // É o que a torna super: segurar não basta, é preciso entrar por dentro.
+  it('em cruzeiro, quem segura o volante segura a super curva', () => {
+    // A regra de Top Gear: a curva mais fechada da prova se faz segurando o
+    // volante. Antes ela empurrava três vezes e meia o que o volante segura, e
+    // o carro ia para o muro fizesse o piloto o que fizesse.
     const state = semObstaculos(createRaceState())
     state.speed = CRUZEIRO
-    for (let t = 0; t < 0.6; t += 1 / 60) stepRace(state, DIREITA, 1 / 60, { curvature: SUPER, slipstream: 0 })
-    expect(state.lateral).toBeLessThan(-0.5)
-    // E o pneu esfrega: a velocidade cai de verdade.
-    expect(state.speed).toBeLessThan(CRUZEIRO - 15)
+    for (let t = 0; t < 1.5; t += 1 / 60) stepRace(state, DIREITA, 1 / 60, { curvature: SUPER, slipstream: 0 })
+    expect(state.lateral).toBeGreaterThanOrEqual(0)
+    // E cobra pouco de quem a faz: a curva é rápida.
+    expect(state.speed).toBeGreaterThan(CRUZEIRO * 0.85)
+  })
+
+  it('sem ninguém no volante, a super curva leva o carro para fora', () => {
+    const state = semObstaculos(createRaceState())
+    state.speed = CRUZEIRO
+    for (let t = 0; t < 0.8; t += 1 / 60) stepRace(state, PARADO, 1 / 60, { curvature: SUPER, slipstream: 0 })
+    expect(state.lateral).toBeLessThan(-1)
+  })
+
+  it('de boost, a super curva leva o carro para fora mesmo com o volante todo virado', () => {
+    // É a lição do nitro: a curva se faz segurando o volante, não acelerando.
+    const state = semObstaculos(createRaceState())
+    state.speed = REGRAS.boostSpeed
+    const deBoost = { left: false, right: true, boost: true }
+    for (let t = 0; t < 0.8; t += 1 / 60) stepRace(state, deBoost, 1 / 60, { curvature: SUPER, slipstream: 0 })
+    expect(state.lateral).toBeLessThan(-0.4)
+  })
+
+  it('o boost aumenta a carga da curva: a traseira escapa', () => {
+    const empurrao = (boost: boolean) => {
+      const state = semObstaculos(createRaceState())
+      state.speed = REGRAS.boostSpeed
+      stepRace(state, { left: false, right: false, boost }, 0.1, { curvature: 1, slipstream: 0 })
+      return -state.lateral
+    }
+    expect(BOOST_IN_CORNER).toBeGreaterThan(1)
+    expect(empurrao(true)).toBeGreaterThan(empurrao(false) * 1.2)
   })
 
   it('a tangência devolve boost, uma vez por curva, só por dentro e no asfalto', () => {

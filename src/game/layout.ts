@@ -126,11 +126,17 @@ export const MAX_CURVATURE = (1.5 * MAX_HEADING_DELTA) / CURVE_SEGMENT
  *
  * A super curva é cinco vezes mais fechada que a pior curva comum, e em carga
  * cheia isso pediria um carro a 100 km/h — num jogo sem freio, a grama na
- * certa. Acima da curva comum a carga cresce mais devagar: continua
+ * certa. Acima da curva comum a carga cresce bem mais devagar: continua
  * monótona, então o que parece mais fechado empurra mais, mas o grampo de 180°
- * fica em pouco mais do dobro da pior curva comum, e não em cinco vezes ela.
+ * fica em um quarto a mais que a pior curva comum.
+ *
+ * É a regra de Top Gear: a curva fechada se vê — na pista que chicoteia, no
+ * horizonte que inclina, no carro atravessando —, e se faz segurando o volante.
+ * Em cruzeiro, no centro da pista, o grampo pede pouco mais de 90% do volante;
+ * por dentro pede mais que isso, e de boost ele joga o carro no muro. Com 0,36
+ * o grampo pedia três vezes e meia o volante, e ninguém fazia curva nenhuma.
  */
-export const SUPER_LOAD_SLOPE = 0.36
+export const SUPER_LOAD_SLOPE = 0.052
 
 /**
  * Curvatura na escala com que a física trabalha.
@@ -191,6 +197,18 @@ export type SuperCurve = {
    * entre as duas, e vira para o outro lado.
    */
   linked: boolean
+  /**
+   * Se a curva tem zebra de tangência.
+   *
+   * Toda super curva tem, menos a segunda metade do S. Para tangenciar as duas,
+   * o carro teria de atravessar a pista inteira entre um ápice e o outro antes
+   * de a segunda metade começar a empurrar — e isso exige largar o lado de
+   * dentro da primeira antes do ápice dela. Medido: nem o piloto de teste, que
+   * não erra tempo de reação, consegue as duas. Uma zebra que ninguém alcança
+   * é enfeite; no S, a tangência é a da entrada, e a segunda metade é para
+   * virar para o outro lado sem ir parar no muro.
+   */
+  tangency: boolean
 }
 
 /** Um trecho de super curva: quanto vira, em quanta pista, e para que lado em relação ao sorteado. */
@@ -277,21 +295,20 @@ export const SUPER_CURVE_LAST = 4_450
 /**
  * Trecho da zebra de dentro que conta como tangência, em frações da curva.
  *
- * Não é o meio da curva, e isso foi medido. Sem freio, a super curva sempre
- * leva o carro para fora: empurra o dobro do que o volante segura, e o pneu só
- * tira velocidade aos poucos. Quem entra encostado por dentro e vira tudo
- * cruza o centro da pista antes do meio da curva e sai raspando a grama de
- * fora — no grampo, o melhor piloto de teste chega ao meio dele já na metade de
- * fora. O ponto em que a boa linha encosta na zebra de dentro é a entrada, e é
- * ali que a tangência mora: do primeiro doze avos da curva até pouco mais do
- * primeiro terço.
+ * É o ápice, no meio da curva, onde a tangência mora em qualquer pista de
+ * verdade. Já morou na entrada, quando a super curva empurrava o triplo do que
+ * o volante segura e o carro cruzava a pista inteira antes do meio dela: dava
+ * para ganhar a tangência só por estar do lado certo antes de virar, e isso não
+ * é tangência. Com a curva controlável, a boa linha entra por dentro e segura a
+ * zebra até o ápice — e é justamente ali que a curva empurra mais, porque por
+ * dentro o raio é menor.
  *
- * O trecho mais curto, o do cotovelo, tem 23 m — bem mais que o avanço de um
- * quadro a vinte quadros por segundo, 3,5 m em cruzeiro. Menor que isso, um
- * aparelho lento pularia a zona inteira.
+ * O trecho mais curto, o do cotovelo e o de cada metade do S, tem 20 m — bem
+ * mais que o avanço de um quadro a vinte quadros por segundo, 3,5 m em
+ * cruzeiro. Menor que isso, um aparelho lento pularia a zona inteira.
  */
-export const TANGENCY_FROM = 0.08
-export const TANGENCY_TO = 0.4
+export const TANGENCY_FROM = 0.34
+export const TANGENCY_TO = 0.66
 
 /** Maior curvatura de super curva: a do trecho mais fechado, no ápice. */
 export const SUPER_MAX_CURVATURE = Math.max(
@@ -819,6 +836,7 @@ function sortearSuperCurvas(seed: number): SuperCurve[] {
         name: tipo.nome,
         peakLoad: curvatureLoad((1.5 * trecho.virada) / trecho.comprimento),
         linked: indice > 0,
+        tangency: indice === 0,
       })
       comeco += trecho.comprimento
     })
@@ -1031,7 +1049,7 @@ export function createTrackLayout(seed: number): TrackLayout {
       // A zebra de dentro, na entrada, é o único trecho em que a tangência conta.
       let apice: SuperCurve | null = null
       for (const curva of superCurvas) {
-        if (progress >= curva.kerbStart && progress <= curva.kerbEnd) apice = curva
+        if (curva.tangency && progress >= curva.kerbStart && progress <= curva.kerbEnd) apice = curva
       }
       out.apexId = apice ? apice.id : 0
       out.apexSide = apice ? apice.side : 0

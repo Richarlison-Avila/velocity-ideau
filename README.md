@@ -7,23 +7,29 @@ Protótipo jogável do plano em `PLANO_DESENVOLVIMENTO.md`: corrida offline, lob
 A aceleração é automática. O piloto controla **direção** e **boost** — e há três
 coisas disputando esse único comando.
 
-**A curva empurra.** A curvatura vem do traçado sorteado para a corrida, a mesma
-que está sendo desenhada na tela, e entra na física como força lateral: cresce
-com o quadrado da velocidade e só desloca o carro no que passa da aderência do
-pneu. Segurar a linha gasta esterço que deixa de estar disponível para escolher
-a faixa, e é essa disputa que faz a pista importar.
+**A curva empurra, e quem segura o volante a faz.** A curvatura vem do traçado
+sorteado para a corrida, a mesma que está sendo desenhada na tela, e entra na
+física como força lateral: cresce com o quadrado da velocidade e só desloca o
+carro no que passa da aderência do pneu. A calibração segue a regra de Top Gear:
+em cruzeiro, segurar o volante para o lado da curva sempre mantém o carro na
+linha — o desafio é a linha e o boost, e não uma curva que não se consegue fazer.
 
-| Nível | Aderência | Pede correção em | Pior curva consome do esterço |
+| Nível | Aderência | Pior curva comum pede do volante | Grampo pede do volante |
 | --- | --- | --- | --- |
-| Normal | 0,18 | 40% do traçado | 64% em cruzeiro · **101%** com boost |
-| Difícil | 0,15 | 45% do traçado | 65% em cruzeiro · 99% com boost |
-| Profissional | 0,12 | 52% do traçado | 66% em cruzeiro · 97% com boost |
+| Normal | 0,18 | 72% em cruzeiro · **151%** de boost | 93% em cruzeiro · **192%** de boost |
+| Difícil | 0,15 | 72% em cruzeiro · 146% de boost | 94% em cruzeiro · 186% de boost |
+| Profissional | 0,12 | 73% em cruzeiro · 143% de boost | 94% em cruzeiro · 181% de boost |
 
-Passar de 100% significa que ali o carro escapa mesmo com o volante todo virado:
-**a velocidade máxima só é utilizável nas retas**. Isso não é uma regra escrita à
-parte — é consequência de a curva cobrar o quadrado da velocidade. Para um piloto
-que precisa desviar de obstáculos enquanto segura a curva, o custo medido é de
-0,35 s no normal, 1,3 s no difícil e 2,1 s no profissional.
+Passar de 100% significa que ali o carro escapa mesmo com o volante todo virado, e
+é só de boost que isso acontece: **de boost, o motor manda às rodas mais força do
+que o pneu segura de lado**, e a carga da curva cresce 30%. É a lição do nitro de
+Top Gear — na reta ele é a arma; na curva, o jeito mais rápido de ir para a grama.
+O pneu que escapa também esfrega velocidade, mas pouco: quem faz a linha perde uns
+5% numa super curva.
+
+O volante tem inércia de um décimo de segundo, e castiga só o **zigue-zague**: o
+volante indo de um lado para o outro. Pulsar o mesmo lado — que é como se segura
+uma curva com tecla ou toque, onde não existe meio volante — não custa nada.
 
 **Por dentro é mais curto.** Numa curva de raio R, a linha a n metros do centro
 tem raio R − n: quem vai por dentro avança na pista mais depressa na mesma
@@ -43,26 +49,28 @@ sorteados pela semente, todas com raio de 21 a 27 m no ápice:
 | Caracol | 270° | 165 m | 2,53×, e dura o dobro |
 | S | 100° + 100°, emendadas | 2 × 64 m | 2,45× em cada metade |
 
-Sem freio, a super curva sempre leva o carro para fora — segurar o volante não
-basta. O que decide a curva é a entrada:
+Elas empurram um quarto a mais que a pior curva comum: em cruzeiro, pedem
+quase o volante todo, e de boost jogam o carro para fora. O que decide a curva é
+a linha:
 
 - **A nota de curva avisa** 280 m antes, do lado para onde a pista vai, como o
   copiloto de rali: nome, ângulo, distância e o que fazer (*SOLTE O BOOST*,
   *ENTRE POR DENTRO*, *SEGURE*). No S ela mostra as duas setas e, passado o ápice
   da primeira metade, já fala da segunda.
-- **Quem entra por dentro** e segura o volante passa no asfalto, raspando a grama
-  no máximo na saída do grampo e do caracol. Passar pela faixa âmbar da zebra de
-  dentro, na entrada, é a **tangência**: devolve 22% de boost, uma vez por curva.
-  No S, a boa linha deixa o carro abrir no fim da primeira metade — o lado de fora
-  dela é o de dentro da segunda.
+- **A tangência mora no ápice**, no meio da curva, na faixa âmbar da zebra de
+  dentro: entre por dentro e segure a zebra até ali. Por dentro a curva empurra
+  mais, porque o raio é menor, e é isso que a faz valer: devolve 22% de boost,
+  uma vez por curva, e a linha de dentro é a mais curta. O S tem uma tangência
+  só, a da primeira metade — para tangenciar as duas, o carro teria de largar o
+  lado de dentro antes do primeiro ápice.
 - **Por fora de cada super curva há um muro de pneus**, a 70 cm do asfalto.
-  Encostar nele é batida: conta para o reset, derruba a velocidade, solta faísca, e
-  colado nele o carro continua raspando velocidade. Quem entra pelo meio vai para a
-  grama e cai de ~250 para ~140 km/h; quem entra de boost, ou corrige tarde, bate.
-- Medido com os pilotos de teste: quem lê a nota faz todas as tangências e **nunca
-  bate no muro**, em todo nível e semente. No normal, é também a linha rápida. O
-  iniciante, que só corrige na borda do asfalto, bate no muro em toda semente e
-  ainda assim termina dentro da janela de 60 a 90 s em todos os níveis.
+  Encostar nele é batida: conta para o reset, derruba a velocidade, solta faísca,
+  e colado nele o carro continua raspando velocidade. Quem segura o volante nunca
+  chega lá; quem não vira, ou entra de boost e corrige tarde, chega.
+- Medido com os pilotos de teste no normal: quem faz a tangência chega de 0,6 a
+  1,4 s antes de quem entra pelo meio, e ninguém que segura o volante vai para a
+  grama. Quem não vira na super curva bate no muro em toda semente e perde de 8 a
+  10 s. O iniciante termina dentro da janela de 60 a 90 s em todos os níveis.
 
 A pista relida a cada passo fixo, e não uma vez por quadro, garante que a super
 curva chegue na mesma hora para aparelhos de 60, 30 e 20 quadros por segundo. O
@@ -75,7 +83,7 @@ referencial do carro, e a paisagem gira com o rumo dele. E o desenho exagera: na
 super curvas a pista na tela vira uma vez e meia o que a física vira, chicoteando
 para fora da tela, e a paisagem gira junto — o caracol passa o céu inteiro diante
 do carro mais de uma vez. O horizonte inclina para dentro da curva na proporção da
-força lateral, dois graus nas curvas comuns e mais de dez num grampo embalado, e o
+força lateral — três graus na pior curva comum, quatro num grampo, oito de boost —, e o
 carro deita com ela. O muro é uma parede contínua de pneus vermelhos e brancos com
 as placas de seta em cima, e o pneu que passa da carga da pior curva comum solta
 fumaça.
@@ -155,7 +163,7 @@ Os quadros são poses de um eixo só, da derrapagem toda à esquerda à derrapag
 
 O giro não é um recorte girado: cada camada do molde — asa, rodas, bico, pontões, cockpit, piloto, motor, traseira — desliza de lado na proporção da distância dela ao pivô, pouco à frente do eixo traseiro, e as camadas compridas são cisalhadas. É o que a projeção faria com o carro girado de verdade, sem mexer em nenhuma das centenas de faces.
 
-A pose sai da física: o esterço é o do volante, e a derrapagem começa quando a curva passa da carga da pior curva comum — só nas super curvas, ou entrando embalado demais. Ela entra em pouco mais de um décimo de segundo e sai em quase três, e é essa inércia que faz a troca de quadros virar movimento: na entrada de um grampo o carro vira, atravessa, escorrega e endireita. O rival derrapa pela mesma conta, com a curva de onde ele está e a velocidade que informou.
+A pose sai da física: o esterço é o do volante, e a derrapagem começa pouco antes da carga da pior curva comum — nas super curvas o carro atravessa, e de boost ele vai todo de lado. Ela entra em pouco mais de um décimo de segundo e sai em quase três, e é essa inércia que faz a troca de quadros virar movimento: na entrada de um grampo o carro vira, atravessa, escorrega e endireita. O rival derrapa pela mesma conta, com a curva de onde ele está e a velocidade que informou.
 
 A meia-largura do pneu traseiro é `CAR_SPRITE_HALF_WIDTH`, e um teste cobra isso: o carro ocupa na tela exatamente a largura que a regra de saída de pista cobra. O rival usa a mesma folha, banhada de azul, e nunca se confunde com o carro do próprio jogador.
 
@@ -325,7 +333,8 @@ A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resu
 
 - [x] Fluxo menu → largada → corrida → resultado → nova tentativa
 - [x] Pista pseudo-3D e aceleração automática
-- [x] Super curvas de 90° a 270° e S emendado, com nota de curva, tangência, muro de pneus e câmera no referencial do carro
+- [x] Super curvas de 90° a 270° e S emendado, com nota de curva, tangência no ápice, muro de pneus e câmera no referencial do carro
+- [x] Curvas calibradas pela regra de Top Gear: quem segura o volante faz a curva; de boost, ela joga o carro para fora
 - [x] Reset depois de três batidas ou de tempo demais fora da pista
 - [x] Controles por teclado e toque
 - [x] Limites da pista, obstáculos e penalidades

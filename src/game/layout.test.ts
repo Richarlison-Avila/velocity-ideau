@@ -680,8 +680,10 @@ describe('curvatura na escala da física', () => {
       anterior = carga
     }
     expect(curvatureLoad(MAX_CURVATURE)).toBeCloseTo(1, 9)
-    // O grampo empurra mais do dobro da pior curva comum, sem estourar o teto.
-    expect(curvatureLoad(SUPER_MAX_CURVATURE)).toBeGreaterThan(2)
+    // O grampo empurra um quarto a mais que a pior curva comum, sem estourar o
+    // teto: é a curva que se faz segurando o volante todo, e não uma parede.
+    expect(curvatureLoad(SUPER_MAX_CURVATURE)).toBeGreaterThan(1.15)
+    expect(curvatureLoad(SUPER_MAX_CURVATURE)).toBeLessThan(1.5)
     expect(curvatureLoad(SUPER_MAX_CURVATURE)).toBeLessThanOrEqual(MAX_CORNER_LOAD)
   })
 
@@ -817,7 +819,7 @@ describe('super curvas', () => {
       const layout = createTrackLayout(seed)
       for (const curva of layout.superCurves) {
         expect(Math.abs(curvatureLoad(layout.curvature(curva.apex)))).toBeCloseTo(curva.peakLoad, 3)
-        expect(curva.peakLoad).toBeGreaterThan(1.5)
+        expect(curva.peakLoad).toBeGreaterThan(1.1)
       }
       const grampo = layout.superCurves.find((curva) => curva.name === 'GRAMPO')!
       for (const curva of layout.superCurves) expect(grampo.peakLoad).toBeGreaterThanOrEqual(curva.peakLoad)
@@ -846,11 +848,15 @@ describe('super curvas', () => {
     expect(conflitos).toBe(0)
   })
 
-  it('a zebra da tangência fica na entrada, do lado de dentro, e cabe um quadro lento', () => {
+  it('a zebra da tangência fica no ápice, e cabe um quadro lento', () => {
     for (const seed of MUITAS) {
       for (const curva of createTrackLayout(seed).superCurves) {
-        expect(curva.kerbStart).toBeGreaterThan(curva.start)
-        expect(curva.kerbEnd).toBeLessThan(curva.apex)
+        // A segunda metade do S não tem: as duas tangências juntas não cabem
+        // na travessia entre um ápice e o outro.
+        expect(curva.tangency).toBe(!curva.linked)
+        if (!curva.tangency) continue
+        expect(curva.kerbStart).toBeLessThan(curva.apex)
+        expect(curva.kerbEnd).toBeGreaterThan(curva.apex)
         // A vinte quadros por segundo, em cruzeiro, o carro anda 3,5 m por
         // quadro: a zebra precisa de vários quadros para não ser pulada.
         expect(curva.kerbEnd - curva.kerbStart).toBeGreaterThan(3.5 * 5)
@@ -875,15 +881,18 @@ describe('super curvas', () => {
   it('o contexto da física traz a carga, a linha e a zebra da tangência', () => {
     const layout = createTrackLayout(42)
     const context: RaceContext = { curvature: 0, slipstream: 0 }
-    const curva = layout.superCurves[0]
+    const curva = layout.superCurves.find((c) => c.tangency)!
 
-    layout.fillContext(curva.apex, context)
-    expect(Math.abs(context.curvature)).toBeGreaterThan(1)
+    // Na entrada, a curva já empurra, mas a zebra ainda não começou.
+    layout.fillContext(curva.start + (curva.end - curva.start) * 0.2, context)
+    expect(Math.abs(context.curvature)).toBeGreaterThan(0.5)
     // Por dentro é do lado da curva: o ganho da linha tem o sinal dela.
     expect(Math.sign(context.lineGain!)).toBe(curva.side)
     expect(context.apexId).toBe(0)
 
-    layout.fillContext((curva.kerbStart + curva.kerbEnd) / 2, context)
+    // No ápice, a carga passa da pior curva comum e a zebra está ali.
+    layout.fillContext(curva.apex, context)
+    expect(Math.abs(context.curvature)).toBeGreaterThan(1)
     expect(context.apexId).toBe(curva.id)
     expect(context.apexSide).toBe(curva.side)
 

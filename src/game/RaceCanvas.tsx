@@ -279,7 +279,7 @@ const ROLAGEM_POR_CARGA = 0.052
  * para ser sentida, e a super curva inclina o bastante para assustar. Um
  * grampo em cruzeiro passa dos dez graus.
  */
-const ROLAGEM_ALEM_DA_COMUM = 0.075
+const ROLAGEM_ALEM_DA_COMUM = 0.09
 
 /**
  * Maior rolagem do horizonte: pouco mais de 11°.
@@ -311,12 +311,12 @@ const ROLAGEM_TAU = 0.3
  * Força lateral em que o carro começa a atravessar, e quanto a mais ele leva
  * para a derrapagem cheia.
  *
- * A pior curva comum vale 1: até ali o pneu aponta o carro para onde ele vai.
- * Só as super curvas passam disso, e o grampo em cruzeiro chega a 2,7 — a
- * derrapagem cheia fica um pouco antes, para ele atravessar de verdade.
+ * A pior curva comum vale 1, e o carro começa a atravessar pouco antes dela.
+ * O grampo em cruzeiro chega a 1,25 e atravessa bem; de boost ele passa de 1,9
+ * e o carro vai todo de lado, que é o que acontece com quem entra embalado.
  */
-const DERRAPAGEM_DE = 1
-const DERRAPAGEM_FAIXA = 1.2
+const DERRAPAGEM_DE = 0.9
+const DERRAPAGEM_FAIXA = 0.6
 
 /**
  * Inércia da derrapagem, em segundos: entra depressa, porque a traseira escapa
@@ -995,7 +995,7 @@ function RaceCanvas({
         // A faixa da tangência: o trecho de dentro, na entrada, pintado de
         // âmbar desde onde a passagem conta até a zebra. É o alvo que a nota de
         // curva manda buscar, e ele precisa ser visto antes de ser alcançado.
-        if (superCurva && onde >= superCurva.kerbStart && onde <= superCurva.kerbEnd) {
+        if (superCurva && superCurva.tangency && onde >= superCurva.kerbStart && onde <= superCurva.kerbEnd) {
           const lado = superCurva.side
           const dentroLonge = longe.center + lateralOffset(APEX_LATERAL * lado, longe.roadWidth)
           const dentroPerto = perto.center + lateralOffset(APEX_LATERAL * lado, perto.roadWidth)
