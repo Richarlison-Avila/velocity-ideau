@@ -10,15 +10,20 @@ import {
   type GhostSnapshot,
 } from './ghost'
 import { RaceAudio } from './audio'
-import { carById, type CarId } from './cars'
-import { carSprite, drawCarPaint, REAR_LIGHT_Y, type CarPaint } from './carSprites'
+import { DEFAULT_CAR, carById, type CarId } from './cars'
+import { drawCar, prepareCar, type CarPose } from './carSprites'
 import { createFeel, registerImpact, updateFeel } from './feel'
+import { LUZ, misturar, rampa } from './paleta'
+import { RECUO_DO_PORTICO, desenharObjeto, desenharPortico, prepararCenario } from './cenarioSprites'
+import type { FamiliaModelada } from './cenarioModel'
 import {
+  createGantry,
   createSceneryItem,
   createTrackLayout,
   curvatureLoad,
   firstSceneryIndex,
   lastSceneryIndex,
+  GANTRY_EVERY,
   SCENERY_SPACING,
   type Flora,
 } from './layout'
@@ -148,78 +153,6 @@ function roundedRect(
   ctx.roundRect(x, y, width, height, radius)
 }
 
-type CarPalette = {
-  tyres: string
-  /** Aro, para a roda não ser um retângulo preto chapado. */
-  rim: string
-  body: string
-  /** Lado na sombra da carroceria, que é o que dá volume. */
-  bodyDark: string
-  /** Aresta iluminada por cima. */
-  bodyLight: string
-  stripe: string
-  glass: string
-  wings: string
-  wingEdge: string
-  /** Luz traseira, acesa no centro da asa. */
-  light: string
-  shadow: string
-  alpha: number
-}
-
-/** Cores do carro do jogador. */
-const PLAYER_PALETTE: CarPalette = {
-  tyres: '#0b0d11',
-  rim: '#2c3138',
-  body: '#ff4b2b',
-  bodyDark: '#a8280f',
-  bodyLight: '#ff8a5c',
-  stripe: '#ffb000',
-  glass: '#c7f9ff',
-  wings: '#151820',
-  wingEdge: '#2b3038',
-  light: '#ff2d2d',
-  shadow: 'rgba(0,0,0,.42)',
-  alpha: 1,
-}
-
-/** O fantasma usa azul e transparência para nunca ser confundido com o próprio carro. */
-const GHOST_PALETTE: CarPalette = {
-  tyres: '#16303a',
-  rim: '#24444f',
-  body: '#43e7ff',
-  bodyDark: '#1d8ba3',
-  bodyLight: '#a6f4ff',
-  stripe: '#e8fbff',
-  glass: '#0d2a33',
-  wings: '#1d4854',
-  wingEdge: '#2c5f6d',
-  light: '#8ff0ff',
-  shadow: 'rgba(67,231,255,.14)',
-  alpha: 0.46,
-}
-
-/**
- * Deformações de apresentação do carro.
- *
- * Tudo aqui sai de `feel.ts`, que por sua vez só lê a simulação. Nada disso
- * volta para a corrida: não desloca a hitbox, não muda a posição competitiva
- * e não atrasa o comando.
- */
-type CarPose = {
-  /** Inclinação da carroceria, em radianos. */
-  tilt: number
-  /** Compressão vertical: negativo estica, positivo achata. */
-  squash: number
-  /** Esterço visual das rodas dianteiras, de -1 a 1. */
-  steer: number
-  /** Brilho do escapamento durante o boost, de 0 a 1. */
-  boost: number
-  /** Trepidação fora do asfalto, em pixels da escala base. */
-  jitter: number
-}
-
-const POSE_NEUTRA: CarPose = { tilt: 0, squash: 0, steer: 0, boost: 0, jitter: 0 }
 
 /** Preferência de som, guardada entre corridas e entre recargas da página. */
 const SOM_KEY = 'ghost-racer-mudo'
@@ -252,249 +185,69 @@ let somDesligado = lerPreferencia()
 const LADOS: Array<-1 | 1> = [-1, 1]
 
 /**
- * Paletas prontas do cenário, por tipo de vegetação.
+ * Ângulos das rajadas de velocidade, em torno do ponto de fuga.
  *
- * Montar a cor como texto a cada objeto alocaria centenas de strings por
- * quadro. O traçado sorteia um índice; aqui ele só vira uma cor já existente.
- * O ambiente da corrida escolhe o conjunto — numa travessia seca não há mato
- * verde na beira da pista.
+ * Vão de pouco acima do horizonte à esquerda até pouco acima dele à direita,
+ * passando por baixo: rajada no céu não diz nada, e o que se quer é a sensação
+ * de o chão fugir pelos cantos. O empurrãozinho de `sin` tira o leque regular
+ * demais, e como a lista é constante ela é sempre a mesma corrida após corrida.
  */
-const VEGETACAO: Record<Flora, { copas: string[]; luz: string[]; troncos: string[]; arbustos: string[]; capins: string[] }> = {
-  verde: {
-    copas: ['#1d4b2a', '#236030', '#2a6d38', '#1a4325', '#2f7a40', '#265c33'],
-    luz: ['#2d6f3c', '#33863f', '#3c944c', '#296437', '#45a657', '#377f47'],
-    troncos: ['#3b2d23', '#46362b', '#31261e'],
-    arbustos: ['#255c33', '#2d6b3a', '#1f5130'],
-    capins: ['#357c46', '#3d8a4f', '#2e7040'],
-  },
-  seca: {
-    copas: ['#5a5227', '#6b6130', '#4e4723', '#746a35', '#5f562a', '#665d2e'],
-    luz: ['#7c7239', '#8a7f42', '#6e6533', '#93874a', '#7f7540', '#877c44'],
-    troncos: ['#4a3722', '#55412a', '#3d2d1c'],
-    arbustos: ['#5d5228', '#6a5f2f', '#514724'],
-    capins: ['#8a7b3c', '#97883f', '#7d7036'],
-  },
-}
-const PLACAS = ['#d8dee2', '#e6b325', '#cf4436']
-const CERCA = '#6d7b7f'
+const ANGULOS_DE_RAJADA = Array.from({ length: 18 }, (_, i) => {
+  const passo = -0.18 * Math.PI + (i / 17) * 1.36 * Math.PI
+  return passo + Math.sin(i * 12.9898) * 0.09
+})
+
+/** Barreira, cone e a faixa refletiva que os dois usam. */
+const BARREIRA = rampa('#eef1f2')
+const BARREIRA_FAIXA = rampa('#ff4b37')
+const CONE = rampa('#ff8a00')
+const REFLETIVO = rampa('#f5f6e9')
 
 /**
- * Uma roda, com aro e banda de rodagem.
+ * Cerca e guardrail: as duas famílias que seguem procedurais.
  *
- * As dianteiras giram no próprio eixo conforme o volante. É o único elemento
- * do carro que roda por conta própria, e por isso recebe o ângulo em vez de
- * herdar a inclinação da carroceria.
+ * As duas são contínuas ao longo da pista, e o vão de cada vaga cobre metade
+ * do espaçamento para os dois lados para as travessas se encontrarem. Isso
+ * depende das projeções de duas vagas vizinhas, que diferem — assadas numa
+ * célula por vaga, virariam uma fila de portõezinhos soltos.
  */
-function drawWheel(
-  ctx: CanvasRenderingContext2D,
-  palette: CarPalette,
-  x: number,
-  y: number,
-  largura: number,
-  altura: number,
-  angulo: number,
-) {
-  ctx.save()
-  ctx.translate(x, y)
-  if (angulo !== 0) ctx.rotate(angulo)
-  ctx.fillStyle = palette.tyres
-  roundedRect(ctx, -largura / 2, -altura / 2, largura, altura, largura * 0.35)
-  ctx.fill()
-  // O aro aparece como uma faixa clara no meio da banda.
-  ctx.fillStyle = palette.rim
-  roundedRect(ctx, -largura * 0.28, -altura * 0.22, largura * 0.56, altura * 0.44, largura * 0.2)
-  ctx.fill()
-  ctx.restore()
+const CERCA = rampa('#6d7b7f')
+const GUARDRAIL = rampa('#aeb6ba')
+
+/**
+ * Altura na tela de cada família, em frações da largura da pista.
+ *
+ * São os mesmos números de quando cada objeto era desenhado à mão aqui: o
+ * que mudou foi de onde vem o desenho, não o tamanho que ele ocupa.
+ */
+const ALTURA_DA_FAMILIA: Record<FamiliaModelada, number> = {
+  tree: 0.52,
+  bush: 0.16,
+  grass: 0.038,
+  // A placa nova tem painel largo, então ela precisa ser mais baixa que a
+  // antiga para ocupar a mesma mancha na beira da pista.
+  sign: 0.085,
+  // O marcador tem altura própria, vinda do espaçamento da pista, e não passa
+  // por esta tabela — mas o tipo cobra a entrada.
+  marcador: 0.15,
+  pneus: 0.075,
+  poste: 0.42,
+  arquibancada: 0.26,
+  bandeira: 0.3,
+  pedra: 0.1,
+  cacto: 0.34,
+  predio: 0.52,
 }
 
 /**
- * O carro, visto de trás e um pouco de cima.
+ * Sombra que todo objeto deixa no chão.
  *
- * O eixo vertical do desenho é profundidade: o topo é o bico, a base é a asa
- * traseira, que é a parte mais próxima da câmera. É por isso que a ordem de
- * desenho vai de cima para baixo — asa dianteira, rodas da frente,
- * carroceria, cockpit, rodas de trás e por último a asa traseira.
- *
- * A meia-largura do desenho é `CAR_SPRITE_HALF_WIDTH`, e daí saem o limite de
- * saída de pista e o alinhamento dos efeitos. Mexer na silhueta sem mexer
- * naquela constante faria o jogo cobrar uma coisa e mostrar outra.
- *
- * Com a pintura da garagem carregada, ela substitui o desenho vetorial na
- * mesma pose e na mesma escala — a arte é ajustada àquela meia-largura em
- * `carSprites.ts`. O vetorial fica para os primeiros quadros, enquanto a
- * imagem não chega, e para uma rede que não a entregue.
+ * É o detalhe mais barato e o que mais rende: sem ela, árvore, arbusto, poste
+ * e placa pairam alguns pixels acima da grama e a cena inteira perde o
+ * assentamento. Deslocada para a direita, porque a luz vem da esquerda — a
+ * mesma direção da face iluminada do carro.
  */
-function drawCar(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  scale: number,
-  palette: CarPalette = PLAYER_PALETTE,
-  pose: CarPose = POSE_NEUTRA,
-  pintura: CarPaint | null = null,
-) {
-  ctx.save()
-  ctx.globalAlpha = palette.alpha
-  ctx.translate(x, y)
-
-  // A sombra de contato fica no chão: não acompanha nem a inclinação nem a
-  // compressão da carroceria, senão o carro pareceria flutuar.
-  ctx.fillStyle = palette.shadow
-  ctx.beginPath()
-  ctx.ellipse(0, 20 * scale, 30 * scale, 8 * scale, 0, 0, Math.PI * 2)
-  ctx.fill()
-
-  ctx.translate(pose.jitter * scale, 0)
-  if (pose.tilt !== 0) ctx.rotate(pose.tilt)
-  ctx.scale(scale * (1 + pose.squash * 0.5), scale * (1 - pose.squash))
-
-  const esterco = pose.steer * 0.34
-
-  if (pintura) {
-    drawCarPaint(ctx, pintura, esterco)
-    // No boost a luz traseira acende e transborda, somando luz à pintura em
-    // vez de cobri-la.
-    if (pose.boost > 0.01) {
-      ctx.globalCompositeOperation = 'lighter'
-      ctx.fillStyle = palette.light
-      ctx.globalAlpha = palette.alpha * pose.boost * 0.22
-      ctx.beginPath()
-      ctx.ellipse(0, REAR_LIGHT_Y, 5 + pose.boost * 3, 4.5 + pose.boost * 2, 0, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.globalAlpha = palette.alpha * pose.boost * 0.8
-      ctx.beginPath()
-      ctx.ellipse(0, REAR_LIGHT_Y, 1.8 + pose.boost, 2.4 + pose.boost, 0, 0, Math.PI * 2)
-      ctx.fill()
-    }
-    ctx.restore()
-    return
-  }
-
-  // Asa dianteira: mais estreita e mais longe, quase escondida pelo bico.
-  ctx.fillStyle = palette.wings
-  roundedRect(ctx, -24, -38, 48, 5, 1.5)
-  ctx.fill()
-  ctx.fillStyle = palette.wingEdge
-  ctx.fillRect(-24, -39, 4, 8)
-  ctx.fillRect(20, -39, 4, 8)
-
-  // Rodas dianteiras: menores, porque estão mais longe, e esterçadas.
-  drawWheel(ctx, palette, -25, -24, 10, 19, esterco)
-  drawWheel(ctx, palette, 25, -24, 10, 19, esterco)
-
-  // Assoalho, que aparece por baixo da carroceria e a assenta no chão.
-  ctx.fillStyle = palette.wings
-  ctx.beginPath()
-  ctx.moveTo(-22, 18)
-  ctx.lineTo(-16, -18)
-  ctx.lineTo(16, -18)
-  ctx.lineTo(22, 18)
-  ctx.closePath()
-  ctx.fill()
-
-  // Carroceria: larga atrás, afinando até o bico.
-  ctx.fillStyle = palette.body
-  ctx.beginPath()
-  ctx.moveTo(-19, 17)
-  ctx.lineTo(-13, -19)
-  ctx.quadraticCurveTo(0, -33, 13, -19)
-  ctx.lineTo(19, 17)
-  ctx.closePath()
-  ctx.fill()
-
-  // Lado na sombra e aresta iluminada: é o que tira a silhueta do chapado.
-  ctx.fillStyle = palette.bodyDark
-  ctx.beginPath()
-  ctx.moveTo(6, -26)
-  ctx.lineTo(13, -19)
-  ctx.lineTo(19, 17)
-  ctx.lineTo(9, 17)
-  ctx.closePath()
-  ctx.fill()
-  ctx.fillStyle = palette.bodyLight
-  ctx.beginPath()
-  ctx.moveTo(-6, -26)
-  ctx.lineTo(-13, -19)
-  ctx.lineTo(-16, 0)
-  ctx.lineTo(-9, 0)
-  ctx.closePath()
-  ctx.fill()
-
-  // Entradas de ar dos sidepods.
-  ctx.fillStyle = palette.wings
-  roundedRect(ctx, -18, -6, 6, 13, 2)
-  ctx.fill()
-  roundedRect(ctx, 12, -6, 6, 13, 2)
-  ctx.fill()
-
-  // Faixa central, do bico à tampa do motor. Estreita de propósito: larga
-  // demais, ela come a cor do carro e some a silhueta.
-  ctx.fillStyle = palette.stripe
-  ctx.beginPath()
-  ctx.moveTo(-2, -30)
-  ctx.lineTo(2, -30)
-  ctx.lineTo(3.5, 17)
-  ctx.lineTo(-3.5, 17)
-  ctx.closePath()
-  ctx.fill()
-
-  // Cockpit e halo.
-  ctx.fillStyle = palette.glass
-  ctx.beginPath()
-  ctx.moveTo(-8, -11)
-  ctx.lineTo(0, -20)
-  ctx.lineTo(8, -11)
-  ctx.lineTo(6, -2)
-  ctx.lineTo(-6, -2)
-  ctx.closePath()
-  ctx.fill()
-  ctx.strokeStyle = palette.wings
-  ctx.lineWidth = 2.4
-  ctx.beginPath()
-  ctx.arc(0, -10, 8.5, Math.PI, 0)
-  ctx.stroke()
-
-  // Rodas traseiras: largas, e é delas que saem poeira e marcas de pneu.
-  drawWheel(ctx, palette, -25, 6, 12, 25, 0)
-  drawWheel(ctx, palette, 25, 6, 12, 25, 0)
-
-  // O escapamento acende no boost, logo acima da asa.
-  if (pose.boost > 0.01) {
-    ctx.save()
-    ctx.globalAlpha = palette.alpha * pose.boost
-    ctx.fillStyle = palette.light
-    ctx.beginPath()
-    ctx.ellipse(0, 19, 7 + pose.boost * 4, 3 + pose.boost * 2, 0, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.restore()
-  }
-
-  // Asa traseira: é o elemento mais próximo da câmera e fecha o desenho. O
-  // plano recebe um tom claro em cima: em preto sobre asfalto escuro, ela
-  // simplesmente sumia.
-  ctx.fillStyle = palette.wings
-  ctx.fillRect(-8, 12, 16, 8)
-  ctx.fillStyle = palette.wingEdge
-  roundedRect(ctx, -30, 16, 60, 6, 2)
-  ctx.fill()
-  ctx.fillStyle = palette.stripe
-  ctx.fillRect(-30, 16, 60, 1.6)
-  ctx.fillStyle = palette.wings
-  roundedRect(ctx, -30, 21.5, 60, 4, 1.5)
-  ctx.fill()
-
-  // Laterais da asa, na cor do carro: é o que identifica o piloto de longe.
-  ctx.fillStyle = palette.body
-  roundedRect(ctx, -30, 11, 5, 15, 1.5)
-  ctx.fill()
-  roundedRect(ctx, 25, 11, 5, 15, 1.5)
-  ctx.fill()
-
-  ctx.fillStyle = palette.light
-  ctx.fillRect(-3, 22.5, 6, 3)
-
-  ctx.restore()
-}
+const SOMBRA_NO_CHAO = 'rgba(10,20,26,.3)'
 
 function RaceCanvas({
   pilotName,
@@ -698,7 +451,11 @@ function RaceCanvas({
     // Céu, terreno e vegetação desta corrida, sorteados da mesma semente: os
     // dois pilotos correm no mesmo lugar, à mesma hora do dia.
     const ambiente = layout.ambient
-    const flora = VEGETACAO[ambiente.flora]
+    // Rampas do fundo, montadas uma vez por corrida: a serra de perto em tom
+    // cheio, a de longe já misturada com o céu, que é o que a afasta.
+    const serra = rampa(ambiente.serra)
+    const serraLonge = rampa(misturar(ambiente.serra, ambiente.ceuMeio, 0.42))
+    const nuvem = rampa(misturar(ambiente.ceuMeio, LUZ, 0.3))
     let width = 0
     let height = 0
     let previous = performance.now()
@@ -738,9 +495,9 @@ function RaceCanvas({
       ctx.imageSmoothingQuality = 'high'
     }
     resize()
-    // Começa a baixar as pinturas durante a contagem, se o menu ainda não as trouxe.
-    carSprite(carRef.current)
-    if (rivalCarRef.current) carSprite(rivalCarRef.current)
+    prepareCar(carRef.current, ambiente.nevoaRGB)
+    if (rivalCarRef.current) prepareCar(rivalCarRef.current, ambiente.nevoaRGB, true)
+    prepararCenario(ambiente.flora, ambiente.nevoaRGB)
 
     // A janela nem sempre muda de tamanho junto com a tela do jogo: em telas
     // divididas, ao girar o celular ou quando a barra do navegador some, só o
@@ -826,6 +583,53 @@ function RaceCanvas({
       return bruma
     }
 
+    /**
+     * Uma cordilheira, do topo da crista até a base do quadro.
+     *
+     * `onda` e `passo` dão o perfil, `desvio` corre com a curva e `queda`
+     * desloca a mesma crista para baixo e para a direita — é desenhando a
+     * serra duas vezes, uma clara e outra deslocada por cima, que sobra a
+     * lasca acesa na encosta voltada para o sol. Duas chamadas de preenchimento
+     * para uma montanha com duas faces.
+     */
+    const desenharSerra = (
+      cor: string, base: number, onda: number, passo: number, fase: number, desvio: number, queda: number,
+    ) => {
+      ctx.fillStyle = cor
+      ctx.beginPath()
+      ctx.moveTo(0, height * base + queda)
+      for (let x = 0; x <= width; x += 40) {
+        const crista = height * (base + onda * Math.sin((x + desvio) * passo + fase)) + queda
+        ctx.lineTo(x, crista)
+      }
+      ctx.lineTo(width, height * 0.52)
+      ctx.lineTo(0, height * 0.52)
+      ctx.closePath()
+      ctx.fill()
+    }
+
+    /** Uma nuvem chapada: três bossas e uma aresta acesa em cima. */
+    const desenharNuvem = (x: number, y: number, escala: number) => {
+      const largura = width * 0.036 * escala
+      const altura = largura * 0.34
+      ctx.fillStyle = nuvem[2]
+      elipse(x, y, largura, altura)
+      elipse(x - largura * 0.72, y + altura * 0.22, largura * 0.52, altura * 0.62)
+      elipse(x + largura * 0.66, y + altura * 0.26, largura * 0.58, altura * 0.58)
+      ctx.fillStyle = nuvem[4]
+      elipse(x - largura * 0.16, y - altura * 0.24, largura * 0.62, altura * 0.5)
+    }
+
+    /**
+     * Posição das nuvens no céu, em fração da tela.
+     *
+     * Ficam em constante de módulo pelo mesmo motivo de todo o resto: o laço
+     * de quadro não pode alocar.
+     */
+    const NUVENS: readonly (readonly [number, number, number])[] = [
+      [0.1, 0.09, 1.1], [0.38, 0.16, 0.7], [0.66, 0.07, 0.95], [0.88, 0.18, 0.8],
+    ]
+
     const drawBackdrop = () => {
       ctx.fillStyle = gradienteDoCeu()
       ctx.fillRect(0, 0, width, height * 0.44)
@@ -841,17 +645,31 @@ function RaceCanvas({
       // do horizonte reagindo ao relevo.
       const subida = inclinacaoAqui * height * 0.75
 
-      ctx.fillStyle = ambiente.serra
-      ctx.beginPath()
-      ctx.moveTo(0, height * 0.34 + subida)
-      for (let x = 0; x <= width; x += 55) {
-        const ridge = height * (0.3 + 0.035 * Math.sin((x + desvio) * 0.017 + race.progress * 0.0005)) + subida
-        ctx.lineTo(x, ridge)
+      // Sol baixo à esquerda, que é de onde vem a luz de tudo o mais no jogo.
+      // Três discos de opacidade decrescente no lugar de um degradê: é o mesmo
+      // halo em degraus que o resto do desenho usa.
+      const solX = width * 0.26 + desvio * 0.35
+      const solY = height * 0.23 + subida * 0.5
+      ctx.fillStyle = `rgba(${ambiente.nevoaRGB},.05)`
+      elipse(solX, solY, height * 0.115, height * 0.115)
+      ctx.fillStyle = `rgba(${ambiente.nevoaRGB},.09)`
+      elipse(solX, solY, height * 0.068, height * 0.068)
+      ctx.fillStyle = `rgba(${ambiente.nevoaRGB},.3)`
+      elipse(solX, solY, height * 0.034, height * 0.034)
+
+      // As nuvens correm com a curva, mais devagar que a serra por estarem
+      // ainda mais longe.
+      for (const [fx, fy, escala] of NUVENS) {
+        desenharNuvem(width * fx + desvio * 0.22, height * fy + subida * 0.4, escala)
       }
-      ctx.lineTo(width, height * 0.48)
-      ctx.lineTo(0, height * 0.48)
-      ctx.closePath()
-      ctx.fill()
+
+      // Duas cordilheiras: a de trás mais alta, já lavada pela cor do céu, e a
+      // da frente em tom cheio. É a diferença entre as duas que dá fundo ao
+      // fundo, em vez de uma silhueta só recortada contra o azul.
+      desenharSerra(serraLonge[3], 0.27, 0.05, 0.008, 1.9, desvio * 0.5, subida)
+      desenharSerra(serraLonge[1], 0.27, 0.05, 0.008, 1.9, desvio * 0.5, subida + height * 0.018)
+      desenharSerra(serra[3], 0.31, 0.035, 0.017, race.progress * 0.0005, desvio, subida)
+      desenharSerra(serra[1], 0.31, 0.035, 0.017, race.progress * 0.0005, desvio, subida + height * 0.014)
 
       ctx.fillStyle = ambiente.chao
       ctx.fillRect(0, height * 0.38, width, height)
@@ -962,41 +780,22 @@ function RaceCanvas({
       }
     }
 
-    /** Objeto reaproveitado pelo cenário: o laço não pode alocar. */
+    /** Objetos reaproveitados pelo cenário: o laço não pode alocar. */
     const cenario = createSceneryItem()
+    const portico = createGantry()
 
-    // Poses e paleta reaproveitadas entre quadros, pelo mesmo motivo.
-    const poseDoJogador: CarPose = { tilt: 0, squash: 0, steer: 0, boost: 0, jitter: 0 }
-    const poseDoFantasma: CarPose = { tilt: 0, squash: 0, steer: 0, boost: 0, jitter: 0 }
-    const paletaDoFantasma: CarPalette = { ...GHOST_PALETTE }
+    // Poses reaproveitadas entre quadros, pelo mesmo motivo.
+    const poseDoJogador: CarPose = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0 }
+    const poseDoFantasma: CarPose = { tilt: 0, suspension: 0, steer: 0, boost: 0, jitter: 0, travel: 0 }
 
     /** Última posição lateral conhecida do rival, para derivar o esterço dele. */
     let lateralDoFantasma = 0
     const aproximarFantasma = (alvo: number, dt: number) =>
       poseDoFantasma.steer + (alvo - poseDoFantasma.steer) * (1 - Math.exp(-Math.max(0, dt) / 0.18))
 
-    /** Uma árvore, na família e no tom que o traçado sorteou para aquela vaga. */
-    const desenharArvore = (x: number, chao: number, altura: number, tom: number, variante: number, perto: boolean) => {
-      const tronco = Math.max(1, altura * 0.1)
-      ctx.fillStyle = flora.troncos[variante]
-      ctx.fillRect(x - tronco / 2, chao - altura * 0.46, tronco, altura * 0.46)
-
-      ctx.fillStyle = flora.copas[tom]
-      if (variante === 0) {
-        // Conífera: duas saias sobrepostas, que é o que dá a silhueta de pinheiro.
-        triangulo(x, chao - altura, altura * 0.3, altura * 0.44)
-        triangulo(x, chao - altura * 0.72, altura * 0.35, altura * 0.42)
-      } else {
-        ctx.beginPath()
-        ctx.ellipse(x, chao - altura * 0.68, altura * 0.34, altura * 0.37, 0, 0, Math.PI * 2)
-        ctx.fill()
-      }
-
-      // O realce vem de cima e da esquerda, como o resto da cena.
-      if (!perto) return
-      ctx.fillStyle = flora.luz[tom]
+    const elipse = (x: number, y: number, rx: number, ry: number) => {
       ctx.beginPath()
-      ctx.ellipse(x - altura * 0.11, chao - altura * 0.8, altura * 0.14, altura * 0.16, 0, 0, Math.PI * 2)
+      ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2)
       ctx.fill()
     }
 
@@ -1020,15 +819,22 @@ function RaceCanvas({
       const ultimo = lastSceneryIndex(race.progress)
       const primeiro = firstSceneryIndex(race.progress)
 
-      for (let indice = ultimo; indice >= primeiro; indice -= 1) {
+      // O laço vai algumas vagas além do primeiro índice à frente: é onde o
+      // pórtico que a câmera já passou termina de subir e se dissolver. Como
+      // percorre do longe para o perto, essas vagas extras caem por último —
+      // que é exatamente a ordem de profundidade delas.
+      for (let indice = ultimo; indice >= primeiro - RECUO_DO_PORTICO; indice -= 1) {
         const ahead = indice * SCENERY_SPACING - race.progress
-        const projetado = roadGeometry(ahead)
+        const passou = indice < primeiro
+        const projetado = roadGeometry(Math.max(0, ahead))
         const referencia = projetado.roadWidth
-        // Longe demais para render qualquer coisa legível: sairia um pixel sujo.
-        if (referencia < 6) continue
+        // Longe demais para render qualquer coisa legível: sairia um pixel
+        // sujo, e sob a bruma nem isso. O corte era 6, e deixava passar
+        // objetos de três pixels que custavam a passada inteira do laço.
+        if (referencia < 14) continue
         // Atrás de uma lomba não há chão para apoiar nada, e um objeto
         // desenhado aqui flutuaria no céu acima da crista.
-        if (atrasDaLomba(ahead)) continue
+        if (!passou && atrasDaLomba(ahead)) continue
 
         // Névoa: o que está longe se dissolve no horizonte em vez de aparecer
         // nítido e minúsculo, que é justamente o que denuncia a projeção falsa.
@@ -1040,64 +846,67 @@ function RaceCanvas({
         // cada uma seria pagar caro por nada. É reposta uma vez no fim.
         ctx.globalAlpha = nitidez
 
+        // O pórtico vem antes do que fica na beira desta mesma vaga: ele está
+        // atravessando a pista, atrás da árvore que cresce ao lado dela.
+        if (indice % GANTRY_EVERY === 0 && layout.gantry(indice, portico)) {
+          // A crista esconde o arco inteiro um pouco antes de escondê-lo pela
+          // base. Sem a folga, um arco de largura de tela pisca na lomba.
+          const escondido = !passou && atrasDaLomba(Math.min(VIEW_DISTANCE - 1, ahead + 8))
+          if (!escondido) desenharPortico(ctx, projetado, portico.variant, ahead, nitidez)
+        }
+        // Atrás da câmera não há beira de pista: só o pórtico sobrevive aqui.
+        if (passou) continue
+
         for (const lado of LADOS) {
           if (!layout.scenery(indice, lado, cenario)) continue
           const x = projetado.center + lateralOffset(cenario.lateral, referencia)
           const tamanho = referencia * cenario.scale
-          const tom = Math.min(flora.copas.length - 1, Math.floor(cenario.tone * flora.copas.length))
 
-          if (cenario.kind === 'tree') {
-            desenharArvore(x, projetado.y, tamanho * 0.52, tom, cenario.variant, perto)
-          } else if (cenario.kind === 'bush') {
-            const raio = tamanho * 0.07
-            ctx.fillStyle = flora.arbustos[cenario.variant]
-            ctx.beginPath()
-            ctx.ellipse(x, projetado.y - raio * 0.7, raio * 1.4, raio, 0, 0, Math.PI * 2)
-            ctx.fill()
-            if (perto) {
-              ctx.fillStyle = flora.luz[tom]
-              ctx.beginPath()
-              ctx.ellipse(x - raio * 0.4, projetado.y - raio, raio * 0.5, raio * 0.42, 0, 0, Math.PI * 2)
-              ctx.fill()
-            }
-          } else if (cenario.kind === 'fence') {
-            // O vão cobre metade do espaçamento para cada lado, então as
-            // travessas de vagas vizinhas se encontram e a cerca fica contínua.
-            const altura = tamanho * 0.058
+          if (cenario.kind === 'fence' || cenario.kind === 'guardrail') {
+            /**
+             * A cerca é a única família que continua procedural.
+             *
+             * O vão cobre metade do espaçamento para cada lado, e é assim que
+             * as travessas de vagas vizinhas se encontram e a cerca sai
+             * contínua. Isso depende das projeções das **duas** vagas, que
+             * diferem: assada numa célula por vaga, ela viraria uma fila de
+             * portõezinhos soltos.
+             */
+            const metal = cenario.kind === 'guardrail'
+            const tons = metal ? GUARDRAIL : CERCA
+            // O guardrail é mais baixo que a cerca e tem uma lâmina só, larga.
+            const altura = tamanho * (metal ? 0.042 : 0.058)
             const vao = referencia * 0.055
-            const travessa = Math.max(1, altura * 0.07)
-            ctx.fillStyle = CERCA
-            ctx.fillRect(x - Math.max(1, altura * 0.07), projetado.y - altura, Math.max(1, altura * 0.14), altura)
-            ctx.fillRect(x - vao, projetado.y - altura * 0.94, vao * 2, travessa)
-            ctx.fillRect(x - vao, projetado.y - altura * 0.52, vao * 2, travessa)
-          } else if (cenario.kind === 'sign') {
-            const altura = tamanho * 0.11
-            const painel = altura * 0.42
-            const poste = Math.max(1, altura * 0.07)
-            ctx.fillStyle = CERCA
-            ctx.fillRect(x - poste / 2, projetado.y - altura, poste, altura)
-            // A moldura escura descola a placa da vegetação atrás dela.
-            ctx.fillStyle = '#1b2228'
-            ctx.fillRect(x - painel * 0.56, projetado.y - altura - painel * 0.42, painel * 1.12, painel * 0.84)
-            ctx.fillStyle = PLACAS[cenario.variant]
-            ctx.fillRect(x - painel / 2, projetado.y - altura - painel * 0.36, painel, painel * 0.72)
-          } else {
-            // Capim: talos afinando para a ponta, senão viram barras sólidas.
-            const altura = Math.max(1, tamanho * 0.032)
-            const talo = Math.max(1, altura * 0.16)
-            ctx.fillStyle = flora.capins[cenario.variant]
-            for (let folha = -2; folha <= 2; folha += 1) {
-              const base = x + folha * talo * 1.9
-              const ponta = base + folha * talo * 0.9
-              const comprimento = altura * (1 - Math.abs(folha) * 0.17)
-              ctx.beginPath()
-              ctx.moveTo(base - talo / 2, projetado.y)
-              ctx.lineTo(base + talo / 2, projetado.y)
-              ctx.lineTo(ponta, projetado.y - comprimento)
-              ctx.closePath()
-              ctx.fill()
+            const travessa = Math.max(1, altura * (metal ? 0.22 : 0.07))
+            const poste = Math.max(1, altura * 0.14)
+            ctx.fillStyle = SOMBRA_NO_CHAO
+            ctx.fillRect(x - poste * 0.6, projetado.y, poste * 1.8, Math.max(1, travessa * 0.5))
+            // As travessas primeiro e o mourão por cima: é assim que o mourão
+            // parece estar deste lado da cerca, e não embutido nela.
+            const alturas = metal ? [0.86] : [0.94, 0.52]
+            for (const parte of alturas) {
+              ctx.fillStyle = tons[1]
+              ctx.fillRect(x - vao, projetado.y - altura * parte, vao * 2, travessa)
+              ctx.fillStyle = tons[3]
+              ctx.fillRect(x - vao, projetado.y - altura * parte, vao * 2, Math.max(1, travessa * 0.35))
+              if (!metal) continue
+              // Vinco central da lâmina, que é o que faz o perfil em W.
+              ctx.fillStyle = tons[0]
+              ctx.fillRect(x - vao, projetado.y - altura * parte + travessa * 0.45, vao * 2, Math.max(1, travessa * 0.2))
             }
+            ctx.fillStyle = tons[2]
+            ctx.fillRect(x - poste / 2, projetado.y - altura, poste, altura)
+            ctx.fillStyle = tons[4]
+            ctx.fillRect(x - poste / 2, projetado.y - altura, Math.max(1, poste * 0.35), altura)
+            continue
           }
+
+          // Todo o resto sai da folha, com uma chamada só. A altura de cada
+          // família é a mesma de antes; o que mudou é de onde vem o desenho.
+          desenharObjeto(
+            ctx, cenario.kind, cenario.variant, Math.floor(cenario.tone * 3),
+            x, projetado.y, tamanho * ALTURA_DA_FAMILIA[cenario.kind],
+          )
         }
 
         // Marcador de distância: cai em toda vaga par, porque o espaçamento do
@@ -1105,17 +914,12 @@ function RaceCanvas({
         // profundidade valer para tudo o que está na beira da pista.
         if (indice % 2 === 0) {
           const alto = isTallMarker(indice / 2)
-          const altura = referencia * (alto ? 0.2 : 0.115)
-          const largura = Math.max(1, referencia * 0.013)
+          // A caixa do modelo vai do chão ao alto da cabeça, e o poste ocupa
+          // 78% dela: dividir devolve ao poste a mesma altura de antes.
+          const altura = (referencia * (alto ? 0.2 : 0.115)) / 0.78
           for (const lado of LADOS) {
             const x = projetado.center + lateralOffset(ROADSIDE_LATERAL * lado, referencia)
-            // Sombra curta no chão ancora o poste na grama.
-            ctx.fillStyle = 'rgba(0,0,0,.25)'
-            ctx.fillRect(x - largura, projetado.y, largura * 2, Math.max(1, largura * 0.7))
-            ctx.fillStyle = '#46606c'
-            ctx.fillRect(x - largura / 2, projetado.y - altura, largura, altura)
-            ctx.fillStyle = alto ? '#f2b52e' : '#c9d6dc'
-            ctx.fillRect(x - largura, projetado.y - altura, largura * 2, Math.max(1, altura * 0.22))
+            desenharObjeto(ctx, 'marcador', alto ? 1 : 0, 0, x, projetado.y, altura)
           }
         }
       }
@@ -1140,13 +944,10 @@ function RaceCanvas({
       lateralDoFantasma = lateral
       const volante = Math.max(-1, Math.min(1, deriva / 1.8))
       poseDoFantasma.steer = aproximarFantasma(volante, dt)
+      poseDoFantasma.travel = race.progress + distanceAhead
       poseDoFantasma.tilt = poseDoFantasma.steer * 0.075 * forcaDoMovimento
 
-      paletaDoFantasma.alpha = GHOST_PALETTE.alpha * (faded ? 0.5 : 1)
-      // A pintura do rival vem tingida de azul: mesmo com os dois no mesmo
-      // carro, o fantasma nunca se confunde com o próprio.
-      const pintura = rivalCarRef.current ? carSprite(rivalCarRef.current).fantasma : null
-      drawCar(ctx, x, projected.y, scale, paletaDoFantasma, poseDoFantasma, pintura)
+      drawCar(ctx, x, projected.y, scale, rivalCarRef.current ?? DEFAULT_CAR, poseDoFantasma, faded ? 0.23 : 0.46, ambiente.nevoaRGB)
     }
 
     /** Poeira, faíscas, rastro de boost e marcas de pneu, na projeção da pista. */
@@ -1182,10 +983,50 @@ function RaceCanvas({
       ctx.restore()
     }
 
+    /**
+     * Rajadas de velocidade no boost.
+     *
+     * Riscos correndo para fora a partir do ponto de fuga: é o recurso de
+     * arcade de sempre para dizer "rápido" sem mexer em nada da física. Só
+     * aparecem no boost, nunca no meio da tela — ali tapariam a pista —, e a
+     * fase vem dos metros percorridos, não do número do quadro, para a rajada
+     * parar quando o carro para e não acelerar quando a taxa de quadros varia.
+     */
+    const desenharRajadas = (forca: number, percorrido: number) => {
+      if (forca <= 0.02) return
+      const centroX = width / 2
+      const centroY = height * HORIZON_RATIO
+      const alcance = Math.hypot(width, height) * 0.62
+      const fase = ((percorrido * 0.35) % 1 + 1) % 1
+      ctx.save()
+      ctx.strokeStyle = '#e9f3ff'
+      ctx.lineWidth = Math.max(1, width * 0.002)
+      ctx.globalAlpha = 0.2 * forca
+      ctx.beginPath()
+      for (let i = 0; i < ANGULOS_DE_RAJADA.length; i += 1) {
+        const angulo = ANGULOS_DE_RAJADA[i]
+        const avanco = (i / ANGULOS_DE_RAJADA.length + fase) % 1
+        const dentro = alcance * (0.34 + avanco * 0.58)
+        const fora = dentro + alcance * (0.04 + avanco * 0.1)
+        const cosseno = Math.cos(angulo)
+        const seno = Math.sin(angulo)
+        ctx.moveTo(centroX + cosseno * dentro, centroY + seno * dentro)
+        ctx.lineTo(centroX + cosseno * fora, centroY + seno * fora)
+      }
+      ctx.stroke()
+      ctx.restore()
+    }
+
+    /** Escala de tela do carro, que é a régua de tudo que anda sobre o asfalto. */
+    const escalaDoCarro = () => Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH)
+
     const drawObstacle = (distanceAhead: number, lane: number, kind: ObstacleKind) => {
       const projected = roadGeometry(distanceAhead)
       const closeness = Math.max(0, 1 - distanceAhead / VIEW_DISTANCE)
-      const size = 5 + Math.pow(closeness, 1.5) * 48
+      // A mesma escala de tela do carro. Sem ela o obstáculo tinha teto fixo
+      // de 53 px enquanto o carro crescia com a largura da janela: numa tela
+      // larga a barreira ficava minúscula ao lado do carro que ela para.
+      const size = (5 + Math.pow(closeness, 1.5) * 48) * escalaDoCarro()
       // Pela mesma conta de todo o resto. Antes era um 0,39 solto aqui, e o
       // obstáculo aparecia 8% mais para fora do que a colisão considerava.
       const x = projected.center + lateralOffset(lane, projected.roadWidth)
@@ -1196,32 +1037,59 @@ function RaceCanvas({
       if (kind === 'pothole') {
         // O buraco é do asfalto, não um objeto sobre ele: fica deitado no
         // chão, sem altura. A borda clara do lado de cá é o que o faz ler
-        // como afundamento e não como mancha.
+        // como afundamento e não como mancha, e o cascalho em volta é o que
+        // impede a peça de virar uma elipse perfeita demais.
         ctx.fillStyle = 'rgba(210,214,206,.5)'
-        ctx.beginPath()
-        ctx.ellipse(0, -size * 0.02, size * 0.5, size * 0.19, 0, 0, Math.PI * 2)
-        ctx.fill()
+        elipse(0, -size * 0.02, size * 0.5, size * 0.19)
         ctx.fillStyle = '#15171b'
-        ctx.beginPath()
-        ctx.ellipse(0, -size * 0.05, size * 0.46, size * 0.16, 0, 0, Math.PI * 2)
-        ctx.fill()
+        elipse(0, -size * 0.05, size * 0.46, size * 0.16)
+        ctx.fillStyle = 'rgba(21,23,27,.55)'
+        elipse(-size * 0.5, -size * 0.02, size * 0.11, size * 0.05)
+        elipse(size * 0.46, -size * 0.09, size * 0.09, size * 0.04)
       } else if (kind === 'barrier') {
-        ctx.fillStyle = '#eef1f2'
+        // Sombra e pés: sem eles a barreira flutua um palmo acima do asfalto.
+        ctx.fillStyle = SOMBRA_NO_CHAO
+        elipse(0, 0, size * 0.68, size * 0.09)
+        ctx.fillStyle = CERCA[1]
+        ctx.fillRect(-size * 0.58, -size * 0.12, size * 0.1, size * 0.14)
+        ctx.fillRect(size * 0.48, -size * 0.12, size * 0.1, size * 0.14)
+        // Painel, com a aresta de cima acesa e a de baixo na sombra.
+        ctx.fillStyle = BARREIRA[2]
         roundedRect(ctx, -size * 0.65, -size * 0.42, size * 1.3, size * 0.48, size * 0.08)
         ctx.fill()
-        ctx.fillStyle = '#ff4b37'
+        ctx.fillStyle = BARREIRA_FAIXA[2]
         ctx.fillRect(-size * 0.52, -size * 0.35, size * 0.35, size * 0.34)
         ctx.fillRect(size * 0.16, -size * 0.35, size * 0.35, size * 0.34)
+        ctx.fillStyle = BARREIRA[4]
+        ctx.fillRect(-size * 0.6, -size * 0.4, size * 1.2, size * 0.05)
+        ctx.fillStyle = BARREIRA[0]
+        ctx.fillRect(-size * 0.62, -size * 0.02, size * 1.24, size * 0.05)
       } else {
-        ctx.fillStyle = '#ff8a00'
+        // Cone: base larga no chão, corpo com a face do sol acesa e a faixa
+        // refletiva atravessada.
+        ctx.fillStyle = SOMBRA_NO_CHAO
+        elipse(size * 0.06, 0, size * 0.5, size * 0.1)
+        ctx.fillStyle = CONE[0]
+        roundedRect(ctx, -size * 0.48, -size * 0.14, size * 0.96, size * 0.16, size * 0.04)
+        ctx.fill()
+        ctx.fillStyle = CONE[2]
         ctx.beginPath()
         ctx.moveTo(0, -size * 0.72)
         ctx.lineTo(size * 0.42, 0)
         ctx.lineTo(-size * 0.42, 0)
         ctx.closePath()
         ctx.fill()
-        ctx.fillStyle = '#f5f6e9'
+        ctx.fillStyle = CONE[4]
+        ctx.beginPath()
+        ctx.moveTo(0, -size * 0.72)
+        ctx.lineTo(0, 0)
+        ctx.lineTo(-size * 0.42, 0)
+        ctx.closePath()
+        ctx.fill()
+        ctx.fillStyle = REFLETIVO[2]
         ctx.fillRect(-size * 0.26, -size * 0.26, size * 0.52, size * 0.13)
+        ctx.fillStyle = REFLETIVO[4]
+        ctx.fillRect(-size * 0.26, -size * 0.26, size * 0.52, size * 0.04)
       }
       ctx.restore()
     }
@@ -1419,14 +1287,35 @@ function RaceCanvas({
         })
       }
 
-      if (TRACK_LENGTH - race.progress < VIEW_DISTANCE && !atrasDaLomba(TRACK_LENGTH - race.progress)) {
-        const finish = roadGeometry(TRACK_LENGTH - race.progress)
-        const cells = 12
-        for (let i = 0; i < cells; i += 1) {
-          ctx.fillStyle = i % 2 === 0 ? '#f3f3ed' : '#11151a'
-          const cellWidth = finish.roadWidth / cells
-          ctx.fillRect(finish.center - finish.roadWidth / 2 + i * cellWidth, finish.y, cellWidth + 1, 5)
+      /**
+       * A linha de chegada.
+       *
+       * Era doze células num retângulo de cinco pixels — a superfície mais
+       * pobre do jogo, no momento que mais importa dele. Agora é uma
+       * estrutura: duas fileiras de quadriculado com espessura no asfalto, e o
+       * pórtico por cima, que é o que se enxerga de longe e o que diz onde a
+       * prova acaba.
+       *
+       * Ao contrário dos outros pórticos, este nunca precisa se dissolver: o
+       * progresso é travado em `TRACK_LENGTH` na simulação, então a câmera
+       * para na linha e nunca passa por baixo do arco.
+       */
+      const ateAChegada = TRACK_LENGTH - race.progress
+      if (ateAChegada < VIEW_DISTANCE && !atrasDaLomba(ateAChegada)) {
+        const finish = roadGeometry(ateAChegada)
+        const espessura = Math.max(3, finish.roadWidth * 0.026)
+        const casas = 14
+        const passo = finish.roadWidth / casas
+        const esquerda = finish.center - finish.roadWidth / 2
+        // Duas fileiras defasadas: é a espessura que tira a chegada de uma
+        // listra pintada e a põe deitada no asfalto.
+        for (let fileira = 0; fileira < 2; fileira += 1) {
+          for (let i = 0; i < casas; i += 1) {
+            ctx.fillStyle = (i + fileira) % 2 === 0 ? '#f3f3ed' : '#11151a'
+            ctx.fillRect(esquerda + i * passo, finish.y + fileira * espessura, passo + 1, espessura + 1)
+          }
         }
+        desenharPortico(ctx, finish, 0, ateAChegada, 1, true)
       }
 
       // A bruma entra depois de tudo que tem profundidade — pista, cenário,
@@ -1447,12 +1336,15 @@ function RaceCanvas({
       const playerX = ondeEstaOCarro.center + lateralOffset(race.lateral, ondeEstaOCarro.roadWidth)
       if (!doneRef.current) {
         // A pose inteira sai de `feel`, que só lê a simulação: o corpo inclina
-        // no esterço, comprime na arrancada e no impacto, as rodas da frente
-        // seguem o volante e a carroceria treme na grama.
+        // no esterço, a suspensão reage à arrancada e ao impacto, as rodas da
+        // frente seguem o volante e a carroceria treme na grama. Quem pediu
+        // menos movimento recebe tudo isso — inclusive o rolamento do pneu —
+        // no quarto da intensidade.
         poseDoJogador.tilt = feel.steer * 0.075 * forcaDoMovimento
-        poseDoJogador.squash = (feel.accel * 0.05 - feel.impact * 0.1) * forcaDoMovimento
-        poseDoJogador.steer = feel.steer
+        poseDoJogador.suspension = (feel.accel * 0.05 - feel.impact * 0.1) * forcaDoMovimento
+        poseDoJogador.steer = feel.steer * forcaDoMovimento
         poseDoJogador.boost = feel.boost
+        poseDoJogador.travel = race.progress * forcaDoMovimento
         poseDoJogador.jitter =
           feel.offRoad * Math.sin(frame * 0.055) * 1.6 * forcaDoMovimento +
           feel.impact * Math.sin(frame * 0.085) * 2.4 * forcaDoMovimento
@@ -1460,12 +1352,15 @@ function RaceCanvas({
           ctx,
           playerX,
           ondeEstaOCarro.y,
-          Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH),
-          PLAYER_PALETTE,
+          escalaDoCarro(),
+          carRef.current,
           poseDoJogador,
-          carSprite(carRef.current).jogador,
+          1,
+          ambiente.nevoaRGB,
         )
       }
+
+      desenharRajadas(feel.boost * forcaDoMovimento, race.progress)
 
       // O aviso de fora da pista cresce conforme o carro se afasta da borda,
       // em vez de aparecer inteiro de uma vez.

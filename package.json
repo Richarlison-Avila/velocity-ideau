@@ -13,8 +13,7 @@
     "test": "vitest run",
     "piloto": "tsx scripts/piloto-virtual.ts",
     "fontes": "tsx scripts/baixar-fontes.ts",
-    "qrcode": "tsx scripts/qrcode.ts",
-    "carros": "tsx scripts/preparar-carros.ts"
+    "qrcode": "tsx scripts/qrcode.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

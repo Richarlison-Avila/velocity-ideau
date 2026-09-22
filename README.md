@@ -83,11 +83,66 @@ A tipografia fica dentro do projeto, em `public/fontes`, para o jogo funcionar e
 
 ### Carros
 
-As artes originais ficam em `arte/carros`, uma por carro, com o nome do identificador da garagem (`senna.png`, `verstappen.png`…). O jogo não as usa direto: chegam com fundo preto opaco e mais de 1 MB cada. `npm run carros` gera em `public/carros` a versão do jogo, com o fundo transparente, recortada e com cerca de um quarto do peso.
+Não há imagem de carro nenhuma no projeto. O desenho inteiro — carroceria, pneus, asas, cockpit e piloto — é descrito em `src/game/carModel.ts` com as mesmas formas cheias e cores chapadas do cenário, e é por isso que o carro parece estar dentro da pista em vez de colado por cima dela.
 
-Todas as pinturas foram feitas sobre o mesmo chassi, e o jogo conta com isso: recorta as rodas dianteiras para girarem com o volante e acende a luz traseira no boost em coordenadas fixas, descritas em `CAR_ART` (`src/game/cars.ts`). Para acrescentar um carro, desenhe sobre o mesmo molde, salve a arte, registre o carro em `CARS` e rode `npm run carros`. O script recusa uma arte que não encaixe no molde.
+Cada ponto do molde é dado em metros e projetado por uma câmera de teleobjetiva, alta e distante, a mesma de Top Gear e Horizon Chase. A altura entra achatada de propósito, na convenção do desenho de corrida visto de cima: sem isso o capacete subiria até a altura do bico e o carro perderia o empilhamento que o faz ler como carro.
+
+Nenhum volume usa degradê; todos são resolvidos em faixas de cor chapada, como um artista de pixel art resolve um cilindro, e a rampa de tons desliza com a luminância da pintura — numa cor clara o relevo vem de escurecer, numa escura de clarear. O que dá volume de verdade, porém, são as costuras: um vinco escuro em cada encontro de peça, mais largo do lado da sombra do que do lado do sol, com um fio claro na quina iluminada. É o vale entre os pontões e a tampa do motor, e o lábio escuro no contorno do pontão, que fazem o meio do carro deixar de ser uma chapa.
+
+`src/game/carSprites.ts` assa esse molde numa folha de sprites, uma tira de nove quadros de esterço, e o laço de corrida escolhe o quadro e faz um `drawImage`. O que varia continuamente — posição, escala com a distância, inclinação da carroceria, trepidação e brilho do boost — fica para a hora do desenho. A garagem e o lobby usam o SVG do mesmo molde, que amplia sem perder nada.
+
+A meia-largura do pneu traseiro é `CAR_SPRITE_HALF_WIDTH`, e um teste cobra isso: o carro ocupa na tela exatamente a largura que a regra de saída de pista cobra. O rival usa a mesma folha, banhada de azul, e nunca se confunde com o carro do próprio jogador.
+
+As artes raster em `arte/carros` ficam como material de referência das marcas de cada equipe; nada no jogo as lê. Para acrescentar uma pintura, registre o carro em `CARS` e a pintura dele em `PINTURAS`.
 
 A escolha é só de pintura. Todos os carros andam com a mesma física: o duelo mede quem dirige melhor, e um carro mais rápido decidiria a corrida antes da largada.
+
+### Cenário
+
+Árvore, arbusto, capim, placa e marcador de distância são descritos em `src/game/cenarioModel.ts` com o mesmo pincel do carro — `src/game/pincel.ts` — e a mesma regra de luz de `src/game/paleta.ts`: rampa de cinco tons que desliza com a luminância, luz sempre de cima e da esquerda, vinco escuro em cada encontro de peça. `src/game/cenarioSprites.ts` assa todos numa folha só, durante a contagem de largada, e o laço de quadro desenha cada objeto com um `drawImage`.
+
+A intuição sobre o que assar estava invertida, e vale registrar: parecia que a folha servia para o campo distante, onde há muitos objetos pequenos, e que o objeto colado na câmera deveria ser desenhado ao vivo para não borrar. É o contrário. Objeto pequeno custa **chamadas**; objeto grande custa **área escrita**. Uma árvore de setecentos pixels com trinta faces escreve mais pixels do que todas as faixas de grama da pista somadas; esticada de uma célula de 256, escreve um terço disso. A folha é o caminho rápido justamente para o que está perto — e o borrão ali custa pouco, porque a sessenta metros por segundo um objeto a cinco metros atravessa a tela em seis quadros.
+
+Duas famílias continuam procedurais, por motivo estrutural. A **cerca** precisa que as travessas de vagas vizinhas se encontrem, e isso depende das projeções das duas vagas: assada por vaga, viraria uma fila de portõezinhos soltos. Os **obstáculos** são no máximo dois em cena por vez, e não pagam a célula.
+
+Nenhuma face do cenário pode ser translúcida, e isso é teste. Quem desenha aplica a névoa da distância com `globalAlpha`: face a face isso dá uma cor, e aplicado ao objeto já composto na folha, dá outra — o objeto mudaria de cor ao trocar de nível de detalhe. Pela mesma razão a sombra no chão fica **fora** do sprite, desenhada ao vivo. Ela é o detalhe mais barato do cenário e o que mais rende: sem ela, tudo o que fica na beira da pista paira alguns pixels acima da grama.
+
+### Os quatro lugares
+
+Até aqui os quatro ambientes trocavam só a cor do céu, da serra e da grama: a diferença entre eles era de hora do dia, não de lugar. Agora cada um tem o próprio repertório de objetos, que é o que Top Gear fazia trocando de país a cada etapa — a mesma pista parece outra com outra coisa na beira.
+
+| Ambiente | Lugar | O que aparece na beira |
+| --- | --- | --- |
+| entardecer | campo | árvore, arbusto, cerca, bandeira, arquibancada |
+| manhã | cidade | prédio, poste de luz, guardrail, pilha de pneus, arquibancada |
+| meio-dia | montanha | pinheiro, rocha, guardrail, pilha de pneus |
+| travessia seca | deserto | cacto, rocha, cerca, capim |
+
+Os quatro conjuntos têm o mesmo número de entradas de propósito. O índice do trecho é sorteado sobre o tamanho da lista, então listas de tamanhos diferentes fariam a estrutura do traçado — onde estão os trechos densos, onde estão as pausas — mudar junto com o lugar. Assim só muda o que aparece.
+
+Três números estavam embutidos e impediam acrescentar família. `FAMILIES.length` era índice, então somar uma entrada mudava a família de toda região em toda semente; a variante vinha de um `* 3` que só funcionava porque três vetores de cor tinham exatamente três entradas; e a supressão de vizinho tinha dois nomes de família escritos à mão. Hoje a variante sorteada é `VARIANTES_SORTEADAS` e quem desenha a reduz ao repertório da própria família, e a supressão sai de uma tabela de estorvo — duas famílias só convivem lado a lado se couberem juntas na soma. A mesma tabela afasta da pista o que é largo: um prédio na beira do asfalto tapa a curva, o mesmo prédio um pouco atrás compõe o fundo.
+
+Cerca e guardrail seguem procedurais, e pelo mesmo motivo: são contínuos, e o vão de cada vaga cobre metade do espaçamento para os dois lados para as travessas se encontrarem. Isso depende das projeções de duas vagas vizinhas, que diferem — assados numa célula por vaga, virariam uma fila de portõezinhos soltos.
+
+Os canais de `randomAt` agora estão listados no cabeçalho de `layout.ts`. Reusar um por engano faz duas decisões independentes andarem juntas: um defeito que não quebra nada, não aparece em teste, e só deixa a pista estranhamente regular.
+
+### Pórticos e chegada
+
+Os arcos sobre a pista caem a cada dezesseis vagas de cenário — noventa e seis metros —, e nem todo marco recebe um: em fila certinha o pórtico vira placa de quilometragem em vez de marco. São **decoração e só**; se colidissem, o layout competitivo passaria a depender da semente e cairia a garantia de que os dois pilotos correm a mesma prova.
+
+Eles são emitidos de **dentro** do laço do cenário, e não num passe à parte. A copa de uma árvore a quarenta metros se debruça sobre a pista, e um arco a oitenta desenhado depois passaria por cima dela.
+
+O pórtico continua procedural, junto com cerca e guardrail: ele acompanha a largura do asfalto, chega a dois mil pixels de dispositivo e não caberia em célula nenhuma — e é barato, uma dúzia de preenchimentos.
+
+A armadilha que ele guardava é estrutural. `roadProjection` faz `Math.max(0, distanceAhead)`: nada cresce além do tamanho que tem em `ahead = 0`, e o cenário para no primeiro índice à frente. Uma árvore some pela lateral e ninguém nota, mas um arco que atravessa a pista congelaria no tamanho máximo e apagaria de um quadro para o outro, com a tela cheia dele. Então o laço vai cinco vagas além do primeiro índice — trinta metros — e ali o pórtico **sobe e se dissolve** em vez de piscar. Como o laço percorre do longe para o perto, essas vagas extras caem por último, que é exatamente a ordem de profundidade delas.
+
+A linha de chegada era doze células num retângulo de cinco pixels de altura: a superfície mais pobre do jogo, no momento que mais importa dele. Agora são duas fileiras de quadriculado com espessura no asfalto e o pórtico quadriculado por cima. Este nunca precisa se dissolver — a simulação trava o progresso em `TRACK_LENGTH`, então a câmera para na linha e nunca passa por baixo do arco.
+
+`banca.html` é a bancada de desenvolvimento: abre com `npm run dev` em `/banca.html`, mostra toda a folha em três tamanhos, uma tira de pórticos de quarenta metros até depois de a câmera passar por baixo, e imprime o tempo de assar e o tamanho da folha. `?familia=tree` isola uma família, `?flora=seca` troca a paleta. Não entra na build.
+
+O fundo tem duas cordilheiras, a de trás já lavada pela cor do céu, e cada uma é desenhada duas vezes com a mesma crista deslocada: o que sobra entre as duas é a lasca acesa na encosta voltada para o sol. Nuvens, o halo do sol em três degraus de opacidade e as rajadas de velocidade do boost completam o fundo. Tudo isso junto custa 0,4 ms por quadro.
+
+O que está longe recebe só a silhueta. Detalhe no horizonte vira ruído, e quem manda ali é a névoa.
 
 ## Testes
 

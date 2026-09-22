@@ -34,6 +34,20 @@ export function hash32(seed: number, index: number) {
  *
  * O canal permite tirar várias decisões independentes do mesmo índice — lado,
  * escala, tom — sem que uma contamine a outra.
+ *
+ * **Canais em uso.** A lista mora aqui porque ela não existe em lugar nenhum
+ * além da memória de quem escreveu, e reusar um canal por engano faz duas
+ * decisões independentes andarem juntas — um defeito que não quebra nada e não
+ * aparece em teste, só deixa a pista estranhamente regular.
+ *
+ * | Canal | Decisão |
+ * | --- | --- |
+ * | 1, 2 | rumo do trecho e sorteio de reta |
+ * | 3, 4 | inclinação do trecho e sorteio de plano |
+ * | 7, 8 | densidade e famílias da região |
+ * | 11 a 16 | vaga do cenário: existe, família, afastamento, escala, tom, variante |
+ * | 21 | ambiente da corrida |
+ * | 22, 23 | pórtico: se existe naquele marco e qual faixa leva |
  */
 export function randomAt(seed: number, index: number, canal = 0) {
   return hash32(seed ^ Math.imul(canal + 1, 0x27d4eb2f), index) / 0x100000000
@@ -169,7 +183,30 @@ export const SCENERY_REGION = 12
 /** A partir daqui já é grama: nada de cenário invade a faixa jogável. */
 export const ROADSIDE_MARGIN = 1.62
 
-export type SceneryKind = 'tree' | 'bush' | 'fence' | 'grass' | 'sign'
+export type SceneryKind =
+  | 'tree'
+  | 'bush'
+  | 'fence'
+  | 'grass'
+  | 'sign'
+  | 'guardrail'
+  | 'pneus'
+  | 'poste'
+  | 'arquibancada'
+  | 'bandeira'
+  | 'pedra'
+  | 'cacto'
+  | 'predio'
+
+/**
+ * Quantas variantes de forma o traçado sorteia por vaga.
+ *
+ * O número é do sorteio, não das famílias: cada família tem o próprio
+ * repertório, e quem desenha reduz este valor ao que ela tem. Deixá-lo aqui
+ * casado com o tamanho de um vetor de cores foi um erro que sobreviveu por
+ * coincidência — três famílias tinham exatamente três entradas.
+ */
+export const VARIANTES_SORTEADAS = 3
 
 /**
  * Descrição de um objeto do cenário.
@@ -194,16 +231,121 @@ export function createSceneryItem(): SceneryItem {
   return { kind: 'grass', distance: 0, lateral: 0, scale: 1, tone: 0, variant: 0 }
 }
 
-/** Famílias por trecho: a dominante dá caráter, a secundária quebra a monotonia. */
-const FAMILIES: SceneryKind[][] = [
-  ['tree', 'bush'],
-  ['bush', 'grass'],
-  ['tree', 'grass'],
-  ['fence', 'bush'],
-  ['grass', 'tree'],
-  // A placa é sempre a secundária: sinalização demais vira poluição visual.
-  ['grass', 'sign'],
-]
+/**
+ * De quantas em quantas vagas de cenário cai um marco de pórtico.
+ *
+ * Dezesseis vagas de seis metros dão noventa e seis. Precisa ser múltiplo do
+ * espaçamento do cenário porque o pórtico é emitido de **dentro** do mesmo
+ * laço: é isso que o põe na ordem de profundidade certa, entre a árvore que
+ * está atrás dele e a que está na frente. Num passe separado, um arco a
+ * oitenta metros passaria por cima da copa que se debruça sobre a pista a
+ * quarenta.
+ */
+export const GANTRY_EVERY = 16
+
+/**
+ * Um pórtico sobre a pista.
+ *
+ * É decoração, e só. Se ele virasse obstáculo, o layout competitivo passaria a
+ * depender da semente e cairia a garantia de que os dois pilotos correm a
+ * mesma prova — que é o motivo de os obstáculos serem uma lista fixa.
+ */
+export type Gantry = {
+  /** Qual faixa de patrocínio o arco leva. */
+  variant: number
+}
+
+export function createGantry(): Gantry {
+  return { variant: 0 }
+}
+
+/**
+ * Quanto de vaga cada família ocupa.
+ *
+ * Serve para uma coisa só: decidir se um objeto apaga o vizinho imediato do
+ * mesmo lado. Antes a regra era "nada ao lado de uma árvore, exceto capim",
+ * com os dois nomes escritos à mão — o que não sobrevive a uma família nova.
+ * Agora duas famílias vizinhas só convivem se couberem juntas na soma.
+ */
+const ESTORVO: Record<SceneryKind, number> = {
+  grass: 0,
+  fence: 0,
+  guardrail: 0,
+  bandeira: 0.5,
+  poste: 0.6,
+  bush: 0.7,
+  sign: 0.8,
+  pneus: 0.8,
+  pedra: 1.1,
+  cacto: 1.2,
+  tree: 1.6,
+  predio: 2.2,
+  arquibancada: 2.4,
+}
+
+/** Acima disso as duas não cabem lado a lado, e a segunda é suprimida. */
+const ESTORVO_MAXIMO = 2
+
+/** Famílias que acompanham a borda do asfalto em vez de se espalhar pela grama. */
+const JUNTO_DA_BORDA: SceneryKind[] = ['fence', 'guardrail', 'pneus']
+
+/**
+ * O lugar em que a etapa acontece.
+ *
+ * É o que Top Gear fazia trocando de país a cada corrida: a mesma pista parece
+ * outra com outro repertório de objeto na beira. Até aqui os quatro ambientes
+ * trocavam só a cor do céu e da grama, e a diferença entre eles era de hora do
+ * dia, não de lugar.
+ */
+export type Lugar = 'campo' | 'cidade' | 'montanha' | 'deserto'
+
+/**
+ * Famílias por trecho, próprias de cada lugar.
+ *
+ * A dominante dá caráter ao trecho e a secundária quebra a monotonia. Os
+ * quatro conjuntos têm o mesmo número de entradas de propósito: o índice do
+ * trecho é sorteado sobre o tamanho da lista, então listas de tamanhos
+ * diferentes fariam a estrutura do traçado — onde estão os trechos densos,
+ * onde estão as pausas — mudar junto com o lugar. Assim só muda o que aparece.
+ */
+const FAMILIAS_POR_LUGAR: Record<Lugar, SceneryKind[][]> = {
+  campo: [
+    ['tree', 'bush'],
+    ['bush', 'grass'],
+    ['tree', 'grass'],
+    ['fence', 'bandeira'],
+    // A arquibancada é sempre a secundária, e por isso cai em menos de 5% das
+    // vagas: uma a cada trecho é o que diz "isto é um circuito"; duas seguidas
+    // fecham a vista da pista.
+    ['grass', 'arquibancada'],
+    // A placa também é sempre a secundária: sinalização demais vira poluição.
+    ['grass', 'sign'],
+  ],
+  cidade: [
+    ['predio', 'poste'],
+    ['poste', 'guardrail'],
+    ['guardrail', 'pneus'],
+    ['predio', 'bandeira'],
+    ['grass', 'arquibancada'],
+    ['grass', 'sign'],
+  ],
+  montanha: [
+    ['tree', 'pedra'],
+    ['pedra', 'guardrail'],
+    ['tree', 'grass'],
+    ['guardrail', 'pneus'],
+    ['pedra', 'bush'],
+    ['grass', 'sign'],
+  ],
+  deserto: [
+    ['cacto', 'pedra'],
+    ['pedra', 'grass'],
+    ['cacto', 'grass'],
+    ['fence', 'pedra'],
+    ['grass', 'cacto'],
+    ['grass', 'sign'],
+  ],
+}
 
 // ---------------------------------------------------------------------------
 // Ambiente
@@ -221,6 +363,8 @@ export type Flora = 'verde' | 'seca'
  */
 export type Ambient = {
   nome: string
+  /** Onde a etapa acontece: é daqui que sai o repertório de objetos. */
+  lugar: Lugar
   ceuTopo: string
   ceuMeio: string
   ceuBaixo: string
@@ -238,6 +382,7 @@ export type Ambient = {
 const AMBIENTES: Ambient[] = [
   {
     nome: 'entardecer',
+    lugar: 'campo',
     ceuTopo: '#06101b',
     ceuMeio: '#173d4b',
     ceuBaixo: '#ff875f',
@@ -252,6 +397,7 @@ const AMBIENTES: Ambient[] = [
   },
   {
     nome: 'manhã',
+    lugar: 'cidade',
     ceuTopo: '#0c2440',
     ceuMeio: '#3f7fa8',
     ceuBaixo: '#ffd9a3',
@@ -266,6 +412,7 @@ const AMBIENTES: Ambient[] = [
   },
   {
     nome: 'meio-dia',
+    lugar: 'montanha',
     ceuTopo: '#12467a',
     ceuMeio: '#5c9fcf',
     ceuBaixo: '#cfe8f5',
@@ -280,6 +427,7 @@ const AMBIENTES: Ambient[] = [
   },
   {
     nome: 'travessia seca',
+    lugar: 'deserto',
     ceuTopo: '#2b1c14',
     ceuMeio: '#8a4a28',
     ceuBaixo: '#f0b978',
@@ -321,6 +469,13 @@ export type TrackLayout = {
    * quando a vaga é área de respiro.
    */
   scenery: (index: number, side: -1 | 1, out: SceneryItem) => boolean
+  /**
+   * Pórtico no marco daquele índice, se houver.
+   *
+   * Preenche o objeto do chamador, como `scenery`: isto roda dentro do laço de
+   * quadro e não pode alocar.
+   */
+  gantry: (index: number, out: Gantry) => boolean
 }
 
 export function createTrackLayout(seed: number): TrackLayout {
@@ -398,6 +553,8 @@ export function createTrackLayout(seed: number): TrackLayout {
     return alturas[indice] + (alturas[indice + 1] - alturas[indice]) * t
   }
 
+  const familias = FAMILIAS_POR_LUGAR[ambientFor(seed).lugar]
+
   /** Família da vaga antes da supressão, para o vizinho poder consultá-la. */
   function familiaBruta(index: number, side: -1 | 1): SceneryKind | null {
     if (index < 0) return null
@@ -406,9 +563,9 @@ export function createTrackLayout(seed: number): TrackLayout {
     const densidade = 0.24 + randomAt(seed, regiao, 7) * 0.58
     if (randomAt(seed, vaga, 11) > densidade) return null
 
-    const familia = FAMILIES[Math.floor(randomAt(seed, regiao, 8) * FAMILIES.length)]
+    const trecho = familias[Math.floor(randomAt(seed, regiao, 8) * familias.length)]
     // A dominante aparece na maioria das vagas: é o que forma agrupamentos.
-    return randomAt(seed, vaga, 12) < 0.72 ? familia[0] : familia[1]
+    return randomAt(seed, vaga, 12) < 0.72 ? trecho[0] : trecho[1]
   }
 
   return {
@@ -419,23 +576,39 @@ export function createTrackLayout(seed: number): TrackLayout {
     curvature: (distance) => rumoEm(distance + 0.5) - rumoEm(distance - 0.5),
     elevation: alturaEm,
     slope: inclinacaoEm,
+    gantry(index, out) {
+      if (index <= 0 || index % GANTRY_EVERY !== 0) return false
+      // Nem todo marco recebe arco: em fila certinha o pórtico vira placa de
+      // quilometragem, e o que se quer é que ele marque alguma coisa.
+      if (randomAt(seed, index, 22) > 0.62) return false
+      out.variant = Math.floor(randomAt(seed, index, 23) * 3)
+      return true
+    },
+
     scenery(index, side, out) {
       const familia = familiaBruta(index, side)
       if (familia === null) return false
 
-      // Distância mínima: uma árvore ocupa espaço e apaga o vizinho imediato do
-      // mesmo lado, senão as copas se atropelam quando chegam perto da câmera.
-      if (familia !== 'grass' && familiaBruta(index - 1, side) === 'tree') return false
+      // Distância mínima: um objeto largo apaga o vizinho imediato do mesmo
+      // lado, senão os dois se atropelam quando chegam perto da câmera.
+      const anterior = familiaBruta(index - 1, side)
+      if (anterior !== null && ESTORVO[anterior] + ESTORVO[familia] > ESTORVO_MAXIMO) return false
 
       const vaga = index * 2 + (side > 0 ? 1 : 0)
-      // A cerca acompanha a borda; o resto se espalha pela grama.
-      const afastamento = familia === 'fence' ? 0.1 : 0.34 + randomAt(seed, vaga, 13) * 1.5
+      // Cerca, guardrail e pilha de pneus acompanham a borda; o resto se
+      // espalha pela grama.
+      const naBorda = JUNTO_DA_BORDA.includes(familia)
+      // O que é largo fica mais longe da pista, na proporção do estorvo que já
+      // decide a supressão do vizinho. Um prédio na beira do asfalto tapa a
+      // vista da curva; o mesmo prédio um pouco atrás compõe o fundo.
+      const recuo = ESTORVO[familia] * 0.35
+      const afastamento = naBorda ? 0.1 : 0.34 + recuo + randomAt(seed, vaga, 13) * 1.5
       out.kind = familia
       out.distance = index * SCENERY_SPACING
       out.lateral = side * (ROADSIDE_MARGIN + afastamento)
       out.scale = 0.72 + randomAt(seed, vaga, 14) * 0.85
       out.tone = randomAt(seed, vaga, 15)
-      out.variant = Math.floor(randomAt(seed, vaga, 16) * 3)
+      out.variant = Math.floor(randomAt(seed, vaga, 16) * VARIANTES_SORTEADAS)
       return true
     },
   }

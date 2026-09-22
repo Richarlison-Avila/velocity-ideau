@@ -11,7 +11,7 @@
  * carro desenhar como fantasma.
  *
  * Este módulo não depende do navegador: o servidor o usa para validar o que
- * chega pela rede, e `scripts/preparar-carros.ts` para gerar os sprites.
+ * chega pela rede. O desenho de cada carro fica em `carModel.ts`.
  */
 export type CarId = 'senna' | 'schumacher' | 'hamilton-mercedes' | 'verstappen' | 'hamilton-ferrari'
 
@@ -55,38 +55,3 @@ export function toCarId(value: unknown): CarId {
 export function carById(id: CarId): Car {
   return POR_ID.get(id) ?? POR_ID.get(DEFAULT_CAR)!
 }
-
-/**
- * Molde comum das artes.
- *
- * As pinturas foram feitas sobre o mesmo chassi: pneus, asas e luz traseira
- * caem nos mesmos pixels em todas. As medidas são da arte original
- * (1086 × 1448, bico para cima) e valem para qualquer carro novo desenhado
- * no mesmo molde — `scripts/preparar-carros.ts` confere isso antes de gerar
- * o sprite, e recusa uma arte que não encaixe.
- *
- * O sprite é o recorte `crop` reduzido; a tela converte de volta para estas
- * coordenadas pela razão entre os dois, então mudar o tamanho do sprite não
- * mexe em nada do desenho.
- */
-export const CAR_ART = {
-  /** Recorte aplicado à arte original, com folga em volta do carro. */
-  crop: { x: 24, y: 166, width: 1036, height: 1134 },
-  /** Eixo de simetria do carro. */
-  centerX: 542,
-  /** Base dos pneus traseiros: é onde o carro toca o chão. */
-  groundY: 1295,
-  /**
-   * De fora a fora dos pneus traseiros, a parte mais larga do carro. É o que
-   * se casa com `CAR_SPRITE_HALF_WIDTH`, e portanto com a regra de saída de
-   * pista: a arte ocupa exatamente a largura que o jogo cobra.
-   */
-  tyreSpan: 1026,
-  /**
-   * Pneu dianteiro esquerdo, que é recortado da carroceria para girar com o
-   * volante. O direito é o reflexo deste retângulo no eixo de simetria.
-   */
-  frontWheel: { x: 112, y: 176, width: 180, height: 288 },
-  /** Centro da luz traseira, que acende no boost. */
-  rearLight: { x: 542, y: 1122 },
-} as const

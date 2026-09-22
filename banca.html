@@ -1,0 +1,112 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Bancada do cenário</title>
+<style>
+  body { margin: 0; background: #1b2a30; color: #dfe6e2; font: 13px system-ui; }
+  h1 { font: 700 12px system-ui; letter-spacing: .14em; text-transform: uppercase; opacity: .55; padding: 12px 14px 2px; margin: 0; }
+  canvas { display: block; margin: 0 14px 10px; }
+  .nota { padding: 2px 14px 16px; opacity: .55; }
+</style>
+<div id="saida"></div>
+<p class="nota" id="nota"></p>
+<script type="module">
+  import { prepararCenario, desenharObjeto, memoriaDaFolha } from '/src/game/cenarioSprites.ts'
+  import { VARIANTES, TONS } from '/src/game/cenarioModel.ts'
+  import { desenharPortico } from '/src/game/cenarioSprites.ts'
+  import { roadProjection, BOTTOM_RATIO } from '/src/game/track.ts'
+
+  const q = new URLSearchParams(location.search)
+  const flora = q.get('flora') ?? 'verde'
+  const nevoa = q.get('nevoa') ?? '207,232,245'
+
+  const t0 = performance.now()
+  prepararCenario(flora, nevoa)
+  const assar = performance.now() - t0
+
+  // Os três tamanhos que importam: sob a bruma, no meio-campo e colado na
+  // câmera, onde o objeto é esticado da célula.
+  const TAMANHOS = [30, 80, 170]
+  const VAO = 16
+  const saida = document.getElementById('saida')
+
+  // Uma família por vez: com todas na mesma página, o que interessa fica
+  // fora da tela.
+  const pedida = q.get('familia')
+  for (const familia of Object.keys(VARIANTES).filter((f) => !pedida || f === pedida)) {
+    const combos = []
+    for (let v = 0; v < VARIANTES[familia]; v += 1) {
+      for (let tom = 0; tom < TONS[familia]; tom += 1) combos.push({ v, tom })
+    }
+
+    const titulo = document.createElement('h1')
+    titulo.textContent = `${familia} — ${combos.length} combinações`
+    saida.append(titulo)
+
+    const passo = 230
+    const tela = document.createElement('canvas')
+    tela.width = combos.length * passo + VAO * 2
+    tela.height = TAMANHOS.reduce((soma, t) => soma + t + 26, 0)
+    const ctx = tela.getContext('2d')
+
+    let y = 0
+    for (const altura of TAMANHOS) {
+      const chao = y + altura + 10
+      ctx.fillStyle = altura === 80 ? '#2f6338' : '#3d434b'
+      ctx.fillRect(0, y, tela.width, altura + 26)
+      let x = VAO + passo / 2
+      for (const { v, tom } of combos) {
+        // A sombra no chão não mora no sprite: é translúcida, e uma face
+        // translúcida composta duas vezes daria cores diferentes.
+        ctx.fillStyle = 'rgba(10,20,26,.3)'
+        ctx.beginPath()
+        ctx.ellipse(x + altura * 0.06, chao, altura * 0.24, altura * 0.05, 0, 0, Math.PI * 2)
+        ctx.fill()
+        desenharObjeto(ctx, familia, v, tom, x, chao, altura)
+        x += passo
+      }
+      y += altura + 26
+    }
+    saida.append(tela)
+  }
+
+  /**
+   * Tira de pórticos, da distância até depois de a câmera passar por baixo.
+   *
+   * É a conferência do risco que o plano aponta: a projeção trava em
+   * `ahead = 0`, e um arco de tela cheia cortado ali apagaria de um quadro
+   * para o outro. Aqui dá para ver ele subir e dissolver em vez de piscar.
+   */
+  {
+    const titulo = document.createElement('h1')
+    titulo.textContent = 'pórtico — de 40 m até 28 m atrás da câmera'
+    saida.append(titulo)
+
+    const ALTURA = 210
+    const LARGURA = 128
+    const AHEADS = [40, 20, 8, 2, 0, -6, -14, -22, 20]
+    const tela = document.createElement('canvas')
+    tela.width = AHEADS.length * LARGURA
+    tela.height = ALTURA
+    const ctx = tela.getContext('2d')
+    AHEADS.forEach((ahead, i) => {
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(i * LARGURA, 0, LARGURA, ALTURA)
+      ctx.clip()
+      ctx.fillStyle = i % 2 ? '#2b3a42' : '#31424a'
+      ctx.fillRect(i * LARGURA, 0, LARGURA, ALTURA)
+      const proj = roadProjection(ahead, LARGURA, ALTURA / BOTTOM_RATIO)
+      // A última célula mostra o pórtico da chegada, com o quadriculado.
+      const chegada = i === AHEADS.length - 1
+      desenharPortico(ctx, { ...proj, center: i * LARGURA + LARGURA / 2 }, i % 3, chegada ? 20 : ahead, 1, chegada)
+      ctx.fillStyle = '#9fb0ae'
+      ctx.font = '11px system-ui'
+      ctx.fillText(chegada ? 'chegada' : `${ahead} m`, i * LARGURA + 8, 16)
+      ctx.restore()
+    })
+    saida.append(tela)
+  }
+
+  document.getElementById('nota').textContent =
+    `assar ${assar.toFixed(1)} ms · folha ${(memoriaDaFolha() / 1048576).toFixed(2)} MB`
+</script>

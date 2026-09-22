@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   AMBIENT_COUNT,
   ambientFor,
+  createGantry,
   createSceneryItem,
   createTrackLayout,
   curvatureLoad,
   CURVE_SEGMENT,
   firstSceneryIndex,
+  GANTRY_EVERY,
   hash32,
   HEADING_LIMIT,
   lastSceneryIndex,
@@ -15,6 +17,7 @@ import {
   randomAt,
   ROADSIDE_MARGIN,
   SCENERY_SPACING,
+  VARIANTES_SORTEADAS,
   SLOPE_LIMIT,
   SLOPE_SEGMENT,
   type SceneryItem,
@@ -279,6 +282,105 @@ describe('cenário lateral', () => {
       for (const lado of [-1, 1] as const) if (layout.scenery(i, lado, item)) familias.add(item.kind)
     }
     expect(familias.size).toBeGreaterThanOrEqual(3)
+  })
+
+  /** Todas as famílias que aparecem numa prova inteira, por semente. */
+  function familiasDe(seed: number) {
+    const layout = createTrackLayout(seed)
+    const item = createSceneryItem()
+    const familias = new Set<string>()
+    for (let i = 0; i < 800; i += 1) {
+      for (const lado of [-1, 1] as const) if (layout.scenery(i, lado, item)) familias.add(item.kind)
+    }
+    return { lugar: layout.ambient.lugar, familias }
+  }
+
+  it('cada lugar tem o próprio repertório de objetos', () => {
+    // É o que Top Gear fazia trocando de país: a mesma pista parece outra com
+    // outro repertório na beira. Sem isto os quatro ambientes voltam a ser a
+    // mesma paisagem em horas diferentes do dia.
+    const PROIBIDAS: Record<string, string[]> = {
+      campo: ['predio', 'poste', 'cacto', 'pedra', 'guardrail'],
+      cidade: ['tree', 'cacto', 'pedra', 'fence'],
+      montanha: ['predio', 'cacto', 'poste'],
+      deserto: ['tree', 'predio', 'poste', 'bush', 'guardrail'],
+    }
+    const vistos = new Set<string>()
+    for (let seed = 1; seed <= 120; seed += 1) {
+      const { lugar, familias } = familiasDe(seed)
+      vistos.add(lugar)
+      for (const proibida of PROIBIDAS[lugar]) {
+        expect(familias.has(proibida), `${lugar} não devia ter ${proibida}`).toBe(false)
+      }
+    }
+    // E os quatro lugares precisam sair do sorteio, senão o teste acima não
+    // está cobrindo nada.
+    expect(vistos.size).toBe(AMBIENT_COUNT)
+  })
+
+  it('a mesma semente dá a mesma sequência de famílias', () => {
+    // Os dois pilotos reconstroem a pista sozinhos, cada um no seu aparelho.
+    // Uma família que dependesse de qualquer coisa fora da semente poria os
+    // dois em paisagens diferentes.
+    for (const seed of [3, 41, 905]) {
+      const a = createTrackLayout(seed)
+      const b = createTrackLayout(seed)
+      const ia = createSceneryItem()
+      const ib = createSceneryItem()
+      for (let i = 0; i < 400; i += 1) {
+        for (const lado of [-1, 1] as const) {
+          expect(a.scenery(i, lado, ia)).toBe(b.scenery(i, lado, ib))
+          expect(ia.kind).toBe(ib.kind)
+          expect(ia.lateral).toBe(ib.lateral)
+          expect(ia.variant).toBe(ib.variant)
+        }
+      }
+    }
+  })
+
+  it('a variante sorteada fica no intervalo que o desenho espera', () => {
+    // Quem desenha reduz a variante ao repertório da própria família. Se o
+    // sorteio passasse deste intervalo, a redução escolheria a forma errada em
+    // vez de falhar — um defeito silencioso.
+    const layout = createTrackLayout(52)
+    const item = createSceneryItem()
+    for (let i = 0; i < 400; i += 1) {
+      for (const lado of [-1, 1] as const) {
+        if (!layout.scenery(i, lado, item)) continue
+        expect(item.variant).toBeGreaterThanOrEqual(0)
+        expect(item.variant).toBeLessThan(VARIANTES_SORTEADAS)
+        expect(Number.isInteger(item.variant)).toBe(true)
+      }
+    }
+  })
+
+  it('o pórtico cai em marcos espaçados e não em toda vaga', () => {
+    // Ele é emitido de dentro do laço do cenário para entrar na ordem de
+    // profundidade certa. Se caísse em qualquer índice, o arco apareceria
+    // entre árvores da mesma vaga em vez de atrás delas.
+    const layout = createTrackLayout(31)
+    const portico = createGantry()
+    let marcos = 0
+    for (let i = 1; i < 800; i += 1) {
+      if (!layout.gantry(i, portico)) continue
+      expect(i % GANTRY_EVERY, `índice ${i}`).toBe(0)
+      marcos += 1
+    }
+    // Nem todo marco recebe arco, mas a prova inteira não pode ficar sem.
+    const possiveis = Math.floor(799 / GANTRY_EVERY)
+    expect(marcos).toBeGreaterThan(possiveis * 0.3)
+    expect(marcos).toBeLessThan(possiveis)
+  })
+
+  it('o pórtico é o mesmo nos dois aparelhos', () => {
+    const a = createTrackLayout(88)
+    const b = createTrackLayout(88)
+    const pa = createGantry()
+    const pb = createGantry()
+    for (let i = 0; i < 600; i += 1) {
+      expect(a.gantry(i, pa)).toBe(b.gantry(i, pb))
+      expect(pa.variant).toBe(pb.variant)
+    }
   })
 
   it('preenche o objeto do chamador em vez de alocar um novo', () => {

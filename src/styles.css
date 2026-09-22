@@ -308,7 +308,7 @@ button { cursor: pointer; }
 .garage-car { position: relative; display: flex; align-items: center; justify-content: center; height: min(52vh, 500px); margin: 0; }
 /* Holofote no chão, sob o carro. */
 .garage-car::after { content: ''; position: absolute; z-index: -1; left: 16%; right: 16%; bottom: -1%; height: 9%; border-radius: 50%; background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 45%, transparent), transparent); filter: blur(4px); }
-.garage-car img { height: 100%; width: auto; max-width: 100%; object-fit: contain; filter: drop-shadow(0 26px 30px rgba(0,0,0,.6)); animation: garage-enter .5s cubic-bezier(.2,.8,.2,1) both, garage-idle 3.4s ease-in-out .5s infinite; }
+.garage-car img { height: 100%; width: auto; max-width: 100%; object-fit: contain; animation: garage-enter .5s cubic-bezier(.2,.8,.2,1) both, garage-idle 3.4s ease-in-out .5s infinite; }
 @keyframes garage-enter { from { opacity: 0; transform: translateY(36px) scale(.94); } to { opacity: 1; transform: none; } }
 @keyframes garage-idle { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
 .garage-arrow { width: 52px; height: 52px; border: 1px solid rgba(255,255,255,.18); border-radius: 50%; background: rgba(8,12,17,.62); color: #fff; font: 300 34px/1 sans-serif; transition: border-color .18s, background .18s; }
