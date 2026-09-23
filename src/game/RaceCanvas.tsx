@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { countdownAt, DEFAULT_COUNTDOWN_MS, LIGHT_COUNT, lateBy } from './countdown'
 import {
   gapBetween,
@@ -12,7 +12,16 @@ import {
 import { RaceAudio, faixaDaCorrida } from './audio'
 import { definirMusicaDesligada, definirSomDesligado, lerMusicaDesligada, lerSomDesligado } from './preferenciasDeSom'
 import { carById, type CarId } from './cars'
-import { drawCar, prepareCar, type CarPose } from './carSprites'
+import { carImageUrl, drawCar, prepareCar, type CarPose } from './carSprites'
+import { classificar, diferencaEmSegundos, formatarDiferenca, liderEmProva, type CarroNaProva } from './classificacao'
+import {
+  ALCANCE_DO_RADAR_M,
+  desenharEtiquetasDosFantasmas,
+  desenharRadarTraseiro,
+  opacidadeDoFantasma,
+  type EtiquetaDoFantasma,
+  type RivalAtras,
+} from './fantasmaNaTela'
 import { createFeel, registerImpact, updateFeel } from './feel'
 import { LUZ, misturar, rampa } from './paleta'
 import {
@@ -60,6 +69,7 @@ import {
   HIT_IS_CRASH,
   isTallMarker,
   lateralOffset,
+  OFF_ROAD_LIMIT,
   roadProjection,
   type ObstacleKind,
   HORIZON_RATIO,
@@ -104,7 +114,14 @@ type RaceCanvasProps = {
   difficulty: Difficulty
   /** Relógio sincronizado. No modo treino é o relógio local. */
   now?: () => number
-  mode?: 'solo' | 'online'
+  /**
+   * Treino, corrida online, ou arquibancada. No modo espectador não há carro
+   * próprio: a câmera segue um dos pilotos — o líder, ou quem se escolher — e
+   * `rivals` traz todos eles.
+   */
+  mode?: 'solo' | 'online' | 'espectador'
+  /** Quantos assistem da arquibancada, para a tela dizer que há público. */
+  espectadores?: number
   /** Aviso de conexão exibido sobre a pista sem interromper a corrida. */
   connectionNotice?: string | null
   /** Chamado a cada medição para ser enviada ao servidor. */
@@ -135,6 +152,32 @@ type RivalHud = {
   finished: boolean
   /** Com o fantasma à vista, o painel encolhe para não tapar a pista. */
   onScreen: boolean
+}
+
+/** Uma linha da classificação ao vivo, como o painel a mostra. */
+type LinhaDoPainel = {
+  id: string
+  nome: string
+  carro: CarId
+  posicao: number
+  /** Segundos em relação a quem se está olhando: positivo à frente. Null na própria linha. */
+  diferenca: number | null
+  chegou: boolean
+  semSinal: boolean
+  /** A linha de quem se está olhando: o próprio piloto, ou quem a câmera segue. */
+  destaque: boolean
+  /** Fração da prova já percorrida, de 0 a 1, para a marca na barra de progresso. */
+  fracao: number
+}
+
+/** Quem a câmera do espectador está seguindo, como o painel dele mostra. */
+type Seguido = {
+  id: string
+  nome: string
+  carro: CarId
+  posicao: number
+  velocidade: number
+  chegou: boolean
 }
 
 type Telemetry = {
@@ -187,6 +230,24 @@ const initialTelemetry: Telemetry = {
  * ficasse dentro do laço do cenário.
  */
 const LADOS: Array<-1 | 1> = [-1, 1]
+
+/** Identidade do próprio piloto na classificação: nenhum rival chega com ela. */
+const ID_DO_JOGADOR = '\u0000jogador'
+
+/**
+ * Profundidade mínima em que um fantasma ainda é desenhado, em metros a partir
+ * da câmera. Mais perto do que isso ele já passou dela: vira seta no radar.
+ */
+const PROFUNDIDADE_MINIMA_DO_FANTASMA = 0.8
+
+/** Quanto as rodas descem abaixo do ponto em que o carro toca a pista, em unidades do sprite. */
+const RODAS_ABAIXO_DO_CHAO = 26
+
+/** Por quanto tempo um novo líder precisa se firmar na frente antes de a câmera automática trocar para ele. */
+const FIRMEZA_DO_LIDER_MS = 1_200
+
+/** Nome curto para a etiqueta: com seis na pista, o nome inteiro tapa a pista. */
+const nomeDaEtiqueta = (nome: string) => nome.trim().toUpperCase().slice(0, 10)
 
 /**
  * Ângulos das rajadas de velocidade, em torno do ponto de fuga.
@@ -349,11 +410,13 @@ function RaceCanvas({
   difficulty,
   now,
   mode = 'solo',
+  espectadores = 0,
   connectionNotice = null,
   onTelemetry,
   onAbandon,
   onFinish,
 }: RaceCanvasProps) {
+  const espectador = mode === 'espectador'
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const inputRef = useRef<RaceInput>({ left: false, right: false, boost: false })
   const clockRef = useRef(now ?? Date.now)
@@ -381,7 +444,25 @@ function RaceCanvas({
   const [semMusica, setSemMusica] = useState(lerMusicaDesligada)
   /** A faixa que acabou de entrar na rádio, enquanto o aviso dela está na tela. */
   const [faixaNoAr, setFaixaNoAr] = useState<{ nome: string; estilo: string; desde: number } | null>(null)
+  /** Classificação ao vivo, de todos os que estão na pista. */
+  const [painel, setPainel] = useState<LinhaDoPainel[]>([])
+  /** Quem a câmera do espectador segue agora. */
+  const [seguido, setSeguido] = useState<Seguido | null>(null)
+  /** No automático, a câmera fica com o líder de quem ainda corre. */
+  const [autoLider, setAutoLider] = useState(true)
+  const modeRef = useRef(mode)
+  /** Escolha manual do espectador: o piloto que ele pediu para seguir. */
+  const seguindoRef = useRef<string | null>(null)
+  const autoLiderRef = useRef(autoLider)
+  /** Ordem da classificação no último quadro, para trocar de piloto com as setas. */
+  const ordemRef = useRef<string[]>([])
+  /** Instante do último passo de física: sem ele, a aba parada mandaria velocidade de corrida. */
+  const ultimoPassoRef = useRef(0)
 
+  const pilotNameRef = useRef(pilotName)
+  pilotNameRef.current = pilotName
+  modeRef.current = mode
+  autoLiderRef.current = autoLider
   clockRef.current = now ?? Date.now
   finishRef.current = onFinish
   rivalsRef.current = rivals
@@ -443,6 +524,32 @@ function RaceCanvas({
     audioRef.current?.proximaFaixa()
   }, [])
 
+  /** Quem a câmera está seguindo neste quadro, escolhido ou automático. */
+  const seguidoIdRef = useRef<string | null>(null)
+
+  /**
+   * Troca o piloto seguido pela câmera do espectador, na ordem da
+   * classificação. Escolher alguém desliga o automático; o botão do líder volta
+   * a ligá-lo.
+   */
+  const seguirOutro = useCallback((passo: number) => {
+    const ordem = ordemRef.current
+    if (ordem.length === 0) return
+    const indice = Math.max(0, ordem.indexOf(seguidoIdRef.current ?? ''))
+    seguindoRef.current = ordem[(indice + passo + ordem.length) % ordem.length]
+    setAutoLider(false)
+  }, [])
+
+  const seguirPiloto = useCallback((id: string) => {
+    seguindoRef.current = id
+    setAutoLider(false)
+  }, [])
+
+  const seguirLider = useCallback(() => {
+    seguindoRef.current = null
+    setAutoLider(true)
+  }, [])
+
   // O aviso da faixa some sozinho depois de uns segundos.
   useEffect(() => {
     if (!faixaNoAr) return
@@ -475,6 +582,15 @@ function RaceCanvas({
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
       if (['ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) event.preventDefault()
+      // Na arquibancada as setas trocam de piloto, e o L volta para o líder.
+      if (modeRef.current === 'espectador') {
+        if (event.repeat) return
+        if (event.code === 'ArrowLeft' || event.code === 'KeyA') seguirOutro(-1)
+        if (event.code === 'ArrowRight' || event.code === 'KeyD') seguirOutro(1)
+        if (event.code === 'KeyL') seguirLider()
+        if (event.code === 'KeyR') audioRef.current?.proximaFaixa()
+        return
+      }
       if (event.code === 'ArrowLeft' || event.code === 'KeyA') setInput('left', true)
       if (event.code === 'ArrowRight' || event.code === 'KeyD') setInput('right', true)
       if (event.code === 'Space') setInput('boost', true)
@@ -498,7 +614,7 @@ function RaceCanvas({
       window.removeEventListener('keyup', up)
       window.removeEventListener('blur', release)
     }
-  }, [])
+  }, [seguirLider, seguirOutro])
 
   useEffect(() => {
     // Quem abre a tela depois do instante combinado larga já em atraso.
@@ -594,6 +710,7 @@ function RaceCanvas({
     let previous = performance.now()
     let lastHudUpdate = 0
     let lastRivalHud = 0
+    let ultimoPainel = 0
     let animationFrame = 0
     const flashTimers: number[] = []
 
@@ -631,7 +748,11 @@ function RaceCanvas({
     }
     resize()
     prepareCar(carRef.current, ambiente.nevoaRGB)
-    for (const rival of rivalsRef.current) prepareCar(rival.car, ambiente.nevoaRGB, true)
+    for (const rival of rivalsRef.current) {
+      prepareCar(rival.car, ambiente.nevoaRGB, true)
+      // Na arquibancada, qualquer um deles pode virar o carro da câmera, inteiro.
+      if (modeRef.current === 'espectador') prepareCar(rival.car, ambiente.nevoaRGB)
+    }
     prepararCenario(ambiente.flora, ambiente.nevoaRGB)
 
     // A janela nem sempre muda de tamanho junto com a tela do jogo: em telas
@@ -1310,7 +1431,8 @@ function RaceCanvas({
      * telemetria — mas sai da mesma grandeza: o quanto ele andou de lado
      * desde o quadro anterior. Cor e transparência continuam sendo dele.
      */
-    const drawGhost = (rival: RaceRival, distanceAhead: number, lateral: number, faded: boolean, dt: number, velocidade = 0) => {
+    const drawGhost = (rival: RaceRival, distanceAhead: number, sample: GhostSample, dt: number, etiqueta: string | null) => {
+      const { lateral, speed: velocidade } = sample
       const projected = roadGeometry(distanceAhead)
       const x = projected.center + lateralOffset(lateral, projected.roadWidth)
       const scale = Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH) * Math.max(0.06, projected.perspective)
@@ -1338,8 +1460,15 @@ function RaceCanvas({
       estado.derrapagem = aproximarDerrapagem(estado.derrapagem, derrapagemPara(forcaDoRival), dt)
       pose.drift = estado.derrapagem
 
-      drawCar(ctx, x, projected.y, scale, rival.car, pose, faded ? 0.23 : 0.46, ambiente.nevoaRGB)
+      const semSinal = sample.stale || !rival.connected
+      const opacidade = opacidadeDoFantasma(distanceAhead, { semSinal, chegou: sample.state === 'finished' })
+      drawCar(ctx, x, projected.y, scale, rival.car, pose, opacidade, ambiente.nevoaRGB)
+      // A etiqueta sai depois da bruma, para o nome de quem vai longe continuar nítido.
+      if (etiqueta) etiquetas.push({ x, chao: projected.y, escala: scale, texto: etiqueta, cor: carById(rival.car).accent, profundidade: distanceAhead })
     }
+
+    /** Etiquetas dos fantasmas deste quadro, desenhadas por cima da bruma. */
+    const etiquetas: EtiquetaDoFantasma[] = []
 
     /** Poeira, faíscas, rastro de boost e marcas de pneu, na projeção da pista. */
     const drawParticle = (particle: Particle, distanceAhead: number) => {
@@ -1490,6 +1619,45 @@ function RaceCanvas({
       )
     }
 
+    /** Instante da chegada do próprio piloto, no relógio do servidor. */
+    let chegadaDoJogador: number | null = null
+    /** Candidato a líder no automático do espectador, e desde quando ele lidera. */
+    let novoLider: { id: string; desde: number } | null = null
+
+    /**
+     * Quem a câmera do espectador segue neste quadro.
+     *
+     * A escolha manual vale enquanto o piloto estiver na pista. No automático,
+     * a câmera fica com o líder de quem ainda corre, mas só troca depois de o
+     * novo líder se firmar na frente: dois carros lado a lado fariam a imagem
+     * pular de um para o outro a cada quadro. Quando o seguido cruza a linha, a
+     * câmera passa na hora para quem ainda está em prova.
+     */
+    const escolherSeguido = (amostras: Array<{ rival: RaceRival; sample: GhostSample }>, frame: number): string | null => {
+      if (amostras.length === 0) return null
+      const manual = seguindoRef.current
+      if (!autoLiderRef.current && manual && amostras.some(({ rival }) => rival.id === manual)) return manual
+      const lider = liderEmProva(
+        classificar(
+          amostras.map(({ rival, sample }) => ({
+            id: rival.id,
+            progress: sample.progress,
+            speed: sample.speed,
+            state: sample.state,
+            chegadaEm: sample.finishedAt ?? null,
+          })),
+        ),
+      )?.id ?? null
+      const atual = amostras.find(({ rival }) => rival.id === seguidoIdRef.current)
+      if (!atual || lider === null) return lider
+      if (lider === atual.rival.id || atual.sample.state === 'finished') {
+        novoLider = null
+        return lider
+      }
+      if (novoLider?.id !== lider) novoLider = { id: lider, desde: frame }
+      return frame - novoLider.desde > FIRMEZA_DO_LIDER_MS ? lider : atual.rival.id
+    }
+
     const draw = (frame: number) => {
       const serverNow = clockRef.current()
       const dt = (frame - previous) / 1000
@@ -1503,6 +1671,50 @@ function RaceCanvas({
         const sample = rival.ghost.sample(serverNow)
         if (sample) rivalSamples.push({ rival, sample })
       }
+
+      // Na arquibancada não há carro próprio: a câmera assume o lugar de um dos
+      // pilotos — quem se escolheu, ou o líder de quem ainda corre — e a pista
+      // inteira passa a ser desenhada do ponto de vista dele.
+      const noModoEspectador = modeRef.current === 'espectador'
+      const seguidoId = noModoEspectador ? escolherSeguido(rivalSamples, frame) : null
+      seguidoIdRef.current = seguidoId
+      const seguidoAgora = seguidoId ? rivalSamples.find(({ rival }) => rival.id === seguidoId) : undefined
+      if (seguidoAgora) {
+        race.progress = seguidoAgora.sample.progress
+        race.lateral = seguidoAgora.sample.lateral
+        race.speed = seguidoAgora.sample.speed
+        race.offRoad = Math.abs(seguidoAgora.sample.lateral) > OFF_ROAD_LIMIT
+        carRef.current = seguidoAgora.rival.car
+      }
+
+      // A classificação do quadro: dela saem a etiqueta de cada fantasma, a
+      // posição no painel e a lista ao vivo. O próprio piloto entra nela com
+      // uma identidade que nenhum rival usa.
+      const naPista: Array<CarroNaProva & { nome: string; carro: CarId; semSinal: boolean }> = rivalSamples.map(({ rival, sample }) => ({
+        id: rival.id,
+        progress: sample.progress,
+        speed: sample.speed,
+        state: sample.state,
+        chegadaEm: sample.finishedAt ?? null,
+        nome: rival.name,
+        carro: rival.car,
+        semSinal: sample.stale || !rival.connected,
+      }))
+      if (modeRef.current === 'online') {
+        naPista.push({
+          id: ID_DO_JOGADOR,
+          progress: race.progress,
+          speed: race.speed,
+          state: doneRef.current ? 'finished' : 'racing',
+          chegadaEm: chegadaDoJogador,
+          nome: pilotNameRef.current,
+          carro: carRef.current,
+          semSinal: false,
+        })
+      }
+      const ordem = classificar(naPista)
+      const posicaoDe = new Map(ordem.map((carro) => [carro.id, carro.posicao]))
+      ordemRef.current = ordem.map((carro) => carro.id)
 
       if (startedRef.current && !doneRef.current) {
         const elapsed = Math.max(0, (serverNow - startAt) / 1000)
@@ -1519,7 +1731,11 @@ function RaceCanvas({
               : melhor,
           0,
         )
-        for (const event of stepRace(race, inputRef.current, dt, raceContext)) {
+        // Quem assiste não pilota: a física é a do carro seguido, que chega pela
+        // telemetria. O resto do quadro — câmera, som, efeitos, painel — segue igual.
+        const eventos = noModoEspectador ? [] : stepRace(race, inputRef.current, dt, raceContext)
+        if (!noModoEspectador) ultimoPassoRef.current = performance.now()
+        for (const event of eventos) {
           if (event.type === 'collision') {
             const kind = race.rules.obstacles.find((o) => o.id === event.obstacleId)?.kind ?? 'barrier'
             // A batida conta para o reset, e o piloto precisa ver a conta antes
@@ -1572,6 +1788,7 @@ function RaceCanvas({
           }
           if (event.type === 'finish') {
             doneRef.current = true
+            chegadaDoJogador = serverNow
             setPhase('finished')
             audioRef.current?.update({ speed: 0, boost: 0, offRoad: 0, running: false })
             audioRef.current?.stopMusic()
@@ -1758,10 +1975,21 @@ function RaceCanvas({
         if (particula.kind === 'skid') drawParticle(particula, particula.distance - race.progress)
       }
 
-      const fantasmasVisiveis = rivalSamples
-        .map(({ rival, sample }) => ({ rival, sample, ahead: sample.progress - race.progress }))
-        .filter(({ ahead }) => ahead > 0 && ahead < VIEW_DISTANCE && !atrasDaLomba(ahead))
+      // Profundidade de cada fantasma a partir da câmera. O carro de quem mandou
+      // a telemetria fica CAR_VIEW_DISTANCE à frente da câmera dele, como o
+      // nosso: um rival lado a lado aparece ao lado do carro, e não embaixo da
+      // câmera, e quem vem colado atrás ainda aparece, por cima do nosso.
+      etiquetas.length = 0
+      const fantasmas = rivalSamples
+        .filter(({ rival }) => rival.id !== seguidoId)
+        .map(({ rival, sample }) => ({ rival, sample, ahead: sample.progress - race.progress + CAR_VIEW_DISTANCE }))
+      const fantasmasVisiveis = fantasmas
+        .filter(({ ahead }) => ahead >= CAR_VIEW_DISTANCE && ahead < VIEW_DISTANCE && !atrasDaLomba(ahead))
         .sort((a, b) => b.ahead - a.ahead)
+      const fantasmasColados = fantasmas
+        .filter(({ ahead }) => ahead > PROFUNDIDADE_MINIMA_DO_FANTASMA && ahead < CAR_VIEW_DISTANCE)
+        .sort((a, b) => b.ahead - a.ahead)
+      const etiquetaDe = (rival: RaceRival) => `P${posicaoDe.get(rival.id) ?? '?'} ${nomeDaEtiqueta(rival.name)}`
 
       // Os obstáculos já estão em ordem de distância, então basta percorrer do
       // fim para o começo — do mais distante para o mais próximo — sem montar
@@ -1776,14 +2004,14 @@ function RaceCanvas({
 
         while (fantasmasVisiveis[proximoFantasma]?.ahead > ahead) {
           const fantasma = fantasmasVisiveis[proximoFantasma]
-          drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample.lateral, fantasma.sample.stale, dt, fantasma.sample.speed)
+          drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample, dt, etiquetaDe(fantasma.rival))
           proximoFantasma += 1
         }
         drawObstacle(ahead, obstaculo.lane, obstaculo.kind, obstaculo.id)
       }
       while (proximoFantasma < fantasmasVisiveis.length) {
         const fantasma = fantasmasVisiveis[proximoFantasma]
-        drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample.lateral, fantasma.sample.stale, dt, fantasma.sample.speed)
+        drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample, dt, etiquetaDe(fantasma.rival))
         proximoFantasma += 1
       }
 
@@ -1802,8 +2030,9 @@ function RaceCanvas({
           setRival(null)
         } else {
           const gap = gapBetween(race.progress, maisProximo.sample.progress, race.speed, maisProximo.sample.speed)
-          const position = `P${1 + rivalSamples.filter(({ sample }) => sample.progress > race.progress).length}`
-          const visivel = fantasmasVisiveis.some(({ rival }) => rival.id === maisProximo.rival.id)
+          // A mesma posição da lista ao vivo: quem já chegou conta pela ordem de chegada.
+          const position = `P${posicaoDe.get(ID_DO_JOGADOR) ?? 1 + rivalSamples.filter(({ sample }) => sample.progress > race.progress).length}`
+          const visivel = [...fantasmasVisiveis, ...fantasmasColados].some(({ rival }) => rival.id === maisProximo.rival.id)
           const direcao = gap.ahead ? 'à frente' : 'atrás'
           setRival({
             position,
@@ -1815,6 +2044,33 @@ function RaceCanvas({
             finished: maisProximo.sample.state === 'finished',
             onScreen: visivel,
           })
+        }
+      }
+
+      // A lista ao vivo, cinco vezes por segundo: mais do que isso só gasta React.
+      if (frame - ultimoPainel > 200) {
+        ultimoPainel = frame
+        const referencia = ordem.find((carro) => carro.id === (noModoEspectador ? seguidoId : ID_DO_JOGADOR)) ?? null
+        setPainel(
+          ordem.map((carro) => ({
+            id: carro.id,
+            nome: carro.nome,
+            carro: carro.carro,
+            posicao: carro.posicao,
+            diferenca: referencia && carro.id !== referencia.id ? diferencaEmSegundos(referencia, carro) : null,
+            chegou: carro.state === 'finished',
+            semSinal: carro.semSinal,
+            destaque: carro.id === referencia?.id,
+            fracao: Math.min(1, carro.progress / TRACK_LENGTH),
+          })),
+        )
+        if (noModoEspectador) {
+          const alvo = ordem.find((carro) => carro.id === seguidoId)
+          setSeguido(
+            alvo
+              ? { id: alvo.id, nome: alvo.nome, carro: alvo.carro, posicao: alvo.posicao, velocidade: alvo.speed, chegou: alvo.state === 'finished' }
+              : null,
+          )
         }
       }
 
@@ -1851,6 +2107,7 @@ function RaceCanvas({
       ctx.fillStyle = gradienteDaBruma()
       const margemDaBruma = margemDaRolagem()
       ctx.fillRect(-margemDaBruma, height * (HORIZON_RATIO - 0.1), width + margemDaBruma * 2, height * 0.75 - height * HORIZON_RATIO)
+      desenharEtiquetasDosFantasmas(ctx, etiquetas)
 
       // Poeira, faíscas e rastro de boost passam por cima da pista e dos carros.
       for (const particula of efeitos) {
@@ -1909,8 +2166,28 @@ function RaceCanvas({
         )
         ctx.globalAlpha = 1
       }
+      for (const fantasma of fantasmasColados) drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample, dt, null)
+
+      // Quem vem atrás, fora da vista da câmera: vira seta no radar, na coluna
+      // em que vem, logo abaixo do carro.
+      const radar: RivalAtras[] = []
+      for (const { rival, sample, ahead } of fantasmas) {
+        const atras = CAR_VIEW_DISTANCE - ahead
+        if (ahead > PROFUNDIDADE_MINIMA_DO_FANTASMA || atras > ALCANCE_DO_RADAR_M || sample.state === 'finished') continue
+        radar.push({
+          x: ondeEstaOCarro.center + lateralOffset(sample.lateral, ondeEstaOCarro.roadWidth),
+          distancia: atras,
+          nome: nomeDaEtiqueta(rival.name),
+          cor: carById(rival.car).accent,
+        })
+      }
       // Fim do mundo girado: dali em diante é tela.
       ctx.restore()
+      // O radar é de quem pilota: na arquibancada, a classificação já diz quem
+      // vem atrás, e o painel da câmera ocupa a base da tela.
+      if (startedRef.current && !noModoEspectador) {
+        desenharRadarTraseiro(ctx, radar, width, ondeEstaOCarro.y + RODAS_ABAIXO_DO_CHAO * escalaDoCarro() + 10)
+      }
 
       desenharRajadas(feel.boost * forcaDoMovimento, race.progress)
 
@@ -1946,11 +2223,15 @@ function RaceCanvas({
     const timer = window.setInterval(() => {
       if (!startedRef.current || doneRef.current) return
       const race = raceRef.current
+      // Com a aba em segundo plano o navegador congela o quadro, e a física com
+      // ele: o carro está parado. Mandar a velocidade de antes faria o fantasma
+      // seguir andando na tela dos rivais e depois esperar o carro alcançá-lo.
+      const parado = performance.now() - ultimoPassoRef.current > 250
       sendTelemetryRef.current?.({
         t: clockRef.current(),
         progress: race.progress,
         lateral: race.lateral,
-        speed: race.speed,
+        speed: parado ? 0 : race.speed,
         state: 'racing',
       })
     }, TELEMETRY_INTERVAL_MS)
@@ -1963,6 +2244,17 @@ function RaceCanvas({
   }, [])
 
   const progressPercent = Math.min(100, (telemetry.progress / TRACK_LENGTH) * 100)
+  /** Na arquibancada, a tela descreve o carro que a câmera segue. */
+  const carroDaTela = espectador && seguido ? seguido.carro : car
+  const referenciaChegou = painel.find((linha) => linha.destaque)?.chegou ?? false
+  /** O que a coluna da diferença diz em cada linha da classificação. */
+  const textoDaDiferenca = (linha: LinhaDoPainel) => {
+    if (linha.diferenca === null) return linha.chegou ? 'CHEGOU' : espectador ? 'CÂMERA' : 'VOCÊ'
+    if (linha.semSinal && !linha.chegou) return 'SEM SINAL'
+    // Quem chegou antes de quem se olha ainda corre: a diferença de chegada ainda não existe.
+    if (linha.chegou && !referenciaChegou) return 'CHEGOU'
+    return formatarDiferenca(linha.diferenca)
+  }
   /** Ganho máximo do vácuo nesta dificuldade, para o HUD mostrar em km/h. */
   const bonusDoVacuo = rulesFor(difficulty).slipstreamBonus
 
@@ -1971,7 +2263,14 @@ function RaceCanvas({
       <canvas ref={canvasRef} className="race-canvas" aria-label="Pista de corrida" />
 
       <div className="topbar">
-        <div className="brand-mini"><i /> CORRIDA FANTASMA</div>
+        <div className="brand-mini">
+          <i /> CORRIDA FANTASMA
+          {espectador && <b className="ao-vivo">AO VIVO</b>}
+          {/* Quem corre sabe que tem plateia; quem assiste, quantos assistem junto. */}
+          {espectadores > 0 && mode !== 'solo' && (
+            <span className="publico">{espectadores} ASSISTINDO</span>
+          )}
+        </div>
         <div className="topbar-actions">
           <button
             className={`sound-button ${mudo ? 'off' : ''}`}
@@ -2003,9 +2302,9 @@ function RaceCanvas({
           )}
         </div>
         <div className="pilot-tag">
-          <span>PILOTO</span>
-          {pilotName}
-          <em style={{ color: carById(car).accent }}>{carById(car).team} #{carById(car).number}</em>
+          <span>{espectador ? 'CÂMERA NO CARRO DE' : 'PILOTO'}</span>
+          {espectador ? (seguido?.nome ?? '—') : pilotName}
+          <em style={{ color: carById(carroDaTela).accent }}>{carById(carroDaTela).team} #{carById(carroDaTela).number}</em>
         </div>
       </div>
 
@@ -2019,8 +2318,10 @@ function RaceCanvas({
 
       <section className="hud" aria-label="Telemetria">
         <div className="position-block">
-          <span>{mode === 'online' && rival ? 'POSIÇÃO' : 'MODO'}</span>
-          <strong>{mode === 'online' ? (rival?.position ?? 'GRID') : 'SOLO'}</strong>
+          <span>{espectador ? 'CÂMERA' : mode === 'online' && rival ? 'POSIÇÃO' : 'MODO'}</span>
+          <strong>
+            {espectador ? (seguido ? `P${seguido.posicao}` : 'GRID') : mode === 'online' ? (rival?.position ?? 'GRID') : 'SOLO'}
+          </strong>
           <em className="difficulty-tag">{DIFFICULTY_LABELS[difficulty]}</em>
         </div>
         <div className="timer-block">
@@ -2049,12 +2350,58 @@ function RaceCanvas({
           <strong>{progressPercent.toFixed(0)}%</strong>
         </div>
         <div className="progress-track"><i style={{ width: `${progressPercent}%` }} /></div>
+        {/* Onde está cada um na volta, na cor do carro: com seis na pista, é a
+            única vista da prova inteira. */}
+        {painel.length > 1 && phase !== 'countdown' && (
+          <div className="progress-marcas" aria-hidden="true">
+            {painel.map((linha) => (
+              <i
+                key={linha.id}
+                className={linha.destaque ? 'destaque' : ''}
+                style={{ left: `${linha.fracao * 100}%`, background: carById(linha.carro).accent }}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
-      <div className={`boost-meter ${telemetry.boosting ? 'active' : ''} ${telemetry.boostLocked ? 'empty' : ''}`}>
-        <div className="boost-copy"><span>BOOST</span><b>{Math.round(telemetry.boost)}%</b></div>
-        <div className="boost-track"><i style={{ width: `${telemetry.boost}%` }} /></div>
-      </div>
+      {/* A classificação ao vivo. Na arquibancada, tocar numa linha põe a câmera nela. */}
+      {(mode === 'online' || espectador) && painel.length > 1 && phase !== 'countdown' && (
+        <ol className={`classificacao ${espectador ? 'clicavel' : ''}`} aria-label="Classificação ao vivo">
+          {painel.map((linha) => {
+            const conteudo = (
+              <>
+                <b>{linha.posicao}</b>
+                <i />
+                <span>{linha.nome}</span>
+                <em>{textoDaDiferenca(linha)}</em>
+              </>
+            )
+            return (
+              <li
+                key={linha.id}
+                className={`${linha.destaque ? 'destaque' : ''} ${linha.semSinal ? 'sem-sinal' : ''} ${linha.chegou ? 'chegou' : ''}`}
+                style={{ '--cor': carById(linha.carro).accent } as CSSProperties}
+              >
+                {espectador ? (
+                  <button type="button" className="linha" onClick={() => seguirPiloto(linha.id)} aria-label={`Seguir ${linha.nome}`}>
+                    {conteudo}
+                  </button>
+                ) : (
+                  <div className="linha">{conteudo}</div>
+                )}
+              </li>
+            )
+          })}
+        </ol>
+      )}
+
+      {!espectador && (
+        <div className={`boost-meter ${telemetry.boosting ? 'active' : ''} ${telemetry.boostLocked ? 'empty' : ''}`}>
+          <div className="boost-copy"><span>BOOST</span><b>{Math.round(telemetry.boost)}%</b></div>
+          <div className="boost-track"><i style={{ width: `${telemetry.boost}%` }} /></div>
+        </div>
+      )}
 
       {/* O vácuo só existe com rival na pista, e só aparece quando rende algo:
           um medidor parado em zero durante toda a prova seria ruído no HUD. */}
@@ -2090,14 +2437,14 @@ function RaceCanvas({
       )}
 
       {connectionNotice && <div className="connection-notice">{connectionNotice}</div>}
-      {telemetry.offRoad && phase === 'racing' && telemetry.resetting === 0 && (
+      {!espectador && telemetry.offRoad && phase === 'racing' && telemetry.resetting === 0 && (
         <div className="warning">
           FORA DA PISTA
           {/* O medidor que leva ao reset: enche na grama, esvazia no asfalto. */}
           <span className="offtrack-track"><i style={{ width: `${Math.round(telemetry.offTrack * 100)}%` }} /></span>
         </div>
       )}
-      {telemetry.resetting > 0 && phase === 'racing' && (
+      {!espectador && telemetry.resetting > 0 && phase === 'racing' && (
         <div className="reset-banner" role="alert">
           RESET
           <small>{motivoDoReset === 'crashes' ? `${RESET_STRIKES} BATIDAS` : 'FORA DA PISTA'} · −{RESET_SECONDS.toFixed(1).replace('.', ',')} S</small>
@@ -2107,14 +2454,14 @@ function RaceCanvas({
       )}
       {/* A perda por esforço lateral precisa ser vista para ser justa: uma
           punição que o piloto não percebe é só um bug do ponto de vista dele. */}
-      {!telemetry.offRoad && telemetry.grip < 0.97 && phase === 'racing' && (
+      {!espectador && !telemetry.offRoad && telemetry.grip < 0.97 && phase === 'racing' && (
         <div className="warning grip">PERDENDO ADERÊNCIA</div>
       )}
       {flash && <div className="impact">{flash}</div>}
 
       {/* A nota de curva, do lado para onde a pista vai. Antes da curva ela
           diz o que fazer; dentro, diz para segurar. */}
-      {telemetry.nota && phase === 'racing' && telemetry.resetting === 0 && (
+      {!espectador && telemetry.nota && phase === 'racing' && telemetry.resetting === 0 && (
         <div
           className={`pace-note ${telemetry.nota.lado > 0 ? 'right' : 'left'} ${telemetry.nota.dentro ? 'inside' : ''} ${!telemetry.nota.dentro && telemetry.nota.metros < 90 ? 'close' : ''}`}
           role="status"
@@ -2135,7 +2482,7 @@ function RaceCanvas({
           </small>
         </div>
       )}
-      {tangencias > 0 && (
+      {!espectador && tangencias > 0 && (
         <div key={tangencias} className="tangency-flash" role="status">
           TANGÊNCIA
           <small>+{APEX_BOOST}% DE BOOST</small>
@@ -2149,25 +2496,48 @@ function RaceCanvas({
               <i key={light} className={countdownLight >= light ? 'on' : ''} />
             ))}
           </div>
-          <p>{countdownLight === 0 ? 'PREPARE-SE' : 'AGUARDE AS LUZES APAGAREM'}</p>
-          {mode === 'online' && <p className="countdown-sync">LARGADA SINCRONIZADA PELO SERVIDOR</p>}
+          <p>{espectador ? 'A LARGADA VAI SAIR' : countdownLight === 0 ? 'PREPARE-SE' : 'AGUARDE AS LUZES APAGAREM'}</p>
+          {mode !== 'solo' && <p className="countdown-sync">LARGADA SINCRONIZADA PELO SERVIDOR</p>}
         </div>
       )}
 
       {phase === 'racing' && telemetry.elapsed < 1.1 && <div className="go-signal">VAI!</div>}
-      {lateStart > 0.4 && phase !== 'finished' && (
+      {!espectador && lateStart > 0.4 && phase !== 'finished' && (
         <div className="late-notice">LARGADA PERDIDA POR {lateStart.toFixed(1)} S — RECUPERANDO</div>
       )}
 
-      <div className="touch-controls" aria-label="Controles de toque">
-        <button className="steer left" aria-label="Virar à esquerda" {...holdControl('left')}>‹</button>
-        <button className="steer right" aria-label="Virar à direita" {...holdControl('right')}>›</button>
-        <button className="boost-button" aria-label="Ativar boost" {...holdControl('boost')}>
-          <span>BOOST</span><small>SEGURE</small>
-        </button>
-      </div>
+      {espectador ? (
+        <div className="espectador-controles" role="group" aria-label="Câmera do espectador">
+          <button type="button" className="trocar" onClick={() => seguirOutro(-1)} aria-label="Seguir o piloto anterior" title="Piloto anterior (A)">‹</button>
+          <div className="seguido" aria-live="polite">
+            {seguido ? (
+              <>
+                <img src={carImageUrl(seguido.carro)} alt="" />
+                <span>{autoLider ? 'SEGUINDO O LÍDER' : 'SEGUINDO'}</span>
+                <strong>P{seguido.posicao} · {seguido.nome}</strong>
+                <em>{seguido.chegou ? 'CRUZOU A LINHA' : `${Math.round(seguido.velocidade)} KM/H`}</em>
+              </>
+            ) : (
+              <strong>AGUARDANDO A LARGADA</strong>
+            )}
+          </div>
+          <button type="button" className="trocar" onClick={() => seguirOutro(1)} aria-label="Seguir o próximo piloto" title="Próximo piloto (D)">›</button>
+          <button type="button" className={`lider ${autoLider ? 'on' : ''}`} onClick={seguirLider} aria-pressed={autoLider} title="Seguir o líder (L)">
+            LÍDER
+          </button>
+        </div>
+      ) : (
+        <div className="touch-controls" aria-label="Controles de toque">
+          <button className="steer left" aria-label="Virar à esquerda" {...holdControl('left')}>‹</button>
+          <button className="steer right" aria-label="Virar à direita" {...holdControl('right')}>›</button>
+          <button className="boost-button" aria-label="Ativar boost" {...holdControl('boost')}>
+            <span>BOOST</span><small>SEGURE</small>
+          </button>
+        </div>
+      )}
 
-      <div className="keyboard-hint"><kbd>A</kbd><kbd>D</kbd> DIREÇÃO <kbd>ESPAÇO</kbd> BOOST</div>
+      {/* Na arquibancada o painel da câmera mora na base, e os botões dizem as teclas. */}
+      {!espectador && <div className="keyboard-hint"><kbd>A</kbd><kbd>D</kbd> DIREÇÃO <kbd>ESPAÇO</kbd> BOOST</div>}
     </main>
   )
 }
