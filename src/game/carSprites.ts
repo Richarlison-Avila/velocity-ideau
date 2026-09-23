@@ -1,35 +1,44 @@
 /**
  * Folha de sprites do carro.
  *
- * O molde de `carModel.ts` tem algumas centenas de faces. Percorrê-las a cada
- * quadro, para dois carros, custaria caro num celular — e não haveria nenhum
- * ganho, porque entre um quadro e o outro quase nada muda no desenho. Então o
- * carro é assado uma vez numa folha de sprites, do jeito que um jogo de pista
- * sempre fez: uma tira de quadros de curva, da derrapagem toda à esquerda à
- * derrapagem toda à direita, passando pelo carro reto no meio. O laço de
- * corrida escolhe o quadro e faz um `drawImage`.
+ * A pintura de cada carro é a arte de `public/carros`, a mesma que o menu, a
+ * seleção e o lobby mostram. Girá-la e cisalhá-la para cada pose de curva a
+ * cada quadro, para seis carros na pista, custaria caro num celular — e não
+ * haveria ganho nenhum, porque entre um quadro e o outro quase nada muda no
+ * desenho. Então o carro é assado uma vez numa folha de sprites, do jeito que
+ * um jogo de pista sempre fez: uma tira de quadros de curva, da derrapagem
+ * toda à esquerda à derrapagem toda à direita, passando pelo carro reto no
+ * meio. O laço de corrida escolhe o quadro e faz um `drawImage`.
  *
  * O que sobra para a hora do desenho é o que varia continuamente e não caberia
  * em quadro nenhum: a posição, a escala com a distância, a inclinação da
  * carroceria, a trepidação fora do asfalto e o brilho do boost.
  *
- * A garagem não usa a folha: usa o SVG do mesmo molde, que amplia sem perder
- * nada e não gasta memória de textura enquanto o jogador escolhe o carro.
+ * Enquanto a imagem não chega — ou se ela não chegar —, a folha sai do molde
+ * vetorial de `carModel.ts`, que tem as mesmas medidas: a corrida nunca espera
+ * um arquivo para largar.
  */
-import { carById, type CarId } from './cars'
+import { CAR_ART, type CarId } from './cars'
 import {
   CAIXA_CARRO,
   COR_DA_TERRA,
   LINHA_DO_CHAO,
   MANCHAS_DE_TERRA,
   PARTS,
+  RODAS,
   SOMBRA_DE_CONTATO,
   WHEEL_CENTERS,
   carModel,
+  manchasDeTerra,
+  sombraDeContato,
   yawTransform,
   type CarModel,
+  type ManchaDeSombra,
+  type ManchaDeTerra,
   type Part,
+  type Roda,
 } from './carModel'
+import { CAR_SPRITE_HALF_WIDTH } from './track'
 
 const RODAS_TRASEIRAS = ['traseiraEsquerda', 'traseiraDireita'] as const
 const RODA_ESQUERDA = 'dianteiraEsquerda'
@@ -39,47 +48,12 @@ function ehRoda(part: Part): part is keyof typeof WHEEL_CENTERS {
   return part in WHEEL_CENTERS
 }
 
-const escapar = (texto: string) => texto.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;')
-
 /** Tipografia dos decalques, a mesma da interface do jogo. */
 const FONTE = "'Barlow Condensed', 'Arial Narrow', Arial, sans-serif"
 
-const svgs = new Map<CarId, string>()
-
-/**
- * Endereço do carro para a garagem, o lobby e o resultado.
- *
- * É o mesmo molde da corrida, servido como SVG: uma imagem de verdade, que o
- * navegador escala como quiser, sem nenhum arquivo para baixar.
- */
+/** Endereço da arte do carro, gerada por `npm run carros` a partir de `arte/carros`. */
 export function carImageUrl(id: CarId) {
-  const guardado = svgs.get(id)
-  if (guardado) return guardado
-
-  const modelo = carModel(id)
-  const corpo = PARTS.map((part) => {
-    const centro = ehRoda(part) ? ` transform="translate(${WHEEL_CENTERS[part].map((n) => n.toFixed(2)).join(' ')})"` : ''
-    const faces = modelo.faces
-      .filter((face) => face.part === part)
-      .map((face) => `<path fill="${face.fill}" d="${face.d}"${face.opacity === undefined ? '' : ` opacity="${face.opacity}"`}/>`)
-      .join('')
-    const textos = modelo.labels
-      .filter((label) => label.part === part)
-      .map((label) =>
-        `<text x="${label.x.toFixed(2)}" y="${label.y.toFixed(2)}" text-anchor="middle" font-family="${FONTE.replaceAll("'", '')}"` +
-        ` font-weight="700" font-size="${label.size.toFixed(2)}" fill="${label.fill}"` +
-        ` transform="rotate(${label.rotate ?? 0} ${label.x.toFixed(2)} ${label.y.toFixed(2)})">${escapar(label.text)}</text>`)
-      .join('')
-    return `<g${centro}>${faces}${textos}</g>`
-  }).join('')
-
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${CAIXA_CARRO.largura * 10}" height="${CAIXA_CARRO.altura * 10}"` +
-    ` viewBox="${CAIXA_CARRO.x} ${CAIXA_CARRO.y} ${CAIXA_CARRO.largura} ${CAIXA_CARRO.altura}">` +
-    `<title>${escapar(carById(id).driver)}</title>${corpo}</svg>`
-  const url = `data:image/svg+xml,${encodeURIComponent(svg)}`
-  svgs.set(id, url)
-  return url
+  return `/carros/${id}.png`
 }
 
 /**
@@ -211,24 +185,145 @@ const ESTERCO_DA_RODA = 0.3
 /** Quanto o piloto se joga para dentro da curva, em unidades do desenho. */
 const PILOTO_NA_CURVA = 1.4
 
+type Afim = readonly [number, number, number, number, number, number]
+
+const IDENTIDADE: Afim = [1, 0, 0, 1, 0, 0]
+
+function aplicar(ctx: CanvasRenderingContext2D, t: Afim) {
+  ctx.transform(t[0], t[1], t[2], t[3], t[4], t[5])
+}
+
+// ---------------------------------------------------------------------------
+// A arte de cada carro
+// ---------------------------------------------------------------------------
+
+/**
+ * Unidades do desenho por pixel da arte original.
+ *
+ * Sai da largura de pneu a pneu casada com `CAR_SPRITE_HALF_WIDTH`, a mesma
+ * medida de onde vêm o limite de saída de pista e a posição da poeira: a arte
+ * ocupa na tela exatamente a largura que a regra cobra, como o molde.
+ */
+const UNIDADE_DA_ARTE = (CAR_SPRITE_HALF_WIDTH * 2) / CAR_ART.tyreSpan
+
+/** Um ponto da arte original em unidades do desenho: o chão dela cai na linha do chão do molde. */
+function daArte(x: number, y: number): [number, number] {
+  return [(x - CAR_ART.centerX) * UNIDADE_DA_ARTE, (y - CAR_ART.groundY) * UNIDADE_DA_ARTE + LINHA_DO_CHAO]
+}
+
+/**
+ * Pneu traseiro esquerdo na arte original, em pixels dela.
+ *
+ * Não está em `CAR_ART` porque o recorte não precisa dele: a roda de trás não
+ * esterça e fica na carroceria. A corrida precisa — é sob ele que fica a
+ * sombra, é nele que rola a banda do pneu e é dele que sai o barro. Medido nas
+ * dezesseis artes, que saem todas do mesmo molde e o têm no mesmo lugar.
+ */
+const PNEU_TRASEIRO_DA_ARTE = { x: 38, y: 923, width: 203, height: 365 }
+
+type Caixa = { x: number; y: number; width: number; height: number }
+
+/** Centro de um pneu da arte, espelhado para o lado pedido. */
+function centroNaArte(caixa: Caixa, lado: -1 | 1): [number, number] {
+  const [x, y] = daArte(caixa.x + caixa.width / 2, caixa.y + caixa.height / 2)
+  return [lado * Math.abs(x), y]
+}
+
+/** Centro de cada roda na arte. A via dianteira dela é mais fechada que a do molde. */
+const RODAS_DA_ARTE: Record<Roda, readonly [number, number]> = {
+  dianteiraEsquerda: centroNaArte(CAR_ART.frontWheel, -1),
+  dianteiraDireita: centroNaArte(CAR_ART.frontWheel, 1),
+  traseiraEsquerda: centroNaArte(PNEU_TRASEIRO_DA_ARTE, -1),
+  traseiraDireita: centroNaArte(PNEU_TRASEIRO_DA_ARTE, 1),
+}
+
+const medidaNaArte = (caixa: Caixa) => ({
+  meiaLargura: (caixa.width / 2) * UNIDADE_DA_ARTE,
+  meiaAltura: (caixa.height / 2) * UNIDADE_DA_ARTE,
+})
+const PNEUS_DA_ARTE = { dianteira: medidaNaArte(CAR_ART.frontWheel), traseira: medidaNaArte(PNEU_TRASEIRO_DA_ARTE) }
+
+const SOMBRA_DA_ARTE = sombraDeContato(RODAS_DA_ARTE, PNEUS_DA_ARTE)
+
+/** Onde o barro pode grudar na arte. Cada carro fica só com as manchas que caem sobre ele. */
+const MANCHAS_DA_ARTE = manchasDeTerra(RODAS_DA_ARTE)
+
+/** A luz de chuva vem do molde das artes; o escapamento fica logo acima dela, no eixo. */
+const LUZ_DA_ARTE = { x: 0, y: daArte(CAR_ART.rearLight.x, CAR_ART.rearLight.y)[1], raio: 2.2 }
+const ESCAPAMENTO_DA_ARTE = { x: 0, y: LUZ_DA_ARTE.y - 4.2, raio: 1.5 }
+
+/**
+ * A guinada da carroceria da arte, como transformação afim.
+ *
+ * A arte não tem camadas: é uma imagem só, com as rodas da frente recortadas.
+ * Mas numa câmera alta e distante girar o carro é, em boa aproximação,
+ * deslizar cada linha do desenho de lado na proporção da profundidade dela — e
+ * na arte a profundidade cresce com a altura na tela. Então a carroceria é
+ * cisalhada de modo que as linhas dos dois eixos andem exatamente o que as
+ * rodas do molde andam: as rodas da frente recortadas, a sombra e a banda do
+ * pneu continuam coladas nela em qualquer quadro.
+ */
+function guinadaDaArte(guinada: number): Afim {
+  if (guinada === 0) return IDENTIDADE
+  const frente = yawTransform(RODA_ESQUERDA, guinada)[4]
+  const tras = yawTransform('traseiraEsquerda', guinada)[4]
+  const yFrente = RODAS_DA_ARTE.dianteiraEsquerda[1]
+  const yTras = RODAS_DA_ARTE.traseiraEsquerda[1]
+  const cisalhamento = (frente - tras) / (yFrente - yTras)
+  return [Math.cos(guinada), 0, cisalhamento, 1, tras - cisalhamento * yTras, 0]
+}
+
+/**
+ * A guinada de cada camada em cada quadro, e a da carroceria da arte,
+ * calculadas uma vez. O carro é desenhado uma vez por carro na pista a cada
+ * quadro de jogo, e o laço de quadro não aloca: a sombra de cada roda, as
+ * marcas de rolamento, a terra e o brilho do boost leem daqui.
+ */
+const GUINADAS: readonly Record<Part, Afim>[] = POSES.map((pose) => {
+  const guinada = guinadaDaPose(pose)
+  const porParte = {} as Record<Part, Afim>
+  for (const part of PARTS) porParte[part] = yawTransform(part, guinada)
+  return porParte
+})
+const CORPO_DA_ARTE: readonly Afim[] = POSES.map((pose) => guinadaDaArte(guinadaDaPose(pose)))
+const CORPO_DO_MOLDE: readonly Afim[] = GUINADAS.map((guinadas) => guinadas.lateral)
+const TRASEIRA_DO_MOLDE: readonly Afim[] = GUINADAS.map((guinadas) => guinadas.traseira)
+
+/** Onde um ponto do desenho cai no quadro de uma pose: a guinada da peça, depois a rolagem do quadro. */
+function noQuadro(pose: number, t: Afim, x: number, y: number) {
+  const gx = t[0] * x + t[2] * y + t[4]
+  const acima = t[1] * x + t[3] * y + t[5] - LINHA_DO_CHAO
+  const giro = rolagemDaPose(pose)
+  return gx * Math.cos(giro) - acima * Math.sin(giro)
+}
+
 /**
  * Caixa de cada quadro da folha, mais larga que a do retrato.
  *
- * Atravessado, o carro sai da caixa da garagem: o bico vai para um lado e a
- * traseira para o outro. A folga é medida, e não chutada — é a roda de fora,
- * a peça mais larga do carro, no quadro mais girado.
+ * Atravessado, o carro sai da caixa parado: o bico vai para um lado e a
+ * traseira para o outro, e a rolagem ainda leva o alto das rodas da frente
+ * para fora. A folga é medida, e não chutada — são os cantos de fora dos
+ * pneus, as peças mais largas do carro, em cada quadro, no molde e na arte.
  */
 const MEIA_LARGURA_DA_FOLHA = (() => {
   let maior = -CAIXA_CARRO.x
-  for (const pose of POSES) {
-    const guinada = guinadaDaPose(pose)
-    for (const roda of ['dianteiraEsquerda', 'dianteiraDireita', 'traseiraEsquerda', 'traseiraDireita'] as const) {
-      const [a, , c, , e] = yawTransform(roda, guinada)
+  POSES.forEach((pose, indice) => {
+    const deitada = estercoDaPose(pose) * ESTERCO_DA_RODA
+    for (const roda of RODAS) {
+      const frente = roda.startsWith('dianteira')
+      const t = GUINADAS[indice][roda]
       const [x, y] = WHEEL_CENTERS[roda]
-      const fora = x + Math.sign(x) * 7
-      maior = Math.max(maior, Math.abs(a * fora + c * y + e))
+      for (const dy of [-9, 9]) maior = Math.max(maior, Math.abs(noQuadro(pose, t, x + Math.sign(x) * 7, y + dy)))
+      // Na arte, a roda da frente é peça solta e deita com o esterço; a de
+      // trás vai com a carroceria.
+      const [ax, ay] = RODAS_DA_ARTE[roda]
+      const { meiaLargura, meiaAltura } = frente ? PNEUS_DA_ARTE.dianteira : PNEUS_DA_ARTE.traseira
+      for (const dy of [-meiaAltura, meiaAltura]) {
+        const fora = ax + Math.sign(ax) * meiaLargura + (frente ? deitada * dy : 0)
+        maior = Math.max(maior, Math.abs(noQuadro(pose, frente ? t : CORPO_DA_ARTE[indice], fora, ay + dy)))
+      }
     }
-  }
+  })
   return Math.ceil(maior + 2)
 })()
 const CAIXA_DA_FOLHA = { x: -MEIA_LARGURA_DA_FOLHA, y: CAIXA_CARRO.y, largura: MEIA_LARGURA_DA_FOLHA * 2, altura: CAIXA_CARRO.altura }
@@ -252,46 +347,127 @@ function origemDoQuadro(indice: number): [number, number] {
   return [(indice % COLUNAS) * LARGURA_QUADRO, Math.floor(indice / COLUNAS) * ALTURA_QUADRO]
 }
 
-type Afim = readonly [number, number, number, number, number, number]
+const ORIGENS: readonly (readonly [number, number])[] = POSES.map((_, indice) => origemDoQuadro(indice))
+
+type Peca = {
+  imagem: HTMLCanvasElement
+  /** Centro e tamanho da peça, nas unidades do desenho. */
+  x: number
+  y: number
+  largura: number
+  altura: number
+}
+
+/** A arte pronta para compor os quadros: carroceria, rodas da frente e onde o barro gruda. */
+type Arte = { corpo: Peca; rodaEsquerda: Peca; rodaDireita: Peca; manchas: readonly ManchaDeTerra[] }
+
+function tela(largura: number, altura: number) {
+  const canvas = document.createElement('canvas')
+  canvas.width = largura
+  canvas.height = altura
+  return canvas
+}
 
 /**
- * A guinada de cada camada em cada quadro, e a origem de cada quadro na folha,
- * calculadas uma vez. O carro é desenhado duas vezes por quadro de jogo, e o
- * laço de quadro não aloca: a sombra de cada roda, as marcas de rolamento, a
- * terra e o brilho do boost leem daqui.
+ * Separa a arte em carroceria e rodas dianteiras.
+ *
+ * As rodas saem da carroceria para deitar com o volante — e para o outro
+ * lado, no contraesterço da derrapagem —, como no molde. O recorte é feito uma
+ * vez, quando a imagem chega; a folha só compõe as três peças.
  */
-const GUINADAS: readonly Record<Part, Afim>[] = POSES.map((pose) => {
-  const guinada = guinadaDaPose(pose)
-  const porParte = {} as Record<Part, Afim>
-  for (const part of PARTS) porParte[part] = yawTransform(part, guinada)
-  return porParte
-})
-const ORIGENS: readonly (readonly [number, number])[] = POSES.map((_, indice) => origemDoQuadro(indice))
+function montarArte(imagem: HTMLImageElement): Arte {
+  const escala = imagem.naturalWidth / CAR_ART.crop.width
+  const { frontWheel } = CAR_ART
+  // Bordas inteiras, para o vão deixado na carroceria e a roda recortada
+  // coincidirem pixel a pixel, sem fresta nem sobra.
+  const topo = Math.floor((frontWheel.y - CAR_ART.crop.y) * escala)
+  const base = Math.ceil((frontWheel.y + frontWheel.height - CAR_ART.crop.y) * escala)
+  const esquerdaIni = Math.floor((frontWheel.x - CAR_ART.crop.x) * escala)
+  const esquerdaFim = Math.ceil((frontWheel.x + frontWheel.width - CAR_ART.crop.x) * escala)
+  const espelho = 2 * CAR_ART.centerX - frontWheel.x - frontWheel.width
+  const direitaIni = Math.floor((espelho - CAR_ART.crop.x) * escala)
+  const direitaFim = Math.ceil((espelho + frontWheel.width - CAR_ART.crop.x) * escala)
+
+  const largura = imagem.naturalWidth
+  const altura = imagem.naturalHeight
+  const corpo = tela(largura, altura)
+  const ctxCorpo = corpo.getContext('2d')!
+  ctxCorpo.drawImage(imagem, 0, 0)
+  // Onde há carro, lido antes do recorte das rodas: é o que decide onde o
+  // barro pode grudar. Uma mancha que caísse fora da arte apareceria como
+  // barro flutuando ao lado do carro.
+  const alfa = ctxCorpo.getImageData(0, 0, largura, altura).data
+  ctxCorpo.clearRect(esquerdaIni, topo, esquerdaFim - esquerdaIni, base - topo)
+  ctxCorpo.clearRect(direitaIni, topo, direitaFim - direitaIni, base - topo)
+
+  /** Um retângulo em pixels da imagem, como centro e tamanho em unidades do desenho. */
+  const emUnidades = (x: number, y: number, w: number, h: number) => {
+    const [cx, cy] = daArte(CAR_ART.crop.x + (x + w / 2) / escala, CAR_ART.crop.y + (y + h / 2) / escala)
+    return { x: cx, y: cy, largura: (w / escala) * UNIDADE_DA_ARTE, altura: (h / escala) * UNIDADE_DA_ARTE }
+  }
+  const roda = (inicio: number, fim: number): Peca => {
+    const imagemDaRoda = tela(fim - inicio, base - topo)
+    imagemDaRoda.getContext('2d')!.drawImage(imagem, inicio, topo, fim - inicio, base - topo, 0, 0, fim - inicio, base - topo)
+    return { imagem: imagemDaRoda, ...emUnidades(inicio, topo, fim - inicio, base - topo) }
+  }
+  const opaco = (x: number, y: number) => {
+    const px = Math.round((x / UNIDADE_DA_ARTE + CAR_ART.centerX - CAR_ART.crop.x) * escala)
+    const py = Math.round(((y - LINHA_DO_CHAO) / UNIDADE_DA_ARTE + CAR_ART.groundY - CAR_ART.crop.y) * escala)
+    return px >= 0 && py >= 0 && px < largura && py < altura && alfa[(py * largura + px) * 4 + 3] > 200
+  }
+
+  return {
+    corpo: { imagem: corpo, ...emUnidades(0, 0, largura, altura) },
+    rodaEsquerda: roda(esquerdaIni, esquerdaFim),
+    rodaDireita: roda(direitaIni, direitaFim),
+    // A mancha inteira sobre o carro, e não só o centro dela.
+    manchas: MANCHAS_DA_ARTE.filter((m) =>
+      opaco(m.x, m.y) && opaco(m.x - m.rx, m.y) && opaco(m.x + m.rx, m.y) && opaco(m.x, m.y - m.ry) && opaco(m.x, m.y + m.ry)),
+  }
+}
+
+/** A arte de cada carro: nula enquanto a imagem não chega, e marcada quando ela falha. */
+const artes = new Map<CarId, { arte: Arte | null; falhou: boolean }>()
+
+/**
+ * A arte do carro, se já chegou. Na primeira vez que é pedida, começa a baixar.
+ *
+ * Quando a imagem chega, as folhas que o molde assou no lugar dela são
+ * descartadas, e o quadro seguinte já sai da arte. Uma imagem que falha não é
+ * pedida de novo a cada quadro — só na próxima corrida, em `prepareCar`.
+ */
+function arteDe(id: CarId): Arte | null {
+  const registro = artes.get(id)
+  if (registro) return registro.arte
+  // Fora do navegador — nos testes — não há imagem: vale o molde.
+  if (typeof Image === 'undefined') return null
+  const novo: { arte: Arte | null; falhou: boolean } = { arte: null, falhou: false }
+  artes.set(id, novo)
+  const imagem = new Image()
+  imagem.decoding = 'async'
+  imagem.onload = () => {
+    novo.arte = montarArte(imagem)
+    descartarFolhas(id)
+  }
+  imagem.onerror = () => {
+    novo.falhou = true
+  }
+  imagem.src = carImageUrl(id)
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// O molde, quando a arte falta
+// ---------------------------------------------------------------------------
 
 type Desenho = {
   faces: { caminho: Path2D; fill: string; opacity: number }[]
   labels: CarModel['labels']
 }
 
-type Folha = { tela: HTMLCanvasElement }
-
 const desenhos = new Map<CarId, Map<Part, Desenho>>()
 
-/**
- * Folhas assadas, com teto.
- *
- * Cada folha são uns sete megabytes de textura, e a chave junta carro,
- * ambiente e fantasma: cinco carros em quatro ambientes dariam quarenta
- * folhas, perto de trezentos megabytes. Numa corrida solta isso nunca aparece — mas
- * o jogo é feito para um workshop, onde a mesma aba fica aberta a tarde
- * inteira trocando de carro e sorteando ambiente. Quatro é o que uma corrida
- * usa: a folha do jogador e a do rival, e mais um par de folga para a
- * revanche não reassar tudo.
- */
-const MAX_FOLHAS = 4
-const folhas = new Map<string, Folha>()
-
-/** As faces viram `Path2D` uma vez só: a folha as percorre nove vezes. */
+/** As faces viram `Path2D` uma vez só: a folha as percorre quinze vezes. */
 function desenhoDe(id: CarId) {
   const guardado = desenhos.get(id)
   if (guardado) return guardado
@@ -344,9 +520,7 @@ function desenharQuadro(ctx: CanvasRenderingContext2D, desenho: Map<Part, Desenh
   ctx.translate(0, -LINHA_DO_CHAO)
   for (const part of PARTS) {
     // A sombra fica de fora da folha: ela é desenhada ao vivo em `drawCar`,
-    // no chão, enquanto o resto do carro rola e treme por cima. O retrato da
-    // garagem continua assando a dele, e ali isso é o certo — o carro está
-    // parado e nada tem por que se descolar dele.
+    // no chão, enquanto o resto do carro rola e treme por cima.
     if (part === 'sombra') continue
     ctx.save()
     // A guinada vem antes de tudo: é ela que põe a peça no lugar em que o carro
@@ -369,6 +543,80 @@ function desenharQuadro(ctx: CanvasRenderingContext2D, desenho: Map<Part, Desenh
 }
 
 /**
+ * Um quadro da folha a partir da arte.
+ *
+ * As mesmas pistas de leitura do molde, menos o piloto se jogando, que na arte
+ * não é peça solta: a carroceria gira pelo cisalhamento de `guinadaDaArte`,
+ * as rodas da frente deslizam com o eixo delas e deitam com o esterço, e o
+ * quadro inteiro rola sobre a suspensão.
+ */
+function desenharQuadroDaArte(ctx: CanvasRenderingContext2D, arte: Arte, indice: number) {
+  const pose = POSES[indice]
+  const deitada = estercoDaPose(pose) * ESTERCO_DA_RODA
+  ctx.save()
+  ctx.translate(0, LINHA_DO_CHAO)
+  ctx.rotate(rolagemDaPose(pose))
+  ctx.translate(0, -LINHA_DO_CHAO)
+
+  const corpo = arte.corpo
+  ctx.save()
+  aplicar(ctx, CORPO_DA_ARTE[indice])
+  ctx.drawImage(corpo.imagem, corpo.x - corpo.largura / 2, corpo.y - corpo.altura / 2, corpo.largura, corpo.altura)
+  ctx.restore()
+
+  for (const [roda, peca] of [[RODA_ESQUERDA, arte.rodaEsquerda], [RODA_DIREITA, arte.rodaDireita]] as const) {
+    ctx.save()
+    aplicar(ctx, GUINADAS[indice][roda])
+    ctx.translate(peca.x, peca.y)
+    ctx.transform(1, 0, deitada, 1, 0, 0)
+    ctx.drawImage(peca.imagem, -peca.largura / 2, -peca.altura / 2, peca.largura, peca.altura)
+    ctx.restore()
+  }
+  ctx.restore()
+}
+
+// ---------------------------------------------------------------------------
+// A folha
+// ---------------------------------------------------------------------------
+
+/**
+ * Onde ficam as peças que a folha não assa.
+ *
+ * A sombra, a banda do pneu, a terra e o brilho do boost são desenhados ao
+ * vivo, por cima do quadro, e têm de cair sobre o carro que está nele. A arte
+ * e o molde não têm as rodas no mesmo lugar, então cada folha leva a dela.
+ */
+type Geometria = {
+  /** Centro de cada roda, em unidades do desenho. */
+  rodas: Record<Roda, readonly [number, number]>
+  /** Meia-largura da banda que rola sobre o pneu traseiro. */
+  meiaBanda: number
+  sombra: readonly ManchaDeSombra[]
+  manchas: readonly ManchaDeTerra[]
+  luzDeChuva: { x: number; y: number; raio: number }
+  escapamento: { x: number; y: number; raio: number }
+  /** Guinada, em cada quadro, da peça onde a terra gruda. */
+  corpo: readonly Afim[]
+  /** Guinada, em cada quadro, da peça onde moram a luz de chuva e o escapamento. */
+  traseira: readonly Afim[]
+}
+
+type Folha = { tela: HTMLCanvasElement; geometria: Geometria }
+
+/**
+ * Folhas assadas, com teto.
+ *
+ * Cada folha são uns oito megabytes de textura, e a chave junta carro,
+ * ambiente e fantasma: dezesseis carros em quatro ambientes dariam mais de cem
+ * folhas. Numa corrida solta isso nunca aparece — mas o jogo é feito para um
+ * workshop, onde a mesma aba fica aberta a tarde inteira trocando de carro e
+ * sorteando ambiente. Seis é o que uma sala cheia usa: a folha do jogador e as
+ * dos cinco rivais, e mais um par de folga para a revanche não reassar tudo.
+ */
+const MAX_FOLHAS = 8
+const folhas = new Map<string, Folha>()
+
+/**
  * Cobre a folha inteira com uma cor, só onde já há carro.
  *
  * É como entra a luz de ambiente da corrida — o mesmo tom da névoa do
@@ -386,12 +634,16 @@ function banhar(ctx: CanvasRenderingContext2D, cor: string, opacidade: number) {
 }
 
 function assar(id: CarId, ambiente: string, fantasma: boolean): Folha {
-  const desenho = desenhoDe(id)
+  const arte = arteDe(id)
+  const desenho = arte ? null : desenhoDe(id)
   const tela = document.createElement('canvas')
   tela.width = LARGURA_QUADRO * COLUNAS
   tela.height = ALTURA_QUADRO * LINHAS
   const ctx = tela.getContext('2d')!
   ctx.textAlign = 'center'
+  // A arte chega com o dobro da resolução da folha: reduzida no padrão, a
+  // pintura sairia serrilhada.
+  ctx.imageSmoothingQuality = 'high'
 
   for (let indice = 0; indice < QUADROS; indice += 1) {
     ctx.save()
@@ -405,13 +657,43 @@ function assar(id: CarId, ambiente: string, fantasma: boolean): Folha {
     ctx.translate(x, y)
     ctx.scale(RESOLUCAO, RESOLUCAO)
     ctx.translate(-CAIXA_DA_FOLHA.x, -CAIXA_DA_FOLHA.y)
-    desenharQuadro(ctx, desenho, POSES[indice])
+    if (arte) desenharQuadroDaArte(ctx, arte, indice)
+    else desenharQuadro(ctx, desenho!, POSES[indice])
     ctx.restore()
   }
 
   if (ambiente) banhar(ctx, `rgb(${ambiente})`, 0.1)
   if (fantasma) banhar(ctx, '#68cfda', 0.3)
-  return { tela }
+
+  if (arte) {
+    return {
+      tela,
+      geometria: {
+        rodas: RODAS_DA_ARTE,
+        meiaBanda: PNEUS_DA_ARTE.traseira.meiaLargura * 0.93,
+        sombra: SOMBRA_DA_ARTE,
+        manchas: arte.manchas,
+        luzDeChuva: LUZ_DA_ARTE,
+        escapamento: ESCAPAMENTO_DA_ARTE,
+        corpo: CORPO_DA_ARTE,
+        traseira: CORPO_DA_ARTE,
+      },
+    }
+  }
+  const modelo = carModel(id)
+  return {
+    tela,
+    geometria: {
+      rodas: WHEEL_CENTERS,
+      meiaBanda: 5.2,
+      sombra: SOMBRA_DE_CONTATO,
+      manchas: MANCHAS_DE_TERRA,
+      luzDeChuva: modelo.luzDeChuva,
+      escapamento: modelo.escapamento,
+      corpo: CORPO_DO_MOLDE,
+      traseira: TRASEIRA_DO_MOLDE,
+    },
+  }
 }
 
 function folhaDe(id: CarId, ambiente: string, fantasma: boolean) {
@@ -438,17 +720,33 @@ function folhaDe(id: CarId, ambiente: string, fantasma: boolean) {
   return folha
 }
 
+/** Descarta as folhas de um carro, para a próxima sair de novo — da arte, que acabou de chegar. */
+function descartarFolhas(id: CarId) {
+  const prefixo = `${id}|`
+  for (const [chave, folha] of folhas) {
+    if (!chave.startsWith(prefixo)) continue
+    folha.tela.width = 0
+    folhas.delete(chave)
+  }
+}
+
 /**
- * Assa a folha antes da largada.
+ * Pede a arte e assa a folha antes da largada.
  *
- * Assar custa alguns milissegundos e uns sete megabytes de textura por carro.
+ * Assar custa alguns milissegundos e uns oito megabytes de textura por carro.
  * Feito no primeiro quadro da corrida, engasgaria justamente na arrancada;
  * feito durante a contagem, não aparece. `fantasma` diz qual das duas folhas
  * aquele carro precisa: no modo treino não existe rival, e assar a azulada
  * seria dobrar a memória por nada.
+ *
+ * Com a arte ainda a caminho, a folha não é assada aqui: sairia do molde só
+ * para ser jogada fora quando a imagem chegasse, o que costuma levar menos que
+ * um quadro — o menu e o lobby já a deixaram no cache do navegador.
  */
 export function prepareCar(id: CarId, ambiente: string, fantasma = false) {
-  folhaDe(id, ambiente, fantasma)
+  // Uma arte que falhou na corrida anterior ganha outra chance nesta.
+  if (artes.get(id)?.falhou) artes.delete(id)
+  if (arteDe(id)) folhaDe(id, ambiente, fantasma)
 }
 
 /**
@@ -459,16 +757,16 @@ export function prepareCar(id: CarId, ambiente: string, fantasma = false) {
  * a fase à distância, e não ao número do quadro, é o que faz o pneu parar
  * quando o carro para e não acelerar quando a taxa de quadros muda.
  */
-function desenharRolamento(ctx: CanvasRenderingContext2D, travel: number, guinadas: Record<Part, Afim>) {
+function desenharRolamento(ctx: CanvasRenderingContext2D, travel: number, guinadas: Record<Part, Afim>, geometria: Geometria) {
   ctx.fillStyle = 'rgba(190,206,198,.12)'
   const fase = ((travel * 0.9) % 4 + 4) % 4
   for (const roda of RODAS_TRASEIRAS) {
     // A roda de trás também escorrega quando o carro atravessa: a marca vai com ela.
     const t = guinadas[roda]
-    const [cx, y] = WHEEL_CENTERS[roda]
+    const [cx, y] = geometria.rodas[roda]
     const x = t[0] * cx + t[2] * y + t[4]
     for (let passo = -9 + fase; passo < 9; passo += 4) {
-      ctx.fillRect(x - 5.2, y + passo, 10.4, 0.5)
+      ctx.fillRect(x - geometria.meiaBanda, y + passo, geometria.meiaBanda * 2, 0.5)
     }
   }
 }
@@ -491,7 +789,7 @@ export function drawCar(
   ghostAlpha = 1,
   ambiente = '',
 ) {
-  const folha = folhaDe(id, ambiente, ghostAlpha < 1)
+  const { tela, geometria } = folhaDe(id, ambiente, ghostAlpha < 1)
   // O esterço e a derrapagem se somam num eixo só: com o volante todo virado e
   // a traseira escapando, o carro está atravessado.
   const esterco = Math.max(-1, Math.min(1, pose.steer))
@@ -502,7 +800,7 @@ export function drawCar(
   // giro e do mesmo deslize para continuar no mesmo lugar do desenho.
   const giroDoQuadro = rolagemDaPose(poseDoQuadro)
   const guinadas = GUINADAS[quadro]
-  const deslizeDoMeio = guinadas.lateral
+  const deslizeDoCorpo = geometria.corpo[quadro]
 
   ctx.save()
   ctx.globalAlpha *= ghostAlpha
@@ -529,10 +827,10 @@ export function drawCar(
   const giro = pose.tilt + giroDoQuadro
   const cosseno = Math.cos(giro)
   const seno = Math.sin(giro)
-  for (const m of SOMBRA_DE_CONTATO) {
+  for (const m of geometria.sombra) {
     // A mancha vai para onde a guinada leva a peça dela: a de cada roda com a
     // roda, a do assoalho com o meio do carro.
-    const t = m.roda ? guinadas[m.roda] : deslizeDoMeio
+    const t = m.roda ? guinadas[m.roda] : deslizeDoCorpo
     const gx = t[0] * m.x + t[2] * m.y + t[4]
     let cx = gx - pose.tilt * SOMBRA_POR_INCLINACAO
     let cy = m.y
@@ -556,11 +854,11 @@ export function drawCar(
     ctx.translate(0, -LINHA_DO_CHAO)
   }
   ctx.drawImage(
-    folha.tela,
+    tela,
     ORIGENS[quadro][0], ORIGENS[quadro][1], LARGURA_QUADRO, ALTURA_QUADRO,
     CAIXA_DA_FOLHA.x, CAIXA_DA_FOLHA.y, CAIXA_DA_FOLHA.largura, CAIXA_DA_FOLHA.altura,
   )
-  desenharRolamento(ctx, pose.travel, guinadas)
+  desenharRolamento(ctx, pose.travel, guinadas, geometria)
 
   /**
    * Terra da grama, por cima da pintura.
@@ -580,10 +878,10 @@ export function drawCar(
     ctx.rotate(giroDoQuadro)
     ctx.translate(0, -LINHA_DO_CHAO)
     // E a guinada: as manchas moram nos pontões, que deslizam com o meio do carro.
-    ctx.transform(deslizeDoMeio[0], deslizeDoMeio[1], deslizeDoMeio[2], deslizeDoMeio[3], deslizeDoMeio[4], deslizeDoMeio[5])
+    aplicar(ctx, deslizeDoCorpo)
     ctx.globalAlpha = opacidadeBase * Math.min(1, pose.dirt) * 0.72
     ctx.fillStyle = COR_DA_TERRA
-    for (const m of MANCHAS_DE_TERRA) {
+    for (const m of geometria.manchas) {
       ctx.beginPath()
       ctx.ellipse(m.x, m.y, m.rx, m.ry, 0, 0, Math.PI * 2)
       ctx.fill()
@@ -594,19 +892,18 @@ export function drawCar(
   // No boost a luz de chuva acende e o escapamento transborda. Vai por cima da
   // folha e em modo aditivo: soma luz à pintura em vez de cobri-la.
   if (pose.boost > 0.01) {
-    const modelo = carModel(id)
+    const { luzDeChuva, escapamento } = geometria
     // A traseira desliza com a guinada, e a luz e o fogo moram nela.
-    const traseira = guinadas.traseira
-    ctx.transform(traseira[0], traseira[1], traseira[2], traseira[3], traseira[4], traseira[5])
+    aplicar(ctx, geometria.traseira[quadro])
     ctx.globalCompositeOperation = 'lighter'
     ctx.fillStyle = '#ff3a2a'
     ctx.globalAlpha *= pose.boost
     ctx.beginPath()
-    ctx.ellipse(modelo.luzDeChuva.x, modelo.luzDeChuva.y, modelo.luzDeChuva.raio * 1.6, modelo.luzDeChuva.raio * 1.6, 0, 0, Math.PI * 2)
+    ctx.ellipse(luzDeChuva.x, luzDeChuva.y, luzDeChuva.raio * 1.6, luzDeChuva.raio * 1.6, 0, 0, Math.PI * 2)
     ctx.fill()
     ctx.fillStyle = '#ffc56a'
     ctx.beginPath()
-    ctx.ellipse(modelo.escapamento.x, modelo.escapamento.y, modelo.escapamento.raio * (1.4 + pose.boost), modelo.escapamento.raio * (1 + pose.boost), 0, 0, Math.PI * 2)
+    ctx.ellipse(escapamento.x, escapamento.y, escapamento.raio * (1.4 + pose.boost), escapamento.raio * (1 + pose.boost), 0, 0, Math.PI * 2)
     ctx.fill()
   }
   ctx.restore()

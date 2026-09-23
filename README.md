@@ -1,6 +1,6 @@
 # Corrida Fantasma
 
-Protótipo jogável do plano em `PLANO_DESENVOLVIMENTO.md`: corrida offline, lobby multiplayer, largada sincronizada, carro fantasma do adversário e resultado oficial com revanche.
+Protótipo jogável do plano em `PLANO_DESENVOLVIMENTO.md`: corrida offline, lobby multiplayer para até seis pilotos, largada sincronizada, um carro fantasma para cada rival e resultado oficial com revanche.
 
 ## Como se dirige
 
@@ -125,7 +125,7 @@ npm ci && npm run build && npm start
 
 O servidor escuta em `0.0.0.0` e imprime os endereços da máquina na rede local, para acessar pelo celular. Há um `Dockerfile` pronto para hospedagens que aceitem contêiner.
 
-O estado das salas vive na memória, então precisa ser **uma instância só** — duas separariam os dois pilotos em salas diferentes.
+O estado das salas vive na memória, então precisa ser **uma instância só** — duas separariam os pilotos de uma mesma sala.
 
 | Variável | Para quê | Padrão |
 | --- | --- | --- |
@@ -148,26 +148,28 @@ A tipografia fica dentro do projeto, em `public/fontes`, para o jogo funcionar e
 
 ### Carros
 
-Não há imagem de carro nenhuma no projeto. O desenho inteiro — carroceria, pneus, asas, cockpit e piloto — é descrito em `src/game/carModel.ts` com as mesmas formas cheias e cores chapadas do cenário, e é por isso que o carro parece estar dentro da pista em vez de colado por cima dela.
+A pintura de cada carro é uma arte em `public/carros`, gerada por `npm run carros` a partir dos originais em `arte/carros`. É a mesma imagem no menu, na seleção de pilotos, no lobby, no resultado e na pista.
 
-Cada ponto do molde é dado em metros e projetado por uma câmera de teleobjetiva, alta e distante, a mesma de Top Gear e Horizon Chase. A altura entra achatada de propósito, na convenção do desenho de corrida visto de cima: sem isso o capacete subiria até a altura do bico e o carro perderia o empilhamento que o faz ler como carro.
-
-Nenhum volume usa degradê; todos são resolvidos em faixas de cor chapada, como um artista de pixel art resolve um cilindro, e a rampa de tons desliza com a luminância da pintura — numa cor clara o relevo vem de escurecer, numa escura de clarear. O que dá volume de verdade, porém, são as costuras: um vinco escuro em cada encontro de peça, mais largo do lado da sombra do que do lado do sol, com um fio claro na quina iluminada. É o vale entre os pontões e a tampa do motor, e o lábio escuro no contorno do pontão, que fazem o meio do carro deixar de ser uma chapa.
-
-`src/game/carSprites.ts` assa esse molde numa folha de sprites de quinze quadros, e o laço de corrida escolhe o quadro e faz um `drawImage`. O que varia continuamente — posição, escala com a distância, inclinação da carroceria, trepidação e brilho do boost — fica para a hora do desenho. A garagem e o lobby usam o SVG do mesmo molde, que amplia sem perder nada.
+Na pista, `src/game/carSprites.ts` assa a arte numa folha de sprites de quinze quadros durante a contagem de largada, e o laço de corrida escolhe o quadro e faz um `drawImage`. O que varia continuamente — posição, escala com a distância, inclinação da carroceria, trepidação e brilho do boost — fica para a hora do desenho.
 
 Os quadros são poses de um eixo só, da derrapagem toda à esquerda à derrapagem toda à direita:
 
-- **Curva comum**: nove quadros, do volante todo virado para um lado ao outro. As rodas da frente esterçam, a carroceria rola, o piloto se joga para dentro da curva e o carro **gira no próprio eixo** até 7°.
+- **Curva comum**: nove quadros, do volante todo virado para um lado ao outro. As rodas da frente esterçam, a carroceria rola e o carro **gira no próprio eixo** até 7°.
 - **Derrapagem**: três quadros de cada lado. O carro atravessa até 13°, a traseira escapa para fora da curva e as rodas da frente **contraesterçam** — o desenho clássico do carro seguro no limite.
 
-O giro não é um recorte girado: cada camada do molde — asa, rodas, bico, pontões, cockpit, piloto, motor, traseira — desliza de lado na proporção da distância dela ao pivô, pouco à frente do eixo traseiro, e as camadas compridas são cisalhadas. É o que a projeção faria com o carro girado de verdade, sem mexer em nenhuma das centenas de faces.
+A arte é uma imagem chapada, e o giro não é um recorte girado. As rodas da frente saem da carroceria para esterçar sozinhas, e a carroceria é cisalhada: cada linha do desenho desliza de lado na proporção da distância dela ao pivô, pouco à frente do eixo traseiro, que é o que a projeção faria com o carro girado de verdade. O cisalhamento é calibrado para os dois eixos andarem exatamente o que as rodas andam, então a sombra, a banda do pneu e a terra da grama continuam no lugar em qualquer quadro.
 
-A pose sai da física: o esterço é o do volante, e a derrapagem começa pouco antes da carga da pior curva comum — nas super curvas o carro atravessa, e de boost ele vai todo de lado. Ela entra em pouco mais de um décimo de segundo e sai em quase três, e é essa inércia que faz a troca de quadros virar movimento: na entrada de um grampo o carro vira, atravessa, escorrega e endireita. O rival derrapa pela mesma conta, com a curva de onde ele está e a velocidade que informou.
+A pose sai da física: o esterço é o do volante, e a derrapagem começa pouco antes da carga da pior curva comum — nas super curvas o carro atravessa, e de boost ele vai todo de lado. Ela entra em pouco mais de um décimo de segundo e sai em quase três, e é essa inércia que faz a troca de quadros virar movimento: na entrada de um grampo o carro vira, atravessa, escorrega e endireita. Cada rival derrapa pela mesma conta, com a curva de onde ele está e a velocidade que informou.
 
-A meia-largura do pneu traseiro é `CAR_SPRITE_HALF_WIDTH`, e um teste cobra isso: o carro ocupa na tela exatamente a largura que a regra de saída de pista cobra. O rival usa a mesma folha, banhada de azul, e nunca se confunde com o carro do próprio jogador.
+A meia-largura do pneu traseiro é `CAR_SPRITE_HALF_WIDTH`, e um teste cobra isso: o carro ocupa na tela exatamente a largura que a regra de saída de pista cobra. Cada rival usa a folha do próprio carro, banhada de azul, e nunca se confunde com o carro do jogador — nem quando os dois escolhem o mesmo.
 
-As artes raster em `arte/carros` ficam como material de referência das marcas de cada equipe; nada no jogo as lê. Para acrescentar uma pintura, registre o carro em `CARS` e a pintura dele em `PINTURAS`.
+#### O molde vetorial
+
+`src/game/carModel.ts` descreve o mesmo carro com as formas cheias e as cores chapadas do cenário, e tem dois papéis. É dele que sai a geometria do giro — a profundidade de cada peça, o centro das rodas e a linha do chão —, e é ele que a corrida desenha enquanto a arte não chega, ou se ela não chegar: o jogo nunca espera um arquivo para largar. A pintura de reserva de cada carro, em `PINTURAS`, segue as cores da arte dele.
+
+Cada ponto do molde é dado em metros e projetado por uma câmera de teleobjetiva, alta e distante, a mesma de Top Gear e Horizon Chase. A altura entra achatada de propósito, na convenção do desenho de corrida visto de cima: sem isso o capacete subiria até a altura do bico e o carro perderia o empilhamento que o faz ler como carro. Nenhum volume usa degradê; todos são resolvidos em faixas de cor chapada, com um vinco escuro em cada encontro de peça e um fio claro na quina iluminada.
+
+Para acrescentar um carro, ponha a arte em `arte/carros`, rode `npm run carros`, registre o carro em `CARS` e a pintura de reserva dele em `PINTURAS`.
 
 A escolha é só de pintura. Todos os carros andam com a mesma física: o duelo mede quem dirige melhor, e um carro mais rápido decidiria a corrida antes da largada.
 
@@ -288,7 +290,7 @@ Para testar o fantasma sem um segundo aparelho, entre em uma sala pelo navegador
 npm run piloto -- CODIGO --nome Rival --velocidade 250 --carro schumacher
 ```
 
-Ele entra na sala como segundo jogador, confirma presença, corre no ritmo pedido e envia telemetria pelo mesmo protocolo do navegador. Sem `--carro`, corre com a Red Bull, diferente do carro padrão do navegador, para o fantasma mostrar a pintura do rival.
+Ele entra na sala como mais um piloto, confirma presença, corre no ritmo pedido e envia telemetria pelo mesmo protocolo do navegador. Sem `--carro`, corre com a Red Bull, diferente do carro padrão do navegador, para o fantasma mostrar a pintura do rival. Para encher o grid, rode um por vaga, cada um com o próprio `--nome` e `--carro`.
 
 ## Controles
 
@@ -303,31 +305,31 @@ Rock de corrida, gerado na hora como o resto do som — sem arquivo nenhum. `src
 
 - Mi menor, 150 batidas por minuto, em quatro seções de oito compassos: **estrofe** com a guitarra abafada em galope, **refrão** com acordes soltos e a guitarra solo por cima, **estrofe** de novo e **ponte** com o bumbo nos quatro tempos até a virada de caixa que devolve ao começo. São 51 segundos, e a trilha dá a volta.
 - Bateria de seno e ruído filtrado, baixo em serra, power chords de seis serras desafinadas somadas antes de uma saturação e de uma caixa de som simulada, e a guitarra solo com vibrato e eco.
-- Entra no "VAI!" com o prato do primeiro compasso — no duelo, a mesma largada nos dois aparelhos — e some aos poucos na bandeirada. Fica sob o motor, que é retorno de jogo.
+- Entra no "VAI!" com o prato do primeiro compasso — online, a mesma largada em todos os aparelhos — e some aos poucos na bandeirada. Fica sob o motor, que é retorno de jogo.
 - As notas são agendadas pouco adiante, no relógio do áudio, e não no de animação: a música não atrasa quando o quadro engasga. Renderizada fora de tempo real, a trilha inteira custa cerca de 8% de um núcleo de computador de mesa.
 
 ## Como a largada é sincronizada
 
 1. Cada cliente mede a diferença entre o próprio relógio e o do servidor com cinco amostras de ida e volta e fica com a de menor latência.
-2. Quando os dois pilotos confirmam, o servidor escolhe um instante futuro comum (`startAt`, 5,4 s à frente) e envia o mesmo valor para os dois.
+2. Quando todos os pilotos da sala — de dois a seis — confirmam, o servidor escolhe um instante futuro comum (`startAt`, 5,4 s à frente) e envia o mesmo valor para todos.
 3. Cada cliente converte `startAt` em luzes: cinco acendem uma a uma, com 900 ms de intervalo, e todas apagam exatamente em `startAt`.
-4. O cronômetro da corrida é contado a partir de `startAt`, e não do quadro em que a tela abriu, então os dois medem o mesmo tempo.
+4. O cronômetro da corrida é contado a partir de `startAt`, e não do quadro em que a tela abriu, então todos medem o mesmo tempo.
 
 ## Como o fantasma funciona
 
-Cada navegador envia dez medições por segundo (progresso, faixa, velocidade e estado). O servidor valida — recusa pacotes atrasados, corrige horários incoerentes e limita avanços impossíveis — e repassa apenas ao adversário.
+Cada navegador envia dez medições por segundo (progresso, faixa, velocidade e estado). O servidor valida — recusa pacotes atrasados, corrige horários incoerentes e limita avanços impossíveis — e repassa aos outros pilotos da sala.
 
-Quem recebe guarda as medições recentes e desenha o rival 160 ms no passado, interpolando entre duas medições conhecidas. Se a telemetria falhar, projeta o movimento por até 600 ms e então congela o carro, marcando-o como sem sinal. O progresso exibido nunca recua, então um pacote atrasado não puxa o fantasma para trás.
+Quem recebe guarda as medições recentes de cada rival e desenha cada um 160 ms no passado, interpolando entre duas medições conhecidas. Se a telemetria falhar, projeta o movimento por até 600 ms e então congela o carro, marcando-o como sem sinal. O progresso exibido nunca recua, então um pacote atrasado não puxa o fantasma para trás.
 
-O rival não tem colisão: os carros se atravessam. Mas ele não é só desenho — a posição dele entra na simulação por um caminho só, e estreito: a força do vácuo, um número de 0 a 1 calculado da distância e do alinhamento. É isso que `stepRace` recebe do adversário, e nada mais. Ele não pode empurrar, frear nem desviar o carro do jogador; só permitir que quem vem atrás ande um pouco mais rápido.
+O rival não tem colisão: os carros se atravessam. Mas ele não é só desenho — a posição dele entra na simulação por um caminho só, e estreito: a força do vácuo, um número de 0 a 1 calculado da distância e do alinhamento. É isso que `stepRace` recebe dos rivais — o melhor vácuo entre todos —, e nada mais. Ele não pode empurrar, frear nem desviar o carro do jogador; só permitir que quem vem atrás ande um pouco mais rápido.
 
 ## Quem decide o vencedor
 
 O cliente avisa a própria chegada, mas quem decide é o servidor. Ele conhece o instante oficial da largada e o comprimento da pista, então prende o tempo informado entre o mínimo fisicamente possível — a pista inteira na velocidade máxima do carro — e o tempo já decorrido desde a largada. Um relógio errado ou um cliente adulterado não conseguem reivindicar uma volta impossível.
 
-Quando os dois pilotos têm um desfecho, o servidor monta o resultado uma única vez e envia o mesmo objeto para as duas telas: vencedor, tempos, diferença e posições. Se um piloto cair e não voltar dentro da janela de retorno, o adversário vence por abandono e a vaga é liberada.
+Quando todos os pilotos têm um desfecho, o servidor monta o resultado uma única vez e envia o mesmo objeto para todas as telas: vencedor, tempos, diferença e posições. Num duelo, quem cai e não volta dentro da janela de retorno entrega a vitória por abandono; com três ou mais, os outros seguem correndo e o abandono ocupa a posição dele no resultado.
 
-A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resultado e agenda uma nova largada sincronizada, sem ninguém recarregar a página.
+A revanche precisa do pedido de todos. Com eles, a sala limpa telemetria e resultado e agenda uma nova largada sincronizada, sem ninguém recarregar a página. Com a corrida em andamento, a sala não aceita piloto novo.
 
 ## Estado atual
 
@@ -345,24 +347,24 @@ A revanche precisa dos dois pedidos. Com os dois, a sala limpa telemetria e resu
 - [x] Cenário assado em folha de sprites, com quatro lugares, pórticos e faixa de meio-campo
 - [x] Cinco tipos de obstáculo, dois deles manchas que valem a pena atravessar
 - [x] Sombra no chão, terra da grama e suspensão que responde ao relevo
-- [x] Salas para dois jogadores com código, link e QR code
+- [x] Salas de dois a seis pilotos com código, link e QR code
 - [x] Lobby em tempo real, confirmação e tratamento de sala cheia/inexistente
 - [x] Relógio sincronizado entre cliente e servidor
-- [x] Largada agendada e idêntica nos dois aparelhos
+- [x] Largada agendada e idêntica em todos os aparelhos
 - [x] Cancelamento da largada por desistência, saída ou queda de conexão
 - [x] Reconexão curta e retorno após recarregar a página
-- [x] Telemetria validada pelo servidor e repassada ao adversário
-- [x] Carro fantasma interpolado, translúcido e em cor distinta
-- [x] Posição P1/P2, diferença em segundos e metros, indicador de rival fora da tela
+- [x] Telemetria validada pelo servidor e repassada aos outros pilotos
+- [x] Um fantasma por rival, interpolado, translúcido, em cor distinta e na ordem de profundidade da pista
+- [x] Posição no grid, diferença para o rival mais perto em segundos e metros, indicador de rival fora da tela
 - [x] Chegada validada pelo servidor, com tempo impossível recusado
-- [x] Mesmo vencedor, tempos e diferença nas duas telas
-- [x] Vitória por abandono quando o rival não volta
+- [x] Mesmo vencedor, tempos e diferença em todas as telas
+- [x] Vitória por abandono no duelo; com mais pilotos, o abandono entra na classificação
 - [x] Revanche na mesma sala, sem recarregar a página
 - [x] Publicação em processo único, com Dockerfile e endereços da rede local
 - [x] Sala de demonstração que se cria sozinha
 - [x] Fontes servidas pelo projeto, sem depender de internet
-- [x] Garagem com cinco carros: a escolha vale no treino e no duelo, e o fantasma usa a pintura do rival
-- [x] Quadros de curva e de derrapagem com contraesterço, com transição guiada pela física da curva
+- [x] Garagem com dezesseis carros em arte própria, agrupados por piloto: a escolha vale no treino e online, e cada fantasma usa a pintura do rival
+- [x] Quadros de curva e de derrapagem com contraesterço, assados da arte de cada carro, com transição guiada pela física da curva
 - [x] Trilha sonora de rock procedural, com botão próprio
 - [x] QR code definitivo e roteiro do workshop
 

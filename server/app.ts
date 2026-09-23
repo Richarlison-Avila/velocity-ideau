@@ -62,7 +62,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
     if (room) io.to(code).emit('room:update', room)
   }
 
-  /** Agenda a largada quando os dois pilotos confirmam e avisa os dois clientes. */
+  /** Agenda a largada quando todos os pilotos presentes confirmam. */
   const scheduleIfReady = (code: string) => {
     if (rooms.get(code)?.status !== 'ready') return
     const scheduled = rooms.scheduleStart(code)
@@ -135,16 +135,18 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
             difficulty: room.difficulty,
             serverTime: Date.now(),
           })
-          // E também a última posição conhecida do rival, para o fantasma voltar na hora.
-          const rival = rooms.rivalTelemetry(room.code, payload.playerId)
-          if (rival) socket.emit('race:rival', rival)
+          // E também a última posição conhecida de cada rival, para todos os
+          // fantasmas voltarem na hora.
+          for (const rival of rooms.rivalTelemetries(room.code, payload.playerId)) {
+            socket.emit('race:rival', rival)
+          }
         }
       } catch (error) {
         ack({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível entrar na sala.' })
       }
     })
 
-    // Telemetria do piloto, repassada só ao adversário da mesma sala.
+    // Telemetria do piloto, repassada aos demais participantes da mesma sala.
     socket.on('race:telemetry', (payload: { code: string; playerId: string } & Telemetry) => {
       const accepted = rooms.acceptTelemetry(payload.code, payload.playerId, payload)
       if (!accepted) return
@@ -220,7 +222,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
         clearStartTimer(update.code)
         socket.leave(update.code)
         if (update.room && update.cancelledCountdown) {
-          io.to(update.code).emit('race:cancelled', { code: update.code, reason: 'O rival saiu da sala.' })
+          io.to(update.code).emit('race:cancelled', { code: update.code, reason: 'Um piloto saiu da sala.' })
         }
         publish(update.code, update.room)
       }
@@ -233,7 +235,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
           clearStartTimer(update.code)
           io.to(update.code).emit('race:cancelled', {
             code: update.code,
-            reason: 'O rival perdeu a conexão. Aguardando o retorno.',
+            reason: 'Um piloto perdeu a conexão. Aguardando o retorno.',
           })
         }
         publish(update.code, update.room)
@@ -255,7 +257,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
             if (!dropped) return
             clearStartTimer(update.code)
             if (dropped.room && dropped.cancelledCountdown) {
-              io.to(update.code).emit('race:cancelled', { code: update.code, reason: 'O rival não voltou a tempo.' })
+              io.to(update.code).emit('race:cancelled', { code: update.code, reason: 'Um piloto não voltou a tempo.' })
             }
             publish(update.code, dropped.room)
           }, graceMs),

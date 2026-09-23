@@ -4,13 +4,13 @@ import {
   gapBetween,
   GhostTracker,
   offScreenNotice,
-  positionNotice,
   rivalSide,
   TELEMETRY_INTERVAL_MS,
+  type GhostSample,
   type GhostSnapshot,
 } from './ghost'
 import { RaceAudio } from './audio'
-import { DEFAULT_CAR, carById, type CarId } from './cars'
+import { carById, type CarId } from './cars'
 import { drawCar, prepareCar, type CarPose } from './carSprites'
 import { createFeel, registerImpact, updateFeel } from './feel'
 import { LUZ, misturar, rampa } from './paleta'
@@ -85,8 +85,8 @@ type RaceCanvasProps = {
   pilotName: string
   /** Carro escolhido na garagem. Só muda a pintura; a física é a mesma. */
   car: CarId
-  /** Carro do rival, desenhado como fantasma. */
-  rivalCar?: CarId | null
+  /** Outros pilotos, cada um com seu próprio fantasma de rede. */
+  rivals?: RaceRival[]
   /** Instante oficial da largada, no relógio do servidor. */
   startAt: number
   /** Duração total da sequência de luzes enviada pelo servidor. */
@@ -106,11 +106,6 @@ type RaceCanvasProps = {
   mode?: 'solo' | 'online'
   /** Aviso de conexão exibido sobre a pista sem interromper a corrida. */
   connectionNotice?: string | null
-  /** Posições recentes do adversário, já tratadas contra atraso de rede. */
-  ghost?: GhostTracker | null
-  rivalName?: string
-  /** Falso enquanto o rival está sem sinal. */
-  rivalConnected?: boolean
   /** Chamado a cada medição para ser enviada ao servidor. */
   onTelemetry?: (snapshot: GhostSnapshot) => void
   /** Desistir da prova em andamento, entregando a vitória ao rival. */
@@ -118,9 +113,21 @@ type RaceCanvasProps = {
   onFinish: (result: RaceResult) => void
 }
 
-/** O que o HUD mostra sobre o adversário. */
+export type RaceRival = {
+  id: string
+  name: string
+  car: CarId
+  /** Falso enquanto o rival está sem sinal. */
+  connected: boolean
+  /** Posições recentes do rival, já tratadas contra atraso de rede. */
+  ghost: GhostTracker
+}
+
+/** O que o HUD mostra sobre o rival mais perto. */
 type RivalHud = {
-  position: 'P1' | 'P2'
+  position: string
+  name: string
+  connected: boolean
   headline: string
   offScreen: string | null
   stale: boolean
@@ -384,7 +391,7 @@ const SOMBRA_NO_CHAO = 'rgba(10,20,26,.3)'
 function RaceCanvas({
   pilotName,
   car,
-  rivalCar = null,
+  rivals = [],
   startAt,
   countdownMs = DEFAULT_COUNTDOWN_MS,
   trackSeed,
@@ -392,9 +399,6 @@ function RaceCanvas({
   now,
   mode = 'solo',
   connectionNotice = null,
-  ghost = null,
-  rivalName = 'RIVAL',
-  rivalConnected = true,
   onTelemetry,
   onAbandon,
   onFinish,
@@ -406,10 +410,9 @@ function RaceCanvas({
   const raceRef = useRef(createRaceState(difficulty))
   const startedRef = useRef(false)
   const doneRef = useRef(false)
-  const ghostRef = useRef(ghost)
+  const rivalsRef = useRef(rivals)
   // Os carros entram por referência: o laço de quadro não é refeito por eles.
   const carRef = useRef(car)
-  const rivalCarRef = useRef(rivalCar)
   const sendTelemetryRef = useRef(onTelemetry)
   const [telemetry, setTelemetry] = useState(initialTelemetry)
   const [rival, setRival] = useState<RivalHud | null>(null)
@@ -426,9 +429,8 @@ function RaceCanvas({
 
   clockRef.current = now ?? Date.now
   finishRef.current = onFinish
-  ghostRef.current = ghost
+  rivalsRef.current = rivals
   carRef.current = car
-  rivalCarRef.current = rivalCar
   sendTelemetryRef.current = onTelemetry
 
   /**
@@ -658,7 +660,7 @@ function RaceCanvas({
     }
     resize()
     prepareCar(carRef.current, ambiente.nevoaRGB)
-    if (rivalCarRef.current) prepareCar(rivalCarRef.current, ambiente.nevoaRGB, true)
+    for (const rival of rivalsRef.current) prepareCar(rival.car, ambiente.nevoaRGB, true)
     prepararCenario(ambiente.flora, ambiente.nevoaRGB)
 
     // A janela nem sempre muda de tamanho junto com a tela do jogo: em telas
@@ -719,9 +721,8 @@ function RaceCanvas({
     let rolagem = 0
     /** O quanto o carro deita com a força lateral, em radianos. */
     let deitadaDoCarro = 0
-    /** Derrapagem do jogador e do rival, de -1 a 1, já suavizadas. */
+    /** Derrapagem do jogador, de -1 a 1, já suavizada. A de cada rival mora no estado dele. */
     let derrapagemDoJogador = 0
-    let derrapagemDoFantasma = 0
 
     const roadGeometry = (distanceAhead: number) => {
       const { y, roadWidth, perspective } = roadProjection(distanceAhead, width, height)
@@ -1042,12 +1043,15 @@ function RaceCanvas({
 
     // Poses reaproveitadas entre quadros, pelo mesmo motivo.
     const poseDoJogador: CarPose = { tilt: 0, suspension: 0, steer: 0, drift: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
-    const poseDoFantasma: CarPose = { tilt: 0, suspension: 0, steer: 0, drift: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 }
 
-    /** Última posição lateral conhecida do rival, para derivar o esterço dele. */
-    let lateralDoFantasma = 0
-    const aproximarFantasma = (alvo: number, dt: number) =>
-      poseDoFantasma.steer + (alvo - poseDoFantasma.steer) * (1 - Math.exp(-Math.max(0, dt) / 0.18))
+    /**
+     * Pose de cada fantasma, pela identidade do rival.
+     *
+     * Cada um guarda a última posição lateral, para derivar o esterço dele, e a
+     * própria derrapagem suavizada: dividir uma só entre cinco rivais faria o
+     * carro de um virar com a curva do outro.
+     */
+    const posesDosFantasmas = new Map<string, { pose: CarPose; lateral: number; derrapagem: number }>()
 
     const elipse = (x: number, y: number, rx: number, ry: number) => {
       ctx.beginPath()
@@ -1315,13 +1319,6 @@ function RaceCanvas({
     }
 
     /**
-     * Desenha o fantasma na mesma projeção e com o mesmo modelo do jogador.
-     *
-     * A pose dele não vem de `feel` — não temos a simulação do rival, só a
-     * telemetria — mas sai da mesma grandeza: o quanto ele andou de lado
-     * desde o quadro anterior. Cor e transparência continuam sendo dele.
-     */
-    /**
      * Derrapagem que uma força lateral pede, de -1 a 1.
      *
      * Começa onde a curva comum acaba: até a carga da pior curva comum o pneu
@@ -1335,25 +1332,42 @@ function RaceCanvas({
     const aproximarDerrapagem = (atual: number, alvo: number, dt: number) =>
       atual + (alvo - atual) * (1 - Math.exp(-Math.max(0, dt) / (alvo === 0 ? DERRAPAGEM_SAI : DERRAPAGEM_ENTRA)))
 
-    const drawGhost = (distanceAhead: number, lateral: number, faded: boolean, dt: number, velocidade = 0) => {
+    /**
+     * Desenha um fantasma na mesma projeção e com o mesmo modelo do jogador.
+     *
+     * A pose dele não vem de `feel` — não temos a simulação do rival, só a
+     * telemetria — mas sai da mesma grandeza: o quanto ele andou de lado
+     * desde o quadro anterior. Cor e transparência continuam sendo dele.
+     */
+    const drawGhost = (rival: RaceRival, distanceAhead: number, lateral: number, faded: boolean, dt: number, velocidade = 0) => {
       const projected = roadGeometry(distanceAhead)
       const x = projected.center + lateralOffset(lateral, projected.roadWidth)
       const scale = Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH) * Math.max(0.06, projected.perspective)
 
-      const deriva = dt > 0 ? (lateral - lateralDoFantasma) / dt : 0
-      lateralDoFantasma = lateral
+      let estado = posesDosFantasmas.get(rival.id)
+      if (!estado) {
+        estado = {
+          pose: { tilt: 0, suspension: 0, steer: 0, drift: 0, boost: 0, jitter: 0, travel: 0, dirt: 0 },
+          lateral,
+          derrapagem: 0,
+        }
+        posesDosFantasmas.set(rival.id, estado)
+      }
+      const pose = estado.pose
+      const deriva = dt > 0 ? (lateral - estado.lateral) / dt : 0
+      estado.lateral = lateral
       const volante = Math.max(-1, Math.min(1, deriva / 1.8))
-      poseDoFantasma.steer = aproximarFantasma(volante, dt)
-      poseDoFantasma.travel = race.progress + distanceAhead
-      poseDoFantasma.tilt = poseDoFantasma.steer * 0.075 * forcaDoMovimento
+      pose.steer += (volante - pose.steer) * (1 - Math.exp(-Math.max(0, dt) / 0.18))
+      pose.travel = race.progress + distanceAhead
+      pose.tilt = pose.steer * 0.075 * forcaDoMovimento
       // O rival derrapa pela mesma conta, com a curva do ponto em que ele está e
       // a velocidade que ele informou: não temos a física dele, só a telemetria.
       const proporcaoDoRival = velocidade / race.rules.cruiseSpeed
       const forcaDoRival = curvatureLoad(layout.curvature(race.progress + distanceAhead)) * proporcaoDoRival * proporcaoDoRival
-      derrapagemDoFantasma = aproximarDerrapagem(derrapagemDoFantasma, derrapagemPara(forcaDoRival), dt)
-      poseDoFantasma.drift = derrapagemDoFantasma
+      estado.derrapagem = aproximarDerrapagem(estado.derrapagem, derrapagemPara(forcaDoRival), dt)
+      pose.drift = estado.derrapagem
 
-      drawCar(ctx, x, projected.y, scale, rivalCarRef.current ?? DEFAULT_CAR, poseDoFantasma, faded ? 0.23 : 0.46, ambiente.nevoaRGB)
+      drawCar(ctx, x, projected.y, scale, rival.car, pose, faded ? 0.23 : 0.46, ambiente.nevoaRGB)
     }
 
     /** Poeira, faíscas, rastro de boost e marcas de pneu, na projeção da pista. */
@@ -1510,10 +1524,14 @@ function RaceCanvas({
       const dt = (frame - previous) / 1000
       previous = frame
 
-      // Posição do fantasma neste quadro, já interpolada. É lida antes da
-      // simulação porque agora o rival não é só desenho: a esteira dele entra
-      // no passo de física como ganho de velocidade.
-      const rivalSample = ghostRef.current?.sample(serverNow) ?? null
+      // Posições dos fantasmas neste quadro, já interpoladas. São lidas antes
+      // da simulação porque o rival não é só desenho: a melhor esteira
+      // disponível entra no passo de física como ganho de velocidade.
+      const rivalSamples: Array<{ rival: RaceRival; sample: GhostSample }> = []
+      for (const rival of rivalsRef.current) {
+        const sample = rival.ghost.sample(serverNow)
+        if (sample) rivalSamples.push({ rival, sample })
+      }
 
       if (startedRef.current && !doneRef.current) {
         const elapsed = Math.max(0, (serverNow - startAt) / 1000)
@@ -1523,10 +1541,13 @@ function RaceCanvas({
         // chegou está parado na linha e não deixa mais esteira.
         // O traçado preenche a curva, a linha e a zebra da tangência de uma vez.
         layout.fillContext(race.progress, raceContext)
-        raceContext.slipstream =
-          rivalSample && rivalSample.state === 'racing'
-            ? slipstreamFrom(race.progress, race.lateral, rivalSample.progress, rivalSample.lateral)
-            : 0
+        raceContext.slipstream = rivalSamples.reduce(
+          (melhor, { sample }) =>
+            sample.state === 'racing'
+              ? Math.max(melhor, slipstreamFrom(race.progress, race.lateral, sample.progress, sample.lateral))
+              : melhor,
+          0,
+        )
         for (const event of stepRace(race, inputRef.current, dt, raceContext)) {
           if (event.type === 'collision') {
             const kind = race.rules.obstacles.find((o) => o.id === event.obstacleId)?.kind ?? 'barrier'
@@ -1766,14 +1787,15 @@ function RaceCanvas({
         if (particula.kind === 'skid') drawParticle(particula, particula.distance - race.progress)
       }
 
-      const rivalAhead = rivalSample ? rivalSample.progress - race.progress : 0
-      const rivalVisible =
-        Boolean(rivalSample) && rivalAhead > 0 && rivalAhead < VIEW_DISTANCE && !atrasDaLomba(rivalAhead)
+      const fantasmasVisiveis = rivalSamples
+        .map(({ rival, sample }) => ({ rival, sample, ahead: sample.progress - race.progress }))
+        .filter(({ ahead }) => ahead > 0 && ahead < VIEW_DISTANCE && !atrasDaLomba(ahead))
+        .sort((a, b) => b.ahead - a.ahead)
 
       // Os obstáculos já estão em ordem de distância, então basta percorrer do
       // fim para o começo — do mais distante para o mais próximo — sem montar
-      // lista nova a cada quadro. O fantasma entra na ordem de profundidade.
-      let ghostDrawn = !rivalVisible
+      // lista nova a cada quadro. Os fantasmas entram na ordem de profundidade.
+      let proximoFantasma = 0
       const pedras = race.rules.obstacles
       for (let indice = pedras.length - 1; indice >= 0; indice -= 1) {
         const obstaculo = pedras[indice]
@@ -1781,25 +1803,48 @@ function RaceCanvas({
         if (ahead <= 0 || ahead >= VIEW_DISTANCE) continue
         if (atrasDaLomba(ahead)) continue
 
-        if (!ghostDrawn && rivalAhead > ahead) {
-          drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt, rivalSample!.speed)
-          ghostDrawn = true
+        while (fantasmasVisiveis[proximoFantasma]?.ahead > ahead) {
+          const fantasma = fantasmasVisiveis[proximoFantasma]
+          drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample.lateral, fantasma.sample.stale, dt, fantasma.sample.speed)
+          proximoFantasma += 1
         }
         drawObstacle(ahead, obstaculo.lane, obstaculo.kind, obstaculo.id)
       }
-      if (!ghostDrawn) drawGhost(rivalAhead, rivalSample!.lateral, rivalSample!.stale, dt, rivalSample!.speed)
+      while (proximoFantasma < fantasmasVisiveis.length) {
+        const fantasma = fantasmasVisiveis[proximoFantasma]
+        drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample.lateral, fantasma.sample.stale, dt, fantasma.sample.speed)
+        proximoFantasma += 1
+      }
 
-      if (rivalSample && frame - lastRivalHud > 100) {
+      // O painel fala do rival mais perto, à frente ou atrás: é com ele que se
+      // disputa a posição naquele trecho. A posição conta todos os que estão à
+      // frente.
+      if (frame - lastRivalHud > 100) {
         lastRivalHud = frame
-        const gap = gapBetween(race.progress, rivalSample.progress, race.speed, rivalSample.speed)
-        setRival({
-          position: gap.position,
-          headline: positionNotice(gap),
-          offScreen: rivalVisible ? null : offScreenNotice(gap, rivalSide(race.lateral, rivalSample.lateral)),
-          stale: rivalSample.stale,
-          finished: rivalSample.state === 'finished',
-          onScreen: rivalVisible,
-        })
+        const maisProximo = rivalSamples.reduce<(typeof rivalSamples)[number] | null>((atual, candidato) => {
+          if (!atual) return candidato
+          return Math.abs(candidato.sample.progress - race.progress) < Math.abs(atual.sample.progress - race.progress)
+            ? candidato
+            : atual
+        }, null)
+        if (!maisProximo) {
+          setRival(null)
+        } else {
+          const gap = gapBetween(race.progress, maisProximo.sample.progress, race.speed, maisProximo.sample.speed)
+          const position = `P${1 + rivalSamples.filter(({ sample }) => sample.progress > race.progress).length}`
+          const visivel = fantasmasVisiveis.some(({ rival }) => rival.id === maisProximo.rival.id)
+          const direcao = gap.ahead ? 'à frente' : 'atrás'
+          setRival({
+            position,
+            name: maisProximo.rival.name,
+            connected: maisProximo.rival.connected,
+            headline: `${Math.max(0.1, gap.seconds).toFixed(1).replace('.', ',')} s ${direcao}`,
+            offScreen: visivel ? null : offScreenNotice(gap, rivalSide(race.lateral, maisProximo.sample.lateral)),
+            stale: maisProximo.sample.stale,
+            finished: maisProximo.sample.state === 'finished',
+            onScreen: visivel,
+          })
+        }
       }
 
       /**
@@ -1987,7 +2032,7 @@ function RaceCanvas({
       <section className="hud" aria-label="Telemetria">
         <div className="position-block">
           <span>{mode === 'online' && rival ? 'POSIÇÃO' : 'MODO'}</span>
-          <strong>{mode === 'online' ? (rival?.position ?? 'DUELO') : 'SOLO'}</strong>
+          <strong>{mode === 'online' ? (rival?.position ?? 'GRID') : 'SOLO'}</strong>
           <em className="difficulty-tag">{DIFFICULTY_LABELS[difficulty]}</em>
         </div>
         <div className="timer-block">
@@ -2039,11 +2084,11 @@ function RaceCanvas({
 
       {mode === 'online' && phase !== 'countdown' && (
         <div
-          className={`rival-panel ${rival?.stale || !rivalConnected ? 'stale' : ''} ${rival?.onScreen && rivalConnected ? 'compact' : ''}`}
+          className={`rival-panel ${rival?.stale || rival?.connected === false ? 'stale' : ''} ${rival?.onScreen && rival.connected ? 'compact' : ''}`}
           aria-live="polite"
         >
-          <span>{rivalName}</span>
-          {!rivalConnected ? (
+          <span>{rival?.name ?? `${rivals.length} RIVAIS`}</span>
+          {rival?.connected === false ? (
             <strong>SEM SINAL — AGUARDANDO O RETORNO</strong>
           ) : !rival ? (
             <strong>AGUARDANDO TELEMETRIA</strong>
@@ -2052,7 +2097,7 @@ function RaceCanvas({
           ) : (
             <strong>{rival.headline}</strong>
           )}
-          {rival?.offScreen && rivalConnected && !rival.finished && <em>{rival.offScreen}</em>}
+          {rival?.offScreen && rival.connected && !rival.finished && <em>{rival.offScreen}</em>}
         </div>
       )}
 

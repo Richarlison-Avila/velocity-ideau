@@ -75,8 +75,9 @@ export type RaceOutcome = {
   entries: FinishEntry[]
 }
 
-/** Telemetria trocada entre os dois pilotos durante a corrida. */
+/** Telemetria de um dos outros pilotos da corrida. */
 export type RivalTelemetry = {
+  playerId: string
   /** Instante da medição, no relógio do servidor. */
   t: number
   progress: number

@@ -107,7 +107,10 @@ export type RoomUpdate = {
 }
 
 export class RoomError extends Error {
-  constructor(public code: 'ROOM_NOT_FOUND' | 'ROOM_FULL' | 'NOT_IN_ROOM' | 'NOT_HOST', message: string) {
+  constructor(
+    public code: 'ROOM_NOT_FOUND' | 'ROOM_FULL' | 'RACE_IN_PROGRESS' | 'NOT_IN_ROOM' | 'NOT_HOST',
+    message: string,
+  ) {
     super(message)
   }
 }
@@ -119,6 +122,9 @@ export const COUNTDOWN_MS = 5_400
 
 /** Janela para o piloto voltar depois de uma queda de conexão. */
 export const RECONNECT_GRACE_MS = 12_000
+
+/** Quantidade máxima de pilotos que podem dividir a mesma sala. */
+export const MAX_PLAYERS = 6
 
 /** Teto de velocidade aceito na telemetria: acima disso o avanço é impossível. */
 export const MAX_PLAUSIBLE_SPEED_MS = 120
@@ -246,7 +252,10 @@ export class RoomStore {
       return this.toPublic(room)
     }
 
-    if (room.players.length >= 2) throw new RoomError('ROOM_FULL', 'Esta sala já está cheia.')
+    if (room.state !== 'idle') {
+      throw new RoomError('RACE_IN_PROGRESS', 'A corrida desta sala já começou.')
+    }
+    if (room.players.length >= MAX_PLAYERS) throw new RoomError('ROOM_FULL', 'Esta sala já está cheia.')
     room.players.push(this.createPlayer(playerId, socketId, rawName, car))
     this.ensureHost(room)
     return this.toPublic(room)
@@ -273,7 +282,15 @@ export class RoomStore {
     if (!player) throw new RoomError('NOT_IN_ROOM', 'Você não está nesta sala.')
 
     // Voltar ao lobby depois da corrida libera a sala para uma nova largada.
-    if (room.state === 'racing' || room.state === 'finished') this.resetRace(room)
+    if (room.state === 'finished') {
+      // Quem esgotou a janela de reconexão ficou até o placar para preservar a
+      // classificação; ao voltar ao lobby sua vaga enfim é liberada.
+      room.players = room.players.filter((candidate) => candidate.disconnectedAt === null)
+      this.ensureHost(room)
+      this.resetRace(room)
+    } else if (room.state === 'racing') {
+      this.resetRace(room)
+    }
 
     player.ready = ready
     if (room.state === 'countdown' && !this.everyoneReady(room)) this.resetRace(room)
@@ -360,7 +377,7 @@ export class RoomStore {
     const room = this.rooms.get(this.normalize(codeInput))
     if (!room || room.state !== 'racing') return null
     const player = room.players.find((candidate) => candidate.id === playerId)
-    if (!player) return null
+    if (!player || player.finish) return null
 
     if (![input.t, input.progress, input.lateral, input.speed].every(Number.isFinite)) return null
 
@@ -447,15 +464,20 @@ export class RoomStore {
       collisions: 0,
       outcome: 'abandoned',
     }
-    for (const rival of room.players) {
-      if (rival.id === playerId || rival.finish) continue
-      rival.finish = {
-        playerId: rival.id,
-        name: rival.name,
-        time: null,
-        topSpeed: rival.telemetry?.speed ?? 0,
-        collisions: 0,
-        outcome: 'unfinished',
+    // Num duelo, o abandono decide a prova imediatamente. Com três ou mais
+    // pilotos, os demais continuam correndo e o abandono ocupa sua posição
+    // normal no resultado final.
+    if (room.players.length === 2) {
+      for (const rival of room.players) {
+        if (rival.id === playerId || rival.finish) continue
+        rival.finish = {
+          playerId: rival.id,
+          name: rival.name,
+          time: null,
+          topSpeed: rival.telemetry?.speed ?? 0,
+          collisions: 0,
+          outcome: 'unfinished',
+        }
       }
     }
 
@@ -479,7 +501,7 @@ export class RoomStore {
 
     player.rematch = true
     const todos =
-      room.players.length === 2 &&
+      room.players.length >= 2 &&
       room.players.every((candidate) => candidate.rematch && candidate.disconnectedAt === null)
 
     if (todos) {
@@ -494,6 +516,17 @@ export class RoomStore {
     const room = this.rooms.get(this.normalize(codeInput))
     const rival = room?.players.find((candidate) => candidate.id !== playerId)
     return rival?.telemetry ?? null
+  }
+
+  /** Última telemetria conhecida de todos os outros pilotos. */
+  rivalTelemetries(codeInput: string, playerId: string) {
+    const room = this.rooms.get(this.normalize(codeInput))
+    if (!room) return []
+    return room.players.flatMap((candidate) =>
+      candidate.id !== playerId && candidate.telemetry
+        ? [{ playerId: candidate.id, ...candidate.telemetry }]
+        : [],
+    )
   }
 
   /** Saída explícita: remove o piloto imediatamente. */
@@ -527,6 +560,12 @@ export class RoomStore {
     const room = this.rooms.get(this.normalize(codeInput))
     const player = room?.players.find((candidate) => candidate.id === playerId)
     if (!room || !player || player.disconnectedAt === null) return null
+    // Durante uma corrida com mais de dois participantes, o piloto que caiu
+    // continua no resultado como abandono. Retirá-lo aqui encerraria/resetaria
+    // a prova de quem ainda está correndo.
+    if (room.state === 'racing' && player.finish) {
+      return { code: room.code, room: this.toPublic(room), cancelledCountdown: false }
+    }
     room.players = room.players.filter((candidate) => candidate.id !== playerId)
     return this.afterDeparture(room.code, room)
   }
@@ -577,7 +616,10 @@ export class RoomStore {
       code: room.code,
       winnerId: vencedor.outcome === 'abandoned' ? null : vencedor.playerId,
       reason: abandono ? 'abandon' : 'time',
-      gap: completos.length === 2 ? Math.abs(completos[0].time! - completos[1].time!) : null,
+      gap:
+        ordenado.length >= 2 && ordenado[0].time !== null && ordenado[1].time !== null
+          ? Math.abs(ordenado[0].time - ordenado[1].time)
+          : null,
       entries: ordenado,
     }
     return room.outcome
@@ -613,7 +655,8 @@ export class RoomStore {
 
   private everyoneReady(room: Room) {
     return (
-      room.players.length === 2 &&
+      room.players.length >= 2 &&
+      room.players.length <= MAX_PLAYERS &&
       room.players.every((player) => player.ready && player.disconnectedAt === null)
     )
   }

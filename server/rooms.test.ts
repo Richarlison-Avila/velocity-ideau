@@ -19,13 +19,27 @@ function roomWithTwoPilots(store: RoomStore) {
   return room.code
 }
 
+function roomWithSixPilots(store: RoomStore) {
+  const room = store.create('socket-a', 'a', 'Ana')
+  for (const [id, name] of [
+    ['b', 'Beto'],
+    ['c', 'Caio'],
+    ['d', 'Duda'],
+    ['e', 'Eva'],
+    ['f', 'Fábio'],
+  ]) {
+    store.join(room.code, `socket-${id}`, id, name)
+  }
+  return room.code
+}
+
 describe('salas multiplayer', () => {
-  it('cria uma sala e aceita exatamente dois pilotos', () => {
+  it('cria uma sala e aceita até seis pilotos', () => {
     const rooms = new RoomStore()
-    const room = rooms.create('socket-a', 'a', 'Ana')
-    expect(room.code).toHaveLength(5)
-    expect(rooms.join(room.code, 'socket-b', 'b', 'Beto').players).toHaveLength(2)
-    expect(() => rooms.join(room.code, 'socket-c', 'c', 'Caio')).toThrow(RoomError)
+    const code = roomWithSixPilots(rooms)
+    expect(code).toHaveLength(5)
+    expect(rooms.get(code)?.players).toHaveLength(6)
+    expect(() => rooms.join(code, 'socket-g', 'g', 'Gabi')).toThrow(RoomError)
   })
 
   it('fica pronta somente quando os dois confirmam', () => {
@@ -72,11 +86,10 @@ describe('sala de demonstração', () => {
     expect(rooms.join(' demo1 ', 'socket-a', 'a', 'Ana').code).toBe('DEMO1')
   })
 
-  it('continua limitada a dois pilotos', () => {
+  it('continua limitada a seis pilotos', () => {
     const rooms = new RoomStore({ openRooms: ['DEMO1'] })
-    rooms.join('DEMO1', 'socket-a', 'a', 'Ana')
-    rooms.join('DEMO1', 'socket-b', 'b', 'Beto')
-    expect(() => rooms.join('DEMO1', 'socket-c', 'c', 'Caio')).toThrow(RoomError)
+    for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) rooms.join('DEMO1', `socket-${id}`, id, id)
+    expect(() => rooms.join('DEMO1', 'socket-g', 'g', 'Gabi')).toThrow(RoomError)
   })
 
   it('reabre depois que todos saem', () => {
@@ -102,6 +115,17 @@ describe('sala de demonstração', () => {
 })
 
 describe('largada sincronizada', () => {
+  it('espera a confirmação dos seis pilotos do grid', () => {
+    const rooms = new RoomStore()
+    const code = roomWithSixPilots(rooms)
+    for (const id of ['a', 'b', 'c', 'd', 'e']) rooms.setReady(code, id, true)
+    expect(rooms.get(code)?.status).toBe('waiting')
+    expect(rooms.scheduleStart(code)).toBeNull()
+
+    expect(rooms.setReady(code, 'f', true).status).toBe('ready')
+    expect(rooms.scheduleStart(code)?.status).toBe('countdown')
+  })
+
   it('agenda a largada no futuro apenas com os dois pilotos prontos', () => {
     const clock = createClock()
     const rooms = new RoomStore({ now: clock.now, countdownMs: 5_400 })
@@ -140,6 +164,16 @@ describe('largada sincronizada', () => {
     clock.advance(500)
     expect(rooms.scheduleStart(code)).toBeNull()
     expect(rooms.get(code)?.startAt).toBe(first?.startAt)
+  })
+
+  it('não aceita novos pilotos depois que a largada foi marcada', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+
+    expect(() => rooms.join(code, 'socket-c', 'c', 'Caio')).toThrowError('já começou')
   })
 
   it('cancela a largada quando um piloto desfaz a confirmação', () => {
@@ -316,6 +350,21 @@ describe('telemetria do adversário', () => {
     expect(rooms.rivalTelemetry(code, 'a')).toBeNull()
   })
 
+  it('entrega as posições de todos os outros pilotos ao reconectar', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithSixPilots(rooms)
+    for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) rooms.setReady(code, id, true)
+    rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+    for (const [index, id] of ['a', 'b', 'c', 'd', 'e'].entries()) {
+      rooms.acceptTelemetry(code, id, medicao(clock.now(), 100 + index * 10))
+    }
+
+    expect(rooms.rivalTelemetries(code, 'f').map(({ playerId }) => playerId)).toEqual(['a', 'b', 'c', 'd', 'e'])
+  })
+
   it('esquece a telemetria da corrida anterior', () => {
     const clock = createClock()
     const { rooms, code } = salaCorrendo(clock)
@@ -348,6 +397,38 @@ describe('resultado da corrida', () => {
   }
 
   const chegada = (time: number) => ({ time, topSpeed: 252, collisions: 2 })
+
+  it('classifica os seis pilotos e só fecha depois do último resultado', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithSixPilots(rooms)
+    for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) rooms.setReady(code, id, true)
+    rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+    clock.advance(70_000)
+
+    for (const [index, id] of ['f', 'e', 'd', 'c', 'b'].entries()) {
+      expect(rooms.recordFinish(code, id, chegada(68 + index * 0.4))?.outcome).toBeNull()
+    }
+    const resultado = rooms.recordFinish(code, 'a', chegada(70))?.outcome
+    expect(resultado?.entries).toHaveLength(6)
+    expect(resultado?.winnerId).toBe('f')
+    expect(resultado?.entries.map(({ playerId }) => playerId)).toEqual(['f', 'e', 'd', 'c', 'b', 'a'])
+  })
+
+  it('mantém a corrida dos demais quando um piloto abandona um grid maior', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const code = roomWithSixPilots(rooms)
+    for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) rooms.setReady(code, id, true)
+    rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+
+    expect(rooms.abandonRace(code, 'f')?.outcome).toBeNull()
+    expect(rooms.get(code)?.status).toBe('racing')
+  })
 
   it('só fecha o resultado quando os dois cruzam a linha', () => {
     const clock = createClock()

@@ -1,19 +1,24 @@
 /**
  * Molde dos carros e dos pilotos.
  *
- * É a única descrição do desenho: a garagem gera um SVG dele, a corrida gera
- * um sprite dele. Não há imagem carregada em lugar nenhum — o que se vê na
- * pista é o mesmo desenho que se vê no menu, na mesma geometria, só que
- * rasterizado no tamanho de cada quadro.
+ * A pintura que se vê no menu, na seleção, no lobby e na pista é a arte de
+ * `public/carros`, gerada por `npm run carros` a partir de `arte/carros`. Este
+ * molde é o carro por baixo dela, em dois papéis:
  *
- * ## Por que vetor, e não uma arte pronta
+ * - **Geometria.** A arte é uma imagem chapada, sem profundidade. Para girar o
+ *   carro nas curvas e na derrapagem, a folha de sprites precisa saber onde
+ *   cada peça mora em metros — o bico, longe do pivô, anda mais que a
+ *   traseira —, e é daqui que isso sai, junto com a linha do chão.
+ * - **Reserva.** Enquanto a imagem não chega, ou se ela não chegar, a corrida
+ *   desenha o carro por este molde, com as cores da equipe: o jogo nunca espera
+ *   um arquivo para largar.
  *
- * O cenário inteiro é desenhado no Canvas com formas cheias e cores chapadas.
- * Uma arte pintada à parte nunca fica no mesmo mundo que ele: tem outra luz,
- * outra saturação e outro nível de ruído, e o carro aparece colado por cima da
- * pista em vez de estar dentro dela. Descrever o carro com as mesmas formas
- * cheias resolve isso na raiz, e ainda deixa acrescentar um carro novo sem
- * abrir editor de imagem — nem gerar arquivo nenhum.
+ * ## Por que vetor
+ *
+ * Descrito com as mesmas formas cheias e cores chapadas do cenário, o molde
+ * fica no mesmo mundo que a pista, e um carro novo entra nele sem abrir editor
+ * de imagem: basta a pintura em `PINTURAS`. É o que o deixa servir de reserva
+ * para qualquer carro da garagem.
  *
  * ## Perspectiva
  *
@@ -333,8 +338,23 @@ export const WHEEL_CENTERS: Record<Roda, [number, number]> = {
   traseiraDireita: centroDaRoda('traseiraDireita'),
 }
 
+/** Meia-largura e meia-altura de um pneu no desenho, em unidades. */
+export type MedidaDoPneu = { meiaLargura: number; meiaAltura: number }
+
+/** Uma mancha da sombra de contato, em unidades do desenho. */
+export type ManchaDeSombra = {
+  x: number
+  y: number
+  rx: number
+  ry: number
+  cor: string
+  alpha: number
+  /** A roda sob a qual a mancha fica; sem roda, é a sombra da carroceria. */
+  roda?: Roda
+}
+
 /** Meia-largura e meia-altura de cada roda, em unidades do desenho. */
-const RODA = {
+const RODA: { traseira: MedidaDoPneu; dianteira: MedidaDoPneu } = {
   traseira: {
     meiaLargura: Z.eixoTraseiro.x(PNEU.traseiro.largura / 2),
     meiaAltura: silhuetaDoPneu(Z.eixoTraseiro, PNEU.traseiro.diametro).meiaAltura,
@@ -365,32 +385,36 @@ const RODA = {
  * torno da linha do chão. A roda da frente está sessenta unidades acima desse
  * pivô e anda nove para o lado no esterço máximo; uma sombra parada ali fica
  * sozinha no asfalto, ao lado do pneu.
+ *
+ * Sai de uma função das rodas porque a arte de cada carro não as tem no mesmo
+ * lugar do molde — a via dianteira dela é mais fechada —, e a sombra tem de
+ * ficar sob o pneu que está sendo desenhado.
  */
-export const SOMBRA_DE_CONTATO: readonly {
-  x: number
-  y: number
-  rx: number
-  ry: number
-  cor: string
-  alpha: number
-  roda?: Roda
-}[] = [
-  { x: 0, y: LINHA_DO_CHAO - 2, rx: 28, ry: 4.5, cor: '#0a1416', alpha: 0.26 },
-  ...RODAS.map((roda) => {
-    const [x, y] = WHEEL_CENTERS[roda]
-    const tras = roda.startsWith('traseira')
-    const { meiaLargura, meiaAltura } = tras ? RODA.traseira : RODA.dianteira
-    return {
-      x,
-      y: y + meiaAltura - 0.6,
-      rx: meiaLargura * 0.95,
-      ry: tras ? 2 : 1.5,
-      cor: '#081013',
-      alpha: 0.35,
-      roda,
-    }
-  }),
-]
+export function sombraDeContato(
+  rodas: Record<Roda, readonly [number, number]>,
+  pneus: { traseira: MedidaDoPneu; dianteira: MedidaDoPneu },
+): readonly ManchaDeSombra[] {
+  return [
+    { x: 0, y: LINHA_DO_CHAO - 2, rx: 28, ry: 4.5, cor: '#0a1416', alpha: 0.26 },
+    ...RODAS.map((roda) => {
+      const [x, y] = rodas[roda]
+      const tras = roda.startsWith('traseira')
+      const { meiaLargura, meiaAltura } = tras ? pneus.traseira : pneus.dianteira
+      return {
+        x,
+        y: y + meiaAltura - 0.6,
+        rx: meiaLargura * 0.95,
+        ry: tras ? 2 : 1.5,
+        cor: '#081013',
+        alpha: 0.35,
+        roda,
+      }
+    }),
+  ]
+}
+
+/** A sombra de contato do molde. */
+export const SOMBRA_DE_CONTATO = sombraDeContato(WHEEL_CENTERS, RODA)
 
 /**
  * Onde a terra gruda depois de uma passagem pela grama.
@@ -406,10 +430,13 @@ export const SOMBRA_DE_CONTATO: readonly {
  * traseira suja a si mesma, o canto de baixo da asa logo atrás e o pé do
  * pontão logo à frente. A dianteira atira para trás, e o barro dela cai no
  * pontão. A traseira suja mais porque é ela que traciona.
+ *
+ * Como a sombra, sai das rodas: a arte de cada carro põe as dela em outro
+ * lugar, e o barro vai com o pneu que o atira.
  */
-export const MANCHAS_DE_TERRA: readonly { x: number; y: number; rx: number; ry: number }[] =
-  RODAS.flatMap((roda) => {
-    const [x, y] = WHEEL_CENTERS[roda]
+export function manchasDeTerra(rodas: Record<Roda, readonly [number, number]>): readonly ManchaDeTerra[] {
+  return RODAS.flatMap((roda) => {
+    const [x, y] = rodas[roda]
     const paraDentro = -Math.sign(x)
     const em = (dentro: number, abaixo: number, rx: number, ry: number) =>
       ({ x: x + paraDentro * dentro, y: y + abaixo, rx, ry })
@@ -423,6 +450,13 @@ export const MANCHAS_DE_TERRA: readonly { x: number; y: number; rx: number; ry: 
     }
     return [em(11, 23, 2, 1.2), em(9.5, 29, 1.6, 1)]
   })
+}
+
+/** Uma mancha de terra, em unidades do desenho. */
+export type ManchaDeTerra = { x: number; y: number; rx: number; ry: number }
+
+/** A terra da grama no molde. */
+export const MANCHAS_DE_TERRA = manchasDeTerra(WHEEL_CENTERS)
 
 /** Cor da terra na carroceria. Barro seco, não lama preta. */
 export const COR_DA_TERRA = '#7a6344'
@@ -486,19 +520,54 @@ type Pintura = {
  *
  * O capacete segue o desenho conhecido de cada piloto, reduzido ao que se lê a
  * esta distância: casco, faixa e uma risca.
+ *
+ * Na garagem e na pista vale a arte de cada carro. Esta é a pintura que o
+ * molde veste quando a arte falta, e por isso segue as cores dela: quem
+ * escolheu a Lotus preta e dourada não larga de repente num carro de outra
+ * equipe.
  */
 const PINTURAS: Record<CarId, Pintura> = {
+  'senna-lotus': {
+    corpo: '#24221f', detalhe: '#c9a444', filete: '#8c7334', tinta: '#d8b75a', numero: '#d8b75a',
+    faixaAsa: '#24221f', patrocinio: 'JPS', tintaAsa: '#d8b75a', pontaAsa: '#c9a444',
+    asaDianteira: 'JPS', laterais: ['JPS', 'ELF'],
+    casco: '#e8c23a', faixa: '#2f8f57', risca: '#2b5f9c', macacao: '#2a2824',
+  },
   senna: {
     corpo: '#e2e4de', detalhe: '#cf3b2c', filete: '#1d262c', tinta: '#242e34', numero: '#cf3b2c',
     faixaAsa: '#e7e4d6', patrocinio: 'MARLBORO', tintaAsa: '#1d262c', pontaAsa: '#cf3b2c',
     asaDianteira: 'MARLBORO', laterais: ['MARLBORO', 'HONDA'],
     casco: '#e8c23a', faixa: '#2f8f57', risca: '#2b5f9c', macacao: '#e2e4dd',
   },
+  'barrichello-ferrari': {
+    corpo: '#c4342a', detalhe: '#e7e4d6', filete: '#1d262c', tinta: '#f2eddc', numero: '#1d262c',
+    faixaAsa: '#e7e4d6', patrocinio: 'MARLBORO', tintaAsa: '#c4342a', pontaAsa: '#1d262c',
+    asaDianteira: 'FERRARI', laterais: ['VODAFONE', 'SHELL'],
+    casco: '#e7e4d6', faixa: '#2b5f9c', risca: '#cf3b33', macacao: '#c4342a',
+  },
   schumacher: {
     corpo: '#c2332a', detalhe: '#e7e4d6', filete: '#1d262c', tinta: '#f2eddc', numero: '#e6cf3c',
     faixaAsa: '#e7e4d6', patrocinio: 'MARLBORO', tintaAsa: '#1d262c', pontaAsa: '#c2332a',
     asaDianteira: 'MARLBORO', laterais: ['SHELL', 'VODAFONE'],
     casco: '#cf3b33', faixa: '#e7e4d6', risca: '#23303a', macacao: '#c2332a',
+  },
+  'barrichello-brawn': {
+    corpo: '#e6e6df', detalhe: '#c8dc3c', filete: '#1d262c', tinta: '#1d262c', numero: '#1d262c',
+    faixaAsa: '#e6e6df', patrocinio: 'BRAWN GP', tintaAsa: '#1d262c', pontaAsa: '#c8dc3c',
+    asaDianteira: 'BRAWN GP', laterais: ['VIRGIN', 'MIG'],
+    casco: '#e7e4d6', faixa: '#2b5f9c', risca: '#e8c23a', macacao: '#e6e6df',
+  },
+  'massa-ferrari': {
+    corpo: '#be2f28', detalhe: '#e7e4d6', filete: '#e6cf3c', tinta: '#f2eddc', numero: '#f2eddc',
+    faixaAsa: '#e7e4d6', patrocinio: 'SANTANDER', tintaAsa: '#be2f28', pontaAsa: '#be2f28',
+    asaDianteira: 'SANTANDER', laterais: ['SHELL', 'V-POWER'],
+    casco: '#2f6fb0', faixa: '#e8c23a', risca: '#2f8f57', macacao: '#be2f28',
+  },
+  'massa-williams': {
+    corpo: '#e4e6e2', detalhe: '#1f3b6e', filete: '#3f86c8', tinta: '#1f3b6e', numero: '#1f3b6e',
+    faixaAsa: '#1f3b6e', patrocinio: 'WILLIAMS', tintaAsa: '#e4e6e2', pontaAsa: '#c8352b',
+    asaDianteira: 'REXONA', laterais: ['MARTINI', 'REXONA'],
+    casco: '#2f6fb0', faixa: '#e8c23a', risca: '#2f8f57', macacao: '#e4e6e2',
   },
   'hamilton-mercedes': {
     corpo: '#41494c', detalhe: '#1f9e8f', filete: '#c9d0cb', tinta: '#e2e6dc', numero: '#e2e6dc',
@@ -517,6 +586,42 @@ const PINTURAS: Record<CarId, Pintura> = {
     faixaAsa: '#b72f27', patrocinio: 'V-POWER', tintaAsa: '#f4ead4', pontaAsa: '#e6cf3c',
     asaDianteira: 'FERRARI', laterais: ['SANTANDER', 'AWS'],
     casco: '#e0c93f', faixa: '#b72f27', risca: '#23303a', macacao: '#8f2a24',
+  },
+  'bortoleto-audi': {
+    corpo: '#a7abab', detalhe: '#1c1f22', filete: '#c8302c', tinta: '#1c1f22', numero: '#e7e4d6',
+    faixaAsa: '#1c1f22', patrocinio: 'AUDI', tintaAsa: '#e7e4d6', pontaAsa: '#c8302c',
+    asaDianteira: 'AUDI', laterais: ['AUDI SPORT', 'AUDI'],
+    casco: '#e8c23a', faixa: '#2f8f57', risca: '#1c1f22', macacao: '#1c1f22',
+  },
+  vettel: {
+    corpo: '#1f2b4c', detalhe: '#c8352b', filete: '#dcb035', tinta: '#e8e4d4', numero: '#e8e4d4',
+    faixaAsa: '#1f2b4c', patrocinio: 'RED BULL', tintaAsa: '#c8352b', pontaAsa: '#dcb035',
+    asaDianteira: 'INFINITI', laterais: ['INFINITI', 'TOTAL'],
+    casco: '#e8e4d4', faixa: '#c8352b', risca: '#1f2b4c', macacao: '#1f2b4c',
+  },
+  'raikkonen-mercedes': {
+    corpo: '#b3b8b9', detalhe: '#1c2124', filete: '#1f9e8f', tinta: '#1c2124', numero: '#1f9e8f',
+    faixaAsa: '#1c2124', patrocinio: 'PETRONAS', tintaAsa: '#e7e4d6', pontaAsa: '#1f9e8f',
+    asaDianteira: 'AMG', laterais: ['PETRONAS', 'UBS'],
+    casco: '#c8352b', faixa: '#e2e6dc', risca: '#1c2124', macacao: '#1c2124',
+  },
+  leclerc: {
+    corpo: '#b8302a', detalhe: '#1d1d1f', filete: '#e6cf3c', tinta: '#f2eddc', numero: '#f2eddc',
+    faixaAsa: '#1d1d1f', patrocinio: 'FERRARI', tintaAsa: '#e6cf3c', pontaAsa: '#b8302a',
+    asaDianteira: 'SHELL', laterais: ['SANTANDER', 'SHELL'],
+    casco: '#c8352b', faixa: '#1d1d1f', risca: '#e7e4d6', macacao: '#b8302a',
+  },
+  'alonso-aston-martin': {
+    corpo: '#1d5a48', detalhe: '#b8d23c', filete: '#e7e4d6', tinta: '#e7e4d6', numero: '#e7e4d6',
+    faixaAsa: '#1d5a48', patrocinio: 'ARAMCO', tintaAsa: '#e7e4d6', pontaAsa: '#b8d23c',
+    asaDianteira: 'ARAMCO', laterais: ['COGNIZANT', 'ARAMCO'],
+    casco: '#2b5f9c', faixa: '#e8c23a', risca: '#c8352b', macacao: '#1d5a48',
+  },
+  'alonso-renault': {
+    corpo: '#2f6db2', detalhe: '#e3c23a', filete: '#1d262c', tinta: '#e8e4d4', numero: '#1d262c',
+    faixaAsa: '#2f6db2', patrocinio: 'MILD SEVEN', tintaAsa: '#e8e4d4', pontaAsa: '#e3c23a',
+    asaDianteira: 'TELEFONICA', laterais: ['MILD SEVEN', 'ELF'],
+    casco: '#2b5f9c', faixa: '#e3c23a', risca: '#c8352b', macacao: '#2f6db2',
   },
 }
 

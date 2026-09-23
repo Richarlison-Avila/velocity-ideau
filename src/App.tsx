@@ -106,14 +106,14 @@ function App() {
   const [outcome, setOutcome] = useState<RaceOutcome | null>(null)
   const [connection, setConnection] = useState<Connection>(socket.connected ? 'connected' : 'reconnecting')
   const [clock, setClock] = useState<ClockState>(serverClock.snapshot)
-  /** Dificuldade do modo treino. No duelo quem manda é a sala. */
+  /** Dificuldade do modo treino. Na corrida online quem manda é a sala. */
   const [soloDifficulty, setSoloDifficulty] = useState<Difficulty>('normal')
   const [car, setCar] = useState<CarId>(storedCar)
   /** De onde se chegou à garagem, que é para onde ela devolve. */
   const [garageFrom, setGarageFrom] = useState<'menu' | 'lobby'>('menu')
 
   // Refs para o ciclo do socket, que não deve depender do estado da tela.
-  const ghostRef = useRef(new GhostTracker())
+  const ghostsRef = useRef(new Map<string, GhostTracker>())
   const roomCodeRef = useRef<string | null>(storedRoom)
   const pilotNameRef = useRef(pilotName)
   const carRef = useRef(car)
@@ -163,8 +163,15 @@ function App() {
       if (screenRef.current === 'race') setScreen('lobby')
     }
 
-    // Telemetria do adversário: o buffer trata atraso e chegada fora de ordem.
-    const onRival = (payload: RivalTelemetry) => ghostRef.current.push(payload)
+    // Cada adversário tem seu próprio buffer contra atraso e pacotes fora de ordem.
+    const onRival = (payload: RivalTelemetry) => {
+      let tracker = ghostsRef.current.get(payload.playerId)
+      if (!tracker) {
+        tracker = new GhostTracker()
+        ghostsRef.current.set(payload.playerId, tracker)
+      }
+      tracker.push(payload)
+    }
 
     // Resultado oficial: o mesmo objeto chega nas duas telas.
     const onResult = (payload: RaceOutcome) => {
@@ -198,10 +205,10 @@ function App() {
     if (room.status !== 'countdown' && room.status !== 'racing') return
     setRaceSetup((current) => {
       if (current?.startAt === room.startAt && current.mode === 'online') return current
-      // Cada largada começa com o fantasma zerado.
-      ghostRef.current.reset()
+      // Cada largada começa com todos os fantasmas zerados.
+      ghostsRef.current.clear()
       // O traçado vem da sala: é o servidor que decide, e o mesmo número chega
-      // aos dois pilotos antes da contagem começar.
+      // a todos os pilotos antes da contagem começar.
       return {
         startAt: room.startAt!,
         countdownMs: room.countdownMs,
@@ -266,7 +273,7 @@ function App() {
       setCar(next)
       carRef.current = next
       guardarCarro(next)
-      // Na sala, o servidor precisa saber: é com este carro que o rival vai
+      // Na sala, o servidor precisa saber: é com este carro que os rivais vão
       // desenhar o fantasma.
       const code = roomCodeRef.current
       if (garageFrom === 'lobby' && code) {
@@ -318,13 +325,18 @@ function App() {
   }
 
   const abandonRace = () => {
-    if (room) socket.emit('race:abandon', { code: room.code, playerId: storedPlayerId })
+    if (!room) return
+    // Em grids maiores os demais continuam correndo. Esta tela passa a esperar
+    // o resultado oficial sem manter o carro abandonado em movimento.
+    setResult({ time: 0, topSpeed: 0, collisions: 0, lateStart: 0 })
+    setScreen('result')
+    socket.emit('race:abandon', { code: room.code, playerId: storedPlayerId })
   }
 
   const finishRace = useCallback((raceResult: RaceResult) => {
     setResult(raceResult)
-    // No duelo, quem decide o vencedor é o servidor: aqui só avisamos a chegada
-    // e esperamos o resultado oficial chegar às duas telas.
+    // Na corrida online, quem decide as posições é o servidor: aqui só avisamos
+    // a chegada e esperamos o resultado oficial chegar a todas as telas.
     const code = roomCodeRef.current
     if (code && socket.connected) {
       socket.emit('race:finish', {
@@ -348,11 +360,13 @@ function App() {
     connection === 'reconnecting' ? 'CONEXÃO INSTÁVEL — RECONECTANDO' : null
 
   if (screen === 'garage') {
-    const rival = garageFrom === 'lobby' ? room?.players.find((player) => player.id !== storedPlayerId) : undefined
+    const rivalCars = garageFrom === 'lobby'
+      ? room?.players.filter((player) => player.id !== storedPlayerId).map((player) => player.car) ?? []
+      : []
     return (
       <PilotSelect
         selected={car}
-        rivalCar={rival?.car ?? null}
+        rivalCars={rivalCars}
         backLabel={garageFrom === 'lobby' ? 'VOLTAR AO LOBBY' : 'VOLTAR AO PADDOCK'}
         onConfirm={chooseCar}
         onBack={leaveGarage}
@@ -379,14 +393,23 @@ function App() {
   if (screen === 'race' && raceSetup) {
     const online = raceSetup.mode === 'online'
     const me = room?.players.find((player) => player.id === storedPlayerId)
-    const rival = room?.players.find((player) => player.id !== storedPlayerId)
+    const rivals = online
+      ? (room?.players ?? []).filter((player) => player.id !== storedPlayerId).map((player) => {
+          let ghost = ghostsRef.current.get(player.id)
+          if (!ghost) {
+            ghost = new GhostTracker()
+            ghostsRef.current.set(player.id, ghost)
+          }
+          return { ...player, ghost }
+        })
+      : []
     return (
       <RaceCanvas
         key={`${raceSetup.mode}-${raceSetup.startAt}-${raceSetup.difficulty}-${raceKey}`}
         pilotName={pilotName}
-        // No duelo vale o carro que o servidor registrou: é o mesmo que o rival vê.
+        // Online vale o carro que o servidor registrou: é o mesmo que os rivais veem.
         car={online ? (me?.car ?? car) : car}
-        rivalCar={online ? (rival?.car ?? null) : null}
+        rivals={rivals}
         startAt={raceSetup.startAt}
         countdownMs={raceSetup.countdownMs}
         trackSeed={raceSetup.trackSeed}
@@ -394,9 +417,6 @@ function App() {
         now={online ? serverClock.now : undefined}
         mode={raceSetup.mode}
         connectionNotice={online ? connectionNotice : null}
-        ghost={online ? ghostRef.current : null}
-        rivalName={rival?.name ?? 'RIVAL'}
-        rivalConnected={rival?.connected ?? false}
         onTelemetry={online ? sendTelemetry : undefined}
         onAbandon={online ? abandonRace : undefined}
         onFinish={finishRace}
@@ -407,19 +427,20 @@ function App() {
   if (screen === 'result' && (result || outcome)) {
     const online = Boolean(room)
     const me = outcome?.entries.find((entry) => entry.playerId === storedPlayerId)
-    const rival = outcome?.entries.find((entry) => entry.playerId !== storedPlayerId)
     const venci = Boolean(outcome && outcome.winnerId === storedPlayerId)
     const pedidoFeito = room?.players.find((player) => player.id === storedPlayerId)?.rematch ?? false
-    const rivalPediu = room?.players.find((player) => player.id !== storedPlayerId)?.rematch ?? false
-    // Sem rival na sala não há revanche possível: a vaga precisa ser preenchida.
-    const temRival = (room?.players.length ?? 0) === 2
+    const outros = room?.players.filter((player) => player.id !== storedPlayerId) ?? []
+    const pedidosDeRevanche = outros.filter((player) => player.rematch).length
+    const gridConectado = (room?.players.length ?? 0) >= 2 && room!.players.every((player) => player.connected)
+    const minhaPosicao = outcome ? outcome.entries.findIndex((entry) => entry.playerId === storedPlayerId) + 1 : 0
+    const aindaCorrendo = room?.players.filter((player) => !player.finished).length ?? 0
 
     const manchete = !online
       ? 'Prova concluída.'
       : !outcome
         ? 'Chegada registrada.'
-        : outcome.reason === 'abandon'
-          ? venci ? 'Vitória por abandono.' : 'Você abandonou.'
+        : me?.outcome === 'abandoned'
+          ? 'Você abandonou.'
           : venci
             ? 'Vitória.'
             : outcome.winnerId
@@ -431,7 +452,9 @@ function App() {
         <div className="ambient-grid" />
         <section className="result-card">
           <p className="eyebrow">BANDEIRA QUADRICULADA</p>
-          <div className={`result-mark ${venci ? 'winner' : ''}`}>{online && outcome ? (venci ? '01' : '02') : '01'}</div>
+          <div className={`result-mark ${venci ? 'winner' : ''}`}>
+            {online && outcome ? String(minhaPosicao).padStart(2, '0') : '01'}
+          </div>
           <h1>{manchete}</h1>
           <p className="result-pilot">{pilotName}</p>
 
@@ -477,7 +500,7 @@ function App() {
             </>
           ) : online ? (
             <p className="result-note waiting">
-              AGUARDANDO {rival?.name ?? 'O RIVAL'} CRUZAR A LINHA DE CHEGADA…
+              AGUARDANDO {aindaCorrendo} {aindaCorrendo === 1 ? 'PILOTO' : 'PILOTOS'} CONCLUIR A PROVA…
             </p>
           ) : (
             <div className="result-stats">
@@ -492,23 +515,27 @@ function App() {
           )}
 
           {online && outcome ? (
-            temRival ? (
+            gridConectado ? (
               <>
                 <button className="primary-button" disabled={pedidoFeito} onClick={askRematch}>
-                  {pedidoFeito ? 'AGUARDANDO O RIVAL' : 'REVANCHE'} <span>↗</span>
+                  {pedidoFeito ? 'AGUARDANDO OS DEMAIS' : 'REVANCHE'} <span>↗</span>
                 </button>
-                {rivalPediu && !pedidoFeito && <p className="result-note rematch">O RIVAL JÁ PEDIU REVANCHE</p>}
+                {pedidosDeRevanche > 0 && !pedidoFeito && (
+                  <p className="result-note rematch">{pedidosDeRevanche} DE {outros.length} RIVAIS JÁ PEDIRAM REVANCHE</p>
+                )}
               </>
             ) : (
-              <p className="result-note waiting">O RIVAL DEIXOU A SALA — CHAME OUTRO PILOTO PELO LOBBY</p>
+              <p className="result-note waiting">O GRID ESTÁ INCOMPLETO — VOLTE AO LOBBY PARA REORGANIZAR A SALA</p>
             )
           ) : online ? null : (
             <button className="primary-button" onClick={startSoloRace}>CORRER NOVAMENTE <span>↗</span></button>
           )}
 
-          <button className="text-button" onClick={online ? backToLobby : () => { setRaceSetup(null); setScreen('menu') }}>
-            {online ? 'VOLTAR AO LOBBY' : 'VOLTAR AO PADDOCK'}
-          </button>
+          {(!online || outcome) && (
+            <button className="text-button" onClick={online ? backToLobby : () => { setRaceSetup(null); setScreen('menu') }}>
+              {online ? 'VOLTAR AO LOBBY' : 'VOLTAR AO PADDOCK'}
+            </button>
+          )}
         </section>
       </main>
     )
@@ -519,69 +546,114 @@ function App() {
       <div className="ambient-grid" />
       <header className="site-header">
         <div className="logo"><i /><span>CORRIDA<br /><b>FANTASMA</b></span></div>
-        <span className="build-tag">PROTÓTIPO // 002</span>
+        <div className="header-meta">
+          <div className="institutional-mark">
+            <img src="/iedau.jpeg" alt="Faculdades IDEAU" />
+            <span>PROJETO<br />ACADÊMICO</span>
+          </div>
+          <span className="build-tag">PROTÓTIPO // 002</span>
+        </div>
       </header>
 
-      <section className="hero">
-        <p className="eyebrow">UMA VOLTA. DOIS PILOTOS. NENHUMA DESCULPA.</p>
-        <h1>DOMINE<br />O <em>ASFALTO.</em></h1>
-        <p className="hero-copy">Crie uma sala e desafie outro piloto, ou entre com o código recebido. O modo treino continua disponível para correr sozinho.</p>
+      <div className="menu-content">
+        <section className="menu-hero">
+          <div className="hero-heading">
+            <p className="eyebrow">CORRIDA MULTIPLAYER EM TEMPO REAL</p>
+            <h1>DOMINE O<br /><em>ASFALTO.</em></h1>
+            <p className="hero-copy">Uma volta decisiva, largada sincronizada e até seis pilotos disputando o mesmo traçado.</p>
+          </div>
 
-        <div className="start-form">
-          <label htmlFor="pilot-name">NOME DO PILOTO</label>
-          <input id="pilot-name" value={draftName} maxLength={16} onChange={(event) => setDraftName(event.target.value)} placeholder="Digite seu nome" autoComplete="nickname" />
-          <button type="button" className="car-choice" style={destaque(car)} onClick={() => openGarage('menu')}>
-            <img src={carImageUrl(car)} alt="" />
-            <span>
-              <small>SEU CARRO</small>
+          <button type="button" className="hero-car" style={destaque(car)} onClick={() => openGarage('menu')}>
+            <span className="hero-car-number" aria-hidden="true">{carById(car).number}</span>
+            <img src={carImageUrl(car)} alt={`Carro de ${carById(car).driver}`} />
+            <span className="hero-car-caption">
+              <small>PILOTO SELECIONADO</small>
               <strong>{carById(car).driver}</strong>
               <em>{carById(car).team} · #{carById(car).number}</em>
             </span>
-            <span className="car-choice-action">ESCOLHER PILOTO ↗</span>
+            <span className="hero-car-action">TROCAR <b>↗</b></span>
           </button>
-          <div className="multiplayer-actions">
-            <button className="primary-button" onClick={createRoom} disabled={connection !== 'connected'}>CRIAR SALA <span>↗</span></button>
-            <div className="join-control">
-              <input value={joinCode} maxLength={5} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="CÓDIGO" aria-label="Código da sala" />
-              <button onClick={enterRoom} disabled={connection !== 'connected'}>ENTRAR</button>
+
+          <dl className="race-facts">
+            <div><dt>FORMATO</dt><dd>1 VOLTA</dd></div>
+            <div><dt>GRID</dt><dd>2—6 PILOTOS</dd></div>
+            <div><dt>SINCRONIA</dt><dd>{clock.synced ? `±${Math.round(clock.roundTrip / 2)} MS` : 'CONECTANDO'}</dd></div>
+          </dl>
+        </section>
+
+        <section className="start-panel" aria-labelledby="start-title">
+          <header className="start-panel-header">
+            <span className="panel-step">01</span>
+            <div>
+              <p className="eyebrow">PREPARE-SE PARA A LARGADA</p>
+              <h2 id="start-title">ENTRE NA PISTA</h2>
             </div>
+            <span className={`server-status ${connection === 'connected' ? 'online' : ''}`}>
+              <i /> {connection === 'connected' ? 'SERVIDOR ONLINE' : 'CONECTANDO'}
+            </span>
+          </header>
+
+          <div className="identity-field">
+            <label htmlFor="pilot-name">NOME DO PILOTO</label>
+            <input id="pilot-name" value={draftName} maxLength={16} onChange={(event) => setDraftName(event.target.value)} placeholder={pilotName} autoComplete="nickname" />
           </div>
+
           {connection !== 'connected' && <p className="form-notice">PROCURANDO O SERVIDOR DA PARTIDA…</p>}
           {lobbyError && <p className="form-error">{lobbyError}</p>}
-          <fieldset className="difficulty-picker">
-            <legend>DIFICULDADE</legend>
-            {DIFFICULTIES.map((nivel) => (
-              <button
-                key={nivel}
-                type="button"
-                className={soloDifficulty === nivel ? 'on' : ''}
-                aria-pressed={soloDifficulty === nivel}
-                onClick={() => setSoloDifficulty(nivel)}
-              >
-                {DIFFICULTY_LABELS[nivel]}
-              </button>
-            ))}
-          </fieldset>
-          <p className="difficulty-note">{DIFFICULTY_NOTES[soloDifficulty]}</p>
-          <button className="solo-button" onClick={startSoloRace}>CORRER NO MODO TREINO</button>
-        </div>
-      </section>
 
-      <aside className="briefing-card">
-        <span className="card-number">02</span>
-        <p className="eyebrow">LARGADA SINCRONIZADA</p>
-        <h2>2 PILOTOS<br />1 LARGADA</h2>
-        <dl>
-          <div><dt>CAPACIDADE</dt><dd>2 PILOTOS</dd></div>
-          <div><dt>CONVITE</dt><dd>LINK, QR OU CÓDIGO</dd></div>
-          <div><dt>RELÓGIO</dt><dd>{clock.synced ? `±${Math.round(clock.roundTrip / 2)} MS` : 'SINCRONIZANDO'}</dd></div>
-        </dl>
-        <p className="brief-note">O servidor marca um horário futuro comum. As cinco luzes aparecem ao mesmo tempo nos dois aparelhos e apagam no instante da largada.</p>
-      </aside>
+          <div className="mode-list">
+            <section className="mode-card online-mode">
+              <header className="mode-heading">
+                <span>01</span>
+                <div>
+                  <p>ATÉ SEIS PILOTOS</p>
+                  <h3>CORRIDA ONLINE</h3>
+                </div>
+              </header>
+              <p className="mode-copy">Crie um grid e envie o convite, ou use o código de uma sala existente.</p>
+              <button className="primary-button create-room-button" onClick={createRoom} disabled={connection !== 'connected'}>
+                CRIAR NOVA SALA <span>↗</span>
+              </button>
+              <div className="join-divider"><span>JÁ TEM UM CÓDIGO?</span></div>
+              <div className="join-control">
+                <input value={joinCode} maxLength={5} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="ABCDE" aria-label="Código da sala" />
+                <button onClick={enterRoom} disabled={connection !== 'connected'}>ENTRAR <span>↗</span></button>
+              </div>
+            </section>
+
+            <section className="mode-card training-mode">
+              <header className="mode-heading">
+                <span>02</span>
+                <div>
+                  <p>SEM SALA · SEM ESPERA</p>
+                  <h3>TREINO SOLO</h3>
+                </div>
+              </header>
+              <p className="mode-copy">Conheça a pista, ajuste o ritmo e prepare-se para disputar o grid.</p>
+              <fieldset className="difficulty-picker">
+                <legend>NÍVEL DO TREINO</legend>
+                {DIFFICULTIES.map((nivel) => (
+                  <button
+                    key={nivel}
+                    type="button"
+                    className={soloDifficulty === nivel ? 'on' : ''}
+                    aria-pressed={soloDifficulty === nivel}
+                    onClick={() => setSoloDifficulty(nivel)}
+                  >
+                    {DIFFICULTY_LABELS[nivel]}
+                  </button>
+                ))}
+              </fieldset>
+              <p className="difficulty-note">{DIFFICULTY_NOTES[soloDifficulty]}</p>
+              <button className="solo-button" onClick={startSoloRace}>INICIAR TREINO <span>↗</span></button>
+            </section>
+          </div>
+        </section>
+      </div>
 
       <footer className="menu-footer">
-        <span>FASE 6 // RESULTADO E REVANCHE</span>
-        <span>PRÓXIMA ETAPA: PUBLICAÇÃO</span>
+        <span>LARGADA SINCRONIZADA · FANTASMAS EM TEMPO REAL</span>
+        <span className="developer-credit">Desenvolvido por: <strong>Richarlison Ávila e Rafael Severo</strong></span>
       </footer>
     </main>
   )
