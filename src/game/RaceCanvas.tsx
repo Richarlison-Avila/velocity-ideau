@@ -18,11 +18,12 @@ import {
   ALCANCE_DO_RADAR_M,
   desenharEtiquetasDosFantasmas,
   desenharRadarTraseiro,
+  hierarquiaDosFantasmas,
   opacidadeDoFantasma,
   type EtiquetaDoFantasma,
   type RivalAtras,
 } from './fantasmaNaTela'
-import { createFeel, registerImpact, updateFeel } from './feel'
+import { BOOST_TAU, createFeel, registerImpact, updateFeel } from './feel'
 import { LUZ, misturar, rampa } from './paleta'
 import {
   desenharFaixaDeFundo,
@@ -188,6 +189,8 @@ type RivalHud = {
   finished: boolean
   /** Com o fantasma à vista, o painel encolhe para não tapar a pista. */
   onScreen: boolean
+  /** O rival está de boost agora. */
+  boosting: boolean
 }
 
 /** Uma linha da classificação ao vivo, como o painel a mostra. */
@@ -204,6 +207,8 @@ type LinhaDoPainel = {
   destaque: boolean
   /** Fração da prova já percorrida, de 0 a 1, para a marca na barra de progresso. */
   fracao: number
+  /** De boost agora: a barra da cor do carro acende em ciano. */
+  boost: boolean
 }
 
 /** Quem a câmera do espectador está seguindo, como o painel dele mostra. */
@@ -1588,7 +1593,7 @@ function RaceCanvas({
      * telemetria — mas sai da mesma grandeza: o quanto ele andou de lado
      * desde o quadro anterior. Cor e transparência continuam sendo dele.
      */
-    const drawGhost = (rival: RaceRival, distanceAhead: number, sample: GhostSample, dt: number, etiqueta: string | null) => {
+    const drawGhost = (rival: RaceRival, distanceAhead: number, sample: GhostSample, dt: number, etiqueta: string | null, destaque = false) => {
       const { lateral, speed: velocidade } = sample
       const projected = roadGeometry(distanceAhead)
       const x = projected.center + lateralOffset(lateral, projected.roadWidth)
@@ -1618,10 +1623,16 @@ function RaceCanvas({
       pose.drift = estado.derrapagem
 
       const semSinal = sample.stale || !rival.connected
-      const opacidade = opacidadeDoFantasma(distanceAhead, { semSinal, chegou: sample.state === 'finished' })
+      // A chama do boost sai da telemetria: o rival mandou que está de boost, e
+      // ela acende no fantasma como acende no nosso carro, pela mesma constante.
+      const deBoost = !semSinal && sample.state === 'racing' && sample.boosting === true
+      pose.boost += ((deBoost ? 1 : 0) - pose.boost) * (1 - Math.exp(-Math.max(0, dt) / BOOST_TAU))
+      const opacidade = opacidadeDoFantasma(distanceAhead, { semSinal, chegou: sample.state === 'finished', destaque })
       drawCar(ctx, x, projected.y, scale, rival.car, pose, opacidade, ambiente.nevoaRGB)
       // A etiqueta sai depois da bruma, para o nome de quem vai longe continuar nítido.
-      if (etiqueta) etiquetas.push({ x, chao: projected.y, escala: scale, texto: etiqueta, cor: carById(rival.car).accent, profundidade: distanceAhead })
+      if (etiqueta) {
+        etiquetas.push({ x, chao: projected.y, escala: scale, texto: etiqueta, cor: carById(rival.car).accent, profundidade: distanceAhead, boost: deBoost })
+      }
     }
 
     /** Etiquetas dos fantasmas deste quadro, desenhadas por cima da bruma. */
@@ -1840,6 +1851,8 @@ function RaceCanvas({
         race.progress = seguidoAgora.sample.progress
         race.lateral = seguidoAgora.sample.lateral
         race.speed = seguidoAgora.sample.speed
+        // O boost de quem a câmera segue acende a chama, o rastro e o som dele.
+        race.boosting = seguidoAgora.sample.boosting === true
         race.offRoad = Math.abs(seguidoAgora.sample.lateral) > OFF_ROAD_LIMIT
         carRef.current = seguidoAgora.rival.car
       }
@@ -1847,7 +1860,7 @@ function RaceCanvas({
       // A classificação do quadro: dela saem a etiqueta de cada fantasma, a
       // posição no painel e a lista ao vivo. O próprio piloto entra nela com
       // uma identidade que nenhum rival usa.
-      const naPista: Array<CarroNaProva & { nome: string; carro: CarId; semSinal: boolean }> = rivalSamples.map(({ rival, sample }) => ({
+      const naPista: Array<CarroNaProva & { nome: string; carro: CarId; semSinal: boolean; boost: boolean }> = rivalSamples.map(({ rival, sample }) => ({
         id: rival.id,
         progress: sample.progress,
         speed: sample.speed,
@@ -1856,6 +1869,7 @@ function RaceCanvas({
         nome: rival.name,
         carro: rival.car,
         semSinal: sample.stale || !rival.connected,
+        boost: sample.boosting === true && rival.connected,
       }))
       if (modeRef.current === 'online') {
         naPista.push({
@@ -1867,6 +1881,7 @@ function RaceCanvas({
           nome: pilotNameRef.current,
           carro: carRef.current,
           semSinal: false,
+          boost: !doneRef.current && motorForte(race),
         })
       }
       const ordem = classificar(naPista)
@@ -2024,6 +2039,7 @@ function RaceCanvas({
               lateral: race.lateral,
               speed: 0,
               state: 'finished',
+              boosting: false,
             })
             flashTimers.push(window.setTimeout(() => finishRef.current(result), 850))
           }
@@ -2224,8 +2240,17 @@ function RaceCanvas({
       const fantasmasColados = fantasmas
         .filter(({ ahead }) => ahead > PROFUNDIDADE_MINIMA_DO_FANTASMA && ahead < CAR_VIEW_DISTANCE)
         .sort((a, b) => b.ahead - a.ahead)
-      const etiquetaDe = (rival: RaceRival) =>
-        rival.semVacuo ? nomeDaEtiqueta(rival.name) : `P${posicaoDe.get(rival.id) ?? '?'} ${nomeDaEtiqueta(rival.name)}`
+      // A hierarquia vale para os que estão à vista, à frente: os colados atrás
+      // passam por cima do nosso carro e continuam translúcidos, sem etiqueta.
+      const hierarquia = hierarquiaDosFantasmas(
+        fantasmasVisiveis.map(({ rival, ahead }) => ({ id: rival.id, distancia: ahead - CAR_VIEW_DISTANCE, recorde: rival.semVacuo === true })),
+      )
+      const destaqueDe = (rival: RaceRival) => hierarquia.get(rival.id)?.destaque ?? false
+      const etiquetaDe = (rival: RaceRival) => {
+        if (rival.semVacuo) return nomeDaEtiqueta(rival.name)
+        const posicao = `P${posicaoDe.get(rival.id) ?? '?'}`
+        return hierarquia.get(rival.id)?.comNome === false ? posicao : `${posicao} ${nomeDaEtiqueta(rival.name)}`
+      }
 
       // Os obstáculos já estão em ordem de distância, então basta percorrer do
       // fim para o começo — do mais distante para o mais próximo — sem montar
@@ -2240,14 +2265,14 @@ function RaceCanvas({
 
         while (fantasmasVisiveis[proximoFantasma]?.ahead > ahead) {
           const fantasma = fantasmasVisiveis[proximoFantasma]
-          drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample, dt, etiquetaDe(fantasma.rival))
+          drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample, dt, etiquetaDe(fantasma.rival), destaqueDe(fantasma.rival))
           proximoFantasma += 1
         }
         drawObstacle(ahead, obstaculo.lane, obstaculo.kind, obstaculo.id)
       }
       while (proximoFantasma < fantasmasVisiveis.length) {
         const fantasma = fantasmasVisiveis[proximoFantasma]
-        drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample, dt, etiquetaDe(fantasma.rival))
+        drawGhost(fantasma.rival, fantasma.ahead, fantasma.sample, dt, etiquetaDe(fantasma.rival), destaqueDe(fantasma.rival))
         proximoFantasma += 1
       }
 
@@ -2279,6 +2304,7 @@ function RaceCanvas({
             stale: maisProximo.sample.stale,
             finished: maisProximo.sample.state === 'finished',
             onScreen: visivel,
+            boosting: maisProximo.sample.boosting === true && maisProximo.rival.connected,
           })
         }
       }
@@ -2298,6 +2324,7 @@ function RaceCanvas({
             semSinal: carro.semSinal,
             destaque: carro.id === referencia?.id,
             fracao: Math.min(1, carro.progress / TRACK_LENGTH),
+            boost: carro.boost && carro.state === 'racing',
           })),
         )
         if (noModoEspectador) {
@@ -2469,6 +2496,7 @@ function RaceCanvas({
         lateral: race.lateral,
         speed: parado ? 0 : race.speed,
         state: 'racing',
+        boosting: !parado && motorForte(race),
       })
     }, TELEMETRY_INTERVAL_MS)
     return () => window.clearInterval(timer)
@@ -2630,7 +2658,7 @@ function RaceCanvas({
             return (
               <li
                 key={linha.id}
-                className={`${linha.destaque ? 'destaque' : ''} ${linha.semSinal ? 'sem-sinal' : ''} ${linha.chegou ? 'chegou' : ''}`}
+                className={`${linha.destaque ? 'destaque' : ''} ${linha.semSinal ? 'sem-sinal' : ''} ${linha.chegou ? 'chegou' : ''} ${linha.boost ? 'boost' : ''}`}
                 style={{ '--cor': carById(linha.carro).accent } as CSSProperties}
               >
                 {espectador ? (
@@ -2698,7 +2726,10 @@ function RaceCanvas({
           ) : rival.finished ? (
             <strong>CRUZOU A LINHA DE CHEGADA</strong>
           ) : (
-            <strong>{rival.headline}</strong>
+            <strong>
+              {rival.headline}
+              {rival.boosting && <b className="rival-boost"> · DE BOOST</b>}
+            </strong>
           )}
           {rival?.offScreen && rival.connected && !rival.finished && <em>{rival.offScreen}</em>}
         </div>

@@ -48,6 +48,13 @@ const TAU = {
   corner: 0.2,
 }
 
+/**
+ * Constante de tempo da chama do boost, em segundos. É a mesma no carro do
+ * jogador e nos fantasmas, que a acendem pela telemetria: a chama é uma só, e
+ * o boost de um toque não pisca.
+ */
+export const BOOST_TAU = TAU.boost
+
 export type FeelState = {
   /** Velocidade de 0 a 1, entre parado e o máximo do carro. */
   speed: number

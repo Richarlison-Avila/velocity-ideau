@@ -426,6 +426,7 @@ button { cursor: pointer; }
 .rival-panel span { display: block; color: #43e7ff; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .22em; text-transform: uppercase; }
 .rival-panel strong { display: block; margin-top: 3px; font: 700 15px 'Barlow Condensed', sans-serif; letter-spacing: .06em; font-variant-numeric: tabular-nums; }
 .rival-panel em { display: block; margin-top: 4px; color: #93a0ab; font: 600 10px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .1em; }
+.rival-panel .rival-boost { color: #43e7ff; font-weight: 800; }
 
 /* Fantasmas de rede: classificação ao vivo, marcas na barra de progresso,
    plateia e a câmera da arquibancada. */
@@ -449,6 +450,9 @@ button { cursor: pointer; }
 .classificacao li.destaque .linha, .classificacao li.destaque b, .classificacao li.destaque em { color: #fff; }
 .classificacao li.chegou em { color: #45e7ad; }
 .classificacao li.sem-sinal { opacity: .55; }
+/* De boost: a barra da cor do carro acende em ciano, a cor do boost no jogo todo. */
+.classificacao li.boost i { box-shadow: 0 0 0 1px #43e7ff, 0 0 7px rgba(67,231,255,.85); }
+.classificacao li.boost span { color: #7ff0ff; }
 .classificacao.clicavel { pointer-events: auto; }
 .classificacao.clicavel .linha { cursor: pointer; }
 .classificacao.clicavel .linha:hover, .classificacao.clicavel .linha:focus-visible { background: rgba(255,255,255,.1); outline: none; }

@@ -97,4 +97,6 @@ export type RivalTelemetry = {
   lateral: number
   speed: number
   state: 'racing' | 'finished'
+  /** O rival está de boost. Ausente no fantasma que o servidor reproduz. */
+  boosting?: boolean
 }

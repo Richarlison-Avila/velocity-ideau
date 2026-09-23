@@ -92,6 +92,8 @@ export type Telemetry = {
   lateral: number
   speed: number
   state: RivalState
+  /** De boost — o boost apertado, ou o impulso da largada ou do mini-turbo. Só aparência. */
+  boosting?: boolean
 }
 
 type Player = {
@@ -655,6 +657,10 @@ export class RoomStore {
       lateral: Math.max(-LATERAL_LIMIT, Math.min(LATERAL_LIMIT, input.lateral)),
       speed: Math.max(0, Math.min(teto * 3.6, input.speed)),
       state: input.state === 'finished' ? 'finished' : 'racing',
+      // Só aparência — a chama e o contorno ciano na tela do rival; a
+      // velocidade continua presa pelo teto acima. Booleano de verdade, e
+      // nunca na chegada: quem cruzou a linha não está mais acelerando.
+      boosting: input.state !== 'finished' && input.boosting === true,
     }
     player.telemetry = accepted
     return accepted

@@ -595,7 +595,7 @@ A sala comporta seis pilotos, e o lobby foi desenhado para o grid cheio:
 
 ## Como o fantasma funciona
 
-Cada navegador envia dez medições por segundo (progresso, faixa, velocidade e estado). O servidor valida — recusa pacotes atrasados, corrige horários incoerentes e limita avanços impossíveis — e repassa aos outros pilotos da sala. Cada conexão só fala pelo próprio piloto: o servidor a amarra a ele quando ela cria ou entra na sala, e recusa telemetria, chegada ou confirmação em nome de outro.
+Cada navegador envia dez medições por segundo (progresso, faixa, velocidade, estado e se está de boost). O servidor valida — recusa pacotes atrasados, corrige horários incoerentes e limita avanços impossíveis — e repassa aos outros pilotos da sala. Cada conexão só fala pelo próprio piloto: o servidor a amarra a ele quando ela cria ou entra na sala, e recusa telemetria, chegada ou confirmação em nome de outro.
 
 Quem recebe desenha cada rival **no presente**. A medição mais nova já chega velha — a rede leva dezenas de milissegundos —, então a posição é projetada até agora, na velocidade da medição e com a aceleração que as últimas mostram. Desenhado 160 ms no passado, como era antes, o rival ficava uns 11 m atrás de onde estava de fato: dois carros lado a lado viam cada um o outro atrás, os dois se achando em primeiro, e o vácuo caía no lugar errado. Com a rede lenta, 120 ms a mais por pacote, o fantasma continua a menos de 4 m do carro de verdade (o teste de ponta a ponta mede isso).
 
@@ -605,7 +605,9 @@ Na tela, cada fantasma:
 
 - **aparece na profundidade certa.** O carro de quem mandou a telemetria fica um pouco à frente da câmera dele, como o nosso: um rival lado a lado aparece ao lado, e quem vem colado atrás ainda aparece, por cima do nosso carro. Antes, os dois sumiam.
 - **fica legível de longe.** A transparência cai com a distância, para o carro não se perder na bruma, e sobe de novo quando ele fica sem sinal.
-- **diz quem é.** Uma etiqueta na cor do carro leva a posição e o nome, "P2 SCHUMI". Num pelotão, as etiquetas sobem em degraus sobre os carros, em vez de se empilhar num ponto só.
+- **tem o peso que merece.** Com seis na pista, o rival mais próximo à vista — o da disputa naquele trecho — e o fantasma do recorde ficam mais opacos; os demais, a meia opacidade, presentes sem roubar a atenção.
+- **diz quem é.** Uma etiqueta na cor do carro leva a posição e o nome, "P2 SCHUMI" — o nome só nos dois mais próximos e no recorde; os outros levam só a posição, que a classificação ao lado traduz. Num pelotão, as etiquetas sobem em degraus sobre os carros, em vez de se empilhar num ponto só.
+- **mostra o boost.** De boost — o apertado, ou o impulso da largada e do mini-turbo —, o fantasma acende a mesma chama do nosso carro, e a etiqueta ganha um contorno ciano. O painel do rival mais próximo diz "DE BOOST", e a barra dele na classificação acende. Na arquibancada, a chama, o rastro e o som seguem o boost de quem a câmera acompanha.
 - **avisa quando vem atrás.** Fora da vista da câmera, o rival vira seta no radar, logo abaixo do nosso carro, na coluna em que vem, com o nome e a distância.
 
 A classificação ao vivo, à esquerda, lista os seis com a diferença em segundos para quem se está olhando e "CHEGOU" para quem já cruzou a linha; a barra de progresso traz a marca de cada um, na cor do carro.

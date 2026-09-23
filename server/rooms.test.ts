@@ -261,6 +261,20 @@ describe('telemetria do adversário', () => {
     expect(aceita?.state).toBe('racing')
   })
 
+  it('repassa o boost só como booleano, e nunca na chegada', () => {
+    const clock = createClock()
+    const { rooms, code } = salaCorrendo(clock)
+    expect(rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 120, { boosting: true }))?.boosting).toBe(true)
+    clock.advance(100)
+    const adulterada = { ...medicao(clock.now(), 130), boosting: 'sim' } as unknown as Telemetry
+    expect(rooms.acceptTelemetry(code, 'a', adulterada)?.boosting).toBe(false)
+    clock.advance(100)
+    expect(rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 140))?.boosting).toBe(false)
+    clock.advance(100)
+    const chegada = rooms.acceptTelemetry(code, 'a', medicao(clock.now(), 150, { state: 'finished', boosting: true }))
+    expect(chegada?.boosting).toBe(false)
+  })
+
   it('recusa telemetria antes da largada', () => {
     const clock = createClock()
     const rooms = new RoomStore({ now: clock.now })

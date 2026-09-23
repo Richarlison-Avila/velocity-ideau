@@ -41,7 +41,7 @@ import { createRaceContext, createTrackLayout } from '../src/game/layout.js'
 import { desviando, pilotoCompleto, type Piloto } from '../src/game/piloto.js'
 import { GravadorDeEntradas, quantizarPasso } from '../src/game/registroDeEntradas.js'
 import { rulesFor, type Difficulty } from '../src/game/rules.js'
-import { ACCELERATION_PEAK, ACCELERATION_SHAPE, createRaceState, stepRace, type RaceInput } from '../src/game/simulation.js'
+import { ACCELERATION_PEAK, ACCELERATION_SHAPE, createRaceState, motorForte, stepRace, type RaceInput } from '../src/game/simulation.js'
 import { TRACK_LENGTH } from '../src/game/track.js'
 
 type Room = {
@@ -158,6 +158,7 @@ function raceWithPhysics(startAt: number, seed: number, difficulty: Difficulty) 
       lateral: state.lateral,
       speed: estado === 'finished' ? 0 : state.speed,
       state: estado,
+      boosting: estado !== 'finished' && motorForte(state),
     })
   }
 
