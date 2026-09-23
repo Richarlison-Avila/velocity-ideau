@@ -67,7 +67,8 @@ function esquecer(chave: string) {
 
 const storedRoom = lerGuardado(ROOM_KEY)
 const storedName = lerGuardado(NAME_KEY) ?? 'Piloto'
-const storedRole: Papel = lerGuardado(ROLE_KEY) === 'espectador' ? 'espectador' : 'piloto'
+// Sem sala guardada, não há arquibancada para onde voltar.
+const storedRole: Papel = storedRoom && lerGuardado(ROLE_KEY) === 'espectador' ? 'espectador' : 'piloto'
 /**
  * O link de assistir leva direto à arquibancada: é o do telão do evento, que
  * ninguém vai ficar clicando.
@@ -129,6 +130,16 @@ function App() {
   /** A abertura da sala, para o ciclo do socket chamar a versão atual. */
   const abrirSalaRef = useRef<(sala: LobbyRoom, papel: Papel) => void>(() => undefined)
   const abrirSala = (sala: LobbyRoom, papel: Papel) => abrirSalaRef.current(sala, papel)
+  /**
+   * Sai da arquibancada junto com a sala. Todo caminho que esquece a sala passa
+   * por aqui: senão o papel de espectador sobraria para a próxima sala, e quem
+   * entrasse nela por outro caminho que não o `openRoom` correria como plateia.
+   */
+  const voltarAPiloto = () => {
+    esquecer(ROLE_KEY)
+    papelRef.current = 'piloto'
+    setPapel('piloto')
+  }
   const roomCodeRef = useRef<string | null>(storedRoom)
   const pilotNameRef = useRef(pilotName)
   const carRef = useRef(car)
@@ -172,6 +183,7 @@ function App() {
         }
         roomCodeRef.current = null
         esquecer(ROOM_KEY)
+        voltarAPiloto()
         setRoom(null)
         setRaceSetup(null)
         setScreen('menu')
@@ -208,6 +220,7 @@ function App() {
       if (roomCodeRef.current !== payload.code) return
       roomCodeRef.current = null
       esquecer(ROOM_KEY)
+      voltarAPiloto()
       setRoom(null)
       setRaceSetup(null)
       setLobbyNotice('')
@@ -384,7 +397,7 @@ function App() {
   const leaveLobby = () => {
     roomCodeRef.current = null
     esquecer(ROOM_KEY)
-    esquecer(ROLE_KEY)
+    voltarAPiloto()
     setRoom(null)
     setRaceSetup(null)
     setLobbyNotice('')
