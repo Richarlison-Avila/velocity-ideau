@@ -595,11 +595,31 @@ A sala comporta seis pilotos, e o lobby foi desenhado para o grid cheio:
 
 ## Como o fantasma funciona
 
-Cada navegador envia dez medições por segundo (progresso, faixa, velocidade e estado). O servidor valida — recusa pacotes atrasados, corrige horários incoerentes e limita avanços impossíveis — e repassa aos outros pilotos da sala.
+Cada navegador envia dez medições por segundo (progresso, faixa, velocidade e estado). O servidor valida — recusa pacotes atrasados, corrige horários incoerentes e limita avanços impossíveis — e repassa aos outros pilotos da sala. Cada conexão só fala pelo próprio piloto: o servidor a amarra a ele quando ela cria ou entra na sala, e recusa telemetria, chegada ou confirmação em nome de outro.
 
-Quem recebe guarda as medições recentes de cada rival e desenha cada um 160 ms no passado, interpolando entre duas medições conhecidas. Se a telemetria falhar, projeta o movimento por até 600 ms e então congela o carro, marcando-o como sem sinal. O progresso exibido nunca recua, então um pacote atrasado não puxa o fantasma para trás.
+Quem recebe desenha cada rival **no presente**. A medição mais nova já chega velha — a rede leva dezenas de milissegundos —, então a posição é projetada até agora, na velocidade da medição e com a aceleração que as últimas mostram. Desenhado 160 ms no passado, como era antes, o rival ficava uns 11 m atrás de onde estava de fato: dois carros lado a lado viam cada um o outro atrás, os dois se achando em primeiro, e o vácuo caía no lugar errado. Com a rede lenta, 120 ms a mais por pacote, o fantasma continua a menos de 4 m do carro de verdade (o teste de ponta a ponta mede isso).
+
+Quando uma medição nova corrige a projeção, a diferença é absorvida em pouco mais de um décimo de segundo, com um teto de ritmo — parece o rival acelerando, e não o carro saltando —, e o fantasma nunca anda para trás. Uma diferença grande demais, a de quem volta de uma queda, reposiciona o carro de uma vez. Sem notícias por 0,9 s, o fantasma congela e é marcado sem sinal. A aba em segundo plano, que congela a física, manda velocidade zero: o fantasma para na tela dos rivais, em vez de seguir andando e depois esperar o carro alcançá-lo.
+
+Na tela, cada fantasma:
+
+- **aparece na profundidade certa.** O carro de quem mandou a telemetria fica um pouco à frente da câmera dele, como o nosso: um rival lado a lado aparece ao lado, e quem vem colado atrás ainda aparece, por cima do nosso carro. Antes, os dois sumiam.
+- **fica legível de longe.** A transparência cai com a distância, para o carro não se perder na bruma, e sobe de novo quando ele fica sem sinal.
+- **diz quem é.** Uma etiqueta na cor do carro leva a posição e o nome, "P2 SCHUMI". Num pelotão, as etiquetas sobem em degraus sobre os carros, em vez de se empilhar num ponto só.
+- **avisa quando vem atrás.** Fora da vista da câmera, o rival vira seta no radar, logo abaixo do nosso carro, na coluna em que vem, com o nome e a distância.
+
+A classificação ao vivo, à esquerda, lista os seis com a diferença em segundos para quem se está olhando e "CHEGOU" para quem já cruzou a linha; a barra de progresso traz a marca de cada um, na cor do carro.
 
 O rival não tem colisão: os carros se atravessam. Mas ele não é só desenho — a posição dele entra na simulação por um caminho só, e estreito: a força do vácuo, um número de 0 a 1 calculado da distância e do alinhamento. É isso que `stepRace` recebe dos rivais — o melhor vácuo entre todos —, e nada mais. Ele não pode empurrar, frear nem desviar o carro do jogador; só permitir que quem vem atrás ande um pouco mais rápido.
+
+## Arquibancada
+
+Uma sala tem seis vagas no grid e, fora delas, até trinta lugares na arquibancada. Quem assiste não ocupa vaga, não confirma, não corre, não entra no resultado e não fala por piloto nenhum; recebe a mesma sala, a mesma largada, a telemetria de todos e o resultado oficial.
+
+- **Entrar.** No menu, o código da sala e "SÓ ASSISTIR, SEM OCUPAR VAGA" — com o grid cheio ou com a prova em andamento. O lobby tem um "LINK PARA ASSISTIR", `?room=CODIGO&assistir=1`, que abre direto na arquibancada: é o do telão do evento. Quem chega no meio da prova recebe o instante oficial e a última posição de cada piloto, e a corrida aparece inteira na hora.
+- **Assistir.** A câmera segue o líder de quem ainda corre, e só troca quando o novo líder se firma na frente — dois carros lado a lado não fazem a imagem pular. As setas do painel, A e D, ou um toque numa linha da classificação escolhem outro piloto; o L volta para o líder. O carro seguido aparece inteiro, e os outros cinco como fantasmas, com as etiquetas.
+- **Trocar de lugar.** Do lobby, quem assiste desce para o grid quando abre uma vaga; quem pilota sobe para assistir enquanto a largada não foi marcada, e a vaga dele abre para outro.
+- **Não atrapalhar.** A saída ou a queda de um espectador não mexe na contagem nem na prova, e a sala segue aberta enquanto houver alguém na arquibancada. Os pilotos veem quantos assistem.
 
 ## Quem decide o vencedor
 
@@ -633,8 +653,10 @@ A revanche precisa do pedido de todos. Com eles, a sala limpa telemetria e resul
 - [x] Cancelamento da largada por desistência, saída ou queda de conexão
 - [x] Reconexão curta e retorno após recarregar a página
 - [x] Telemetria validada pelo servidor e repassada aos outros pilotos
-- [x] Um fantasma por rival, interpolado, translúcido, em cor distinta e na ordem de profundidade da pista
-- [x] Posição no grid, diferença para o rival mais perto em segundos e metros, indicador de rival fora da tela
+- [x] Um fantasma por rival, projetado até o presente, translúcido, em cor distinta e na ordem de profundidade da pista
+- [x] Fantasma legível com seis na pista: etiqueta com posição e nome, rival lado a lado visível, radar de quem vem atrás
+- [x] Posição no grid, classificação ao vivo dos seis, marcas na barra de progresso, diferença para o rival mais perto e indicador de rival fora da tela
+- [x] Arquibancada: até trinta espectadores por sala, fora das vagas, com câmera no líder ou em quem se escolher
 - [x] Chegada validada pelo servidor, com tempo impossível recusado
 - [x] Mesmo vencedor, tempos e diferença em todas as telas
 - [x] Vitória por abandono no duelo; com mais pilotos, o abandono entra na classificação

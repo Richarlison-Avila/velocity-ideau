@@ -113,6 +113,10 @@ const storedPlayerId = identificadorDoPiloto(sessionStorage, globalThis.crypto)
 // Uma atualização acidental da página não pode custar a vaga na sala.
 const ROOM_KEY = 'ghost-racer-room'
 const NAME_KEY = 'ghost-racer-name'
+/** Se a sala guardada é de piloto ou de arquibancada. */
+const ROLE_KEY = 'ghost-racer-role'
+
+type Papel = 'piloto' | 'espectador'
 
 /** A navegação privada pode recusar o armazenamento; o jogo segue sem ele. */
 function lerGuardado(chave: string) {
@@ -141,6 +145,13 @@ function esquecer(chave: string) {
 
 const storedRoom = lerGuardado(ROOM_KEY)
 const storedName = lerGuardado(NAME_KEY) ?? 'Piloto'
+// Sem sala guardada, não há arquibancada para onde voltar.
+const storedRole: Papel = storedRoom && lerGuardado(ROLE_KEY) === 'espectador' ? 'espectador' : 'piloto'
+/**
+ * O link de assistir leva direto à arquibancada: é o do telão do evento, que
+ * ninguém vai ficar clicando.
+ */
+const linkDeAssistir = new URLSearchParams(location.search).get('assistir') === '1'
 
 /**
  * O carro, ao contrário da sala e do nome, fica guardado entre visitas: é uma
@@ -243,9 +254,24 @@ function App() {
     () => (versaoDosRecordes >= 0 ? lerRecorde(armazenamentoLocal(), pistaDoDia.seed, DIFICULDADE_OFICIAL) : null),
     [pistaDoDia.seed, versaoDosRecordes],
   )
+  /** Piloto no grid ou espectador na arquibancada da sala atual. */
+  const [papel, setPapel] = useState<Papel>(storedRole)
 
   // Refs para o ciclo do socket, que não deve depender do estado da tela.
   const ghostsRef = useRef(new Map<string, GhostTracker>())
+  /** A abertura da sala, para o ciclo do socket chamar a versão atual. */
+  const abrirSalaRef = useRef<(sala: LobbyRoom, papel: Papel) => void>(() => undefined)
+  const abrirSala = (sala: LobbyRoom, papel: Papel) => abrirSalaRef.current(sala, papel)
+  /**
+   * Sai da arquibancada junto com a sala. Todo caminho que esquece a sala passa
+   * por aqui: senão o papel de espectador sobraria para a próxima sala, e quem
+   * entrasse nela por outro caminho que não o `openRoom` correria como plateia.
+   */
+  const voltarAPiloto = () => {
+    esquecer(ROLE_KEY)
+    papelRef.current = 'piloto'
+    setPapel('piloto')
+  }
   const roomCodeRef = useRef<string | null>(storedRoom)
   const pilotNameRef = useRef(pilotName)
   const carRef = useRef(car)
@@ -260,9 +286,11 @@ function App() {
    */
   const modoDaProvaRef = useRef<RaceSetup['mode'] | null>(null)
   modoDaProvaRef.current = raceSetup?.mode ?? null
+  const papelRef = useRef(papel)
   pilotNameRef.current = pilotName
   carRef.current = car
   screenRef.current = screen
+  papelRef.current = papel
 
   useEffect(() => serverClock.subscribe(setClock), [])
 
@@ -281,9 +309,22 @@ function App() {
       })
       // Depois de uma queda, volta para a mesma sala com o mesmo identificador.
       const code = roomCodeRef.current
-      if (!code) return
-      const payload = { code, name: pilotNameRef.current, playerId: storedPlayerId, car: carRef.current }
-      socket.emit('room:join', payload, (response: RoomResponse) => {
+      if (!code) {
+        // Aberto pelo link de assistir: vai direto para a arquibancada.
+        const pedido = linkDeAssistir ? new URLSearchParams(location.search).get('room')?.toUpperCase() : null
+        if (pedido && screenRef.current === 'menu') {
+          socket.emit('room:spectate', { code: pedido, name: pilotNameRef.current, spectatorId: storedPlayerId }, (response: RoomResponse) => {
+            if (response.ok && response.room) abrirSala(response.room, 'espectador')
+            else setLobbyError(response.error ?? 'Não foi possível assistir a esta sala.')
+          })
+        }
+        return
+      }
+      const espectando = papelRef.current === 'espectador'
+      const payload = espectando
+        ? { code, name: pilotNameRef.current, spectatorId: storedPlayerId }
+        : { code, name: pilotNameRef.current, playerId: storedPlayerId, car: carRef.current }
+      socket.emit(espectando ? 'room:spectate' : 'room:join', payload, (response: RoomResponse) => {
         if (response.ok && response.room) {
           setRoom(response.room)
           setLobbyError('')
@@ -293,6 +334,7 @@ function App() {
         }
         roomCodeRef.current = null
         esquecer(ROOM_KEY)
+        voltarAPiloto()
         setRoom(null)
         setRaceSetup(null)
         setScreen('menu')
@@ -329,6 +371,7 @@ function App() {
       if (roomCodeRef.current !== payload.code) return
       roomCodeRef.current = null
       esquecer(ROOM_KEY)
+      voltarAPiloto()
       setRoom(null)
       setRaceSetup(null)
       setLobbyNotice('')
@@ -348,6 +391,7 @@ function App() {
     const onPartida = (payload: { room: LobbyRoom }) => {
       roomCodeRef.current = payload.room.code
       guardar(ROOM_KEY, payload.room.code)
+      voltarAPiloto()
       setRoom(payload.room)
       setNaFila(false)
       setNaFilaDesde(null)
@@ -365,6 +409,7 @@ function App() {
       socket.emit('room:leave')
       roomCodeRef.current = null
       esquecer(ROOM_KEY)
+      voltarAPiloto()
       setRoom(null)
       setRaceSetup(null)
       setScreen('ranqueada')
@@ -385,6 +430,7 @@ function App() {
     const onPartidaDaCopa = (payload: { room: LobbyRoom }) => {
       roomCodeRef.current = payload.room.code
       guardar(ROOM_KEY, payload.room.code)
+      voltarAPiloto()
       setRoom(payload.room)
       setRodadaDaCopa(null)
       setScreen((atual) => (atual === 'menu' ? 'lobby' : atual))
@@ -495,15 +541,21 @@ function App() {
     return name
   }
 
-  const openRoom = (nextRoom: LobbyRoom) => {
+  const openRoom = (nextRoom: LobbyRoom, novoPapel: Papel = 'piloto') => {
     roomCodeRef.current = nextRoom.code
     guardar(ROOM_KEY, nextRoom.code)
+    guardar(ROLE_KEY, novoPapel)
+    setPapel(novoPapel)
+    papelRef.current = novoPapel
     setRoom(nextRoom)
     setLobbyError('')
     setLobbyNotice('')
-    setScreen('lobby')
-    history.replaceState(null, '', `?room=${nextRoom.code}`)
+    // Quem chega à arquibancada no meio da prova vai direto para a pista: o
+    // efeito da largada cuida disso. Os outros esperam no lobby.
+    setScreen((atual) => (atual === 'race' ? atual : 'lobby'))
+    history.replaceState(null, '', novoPapel === 'espectador' ? `?room=${nextRoom.code}&assistir=1` : `?room=${nextRoom.code}`)
   }
+  abrirSalaRef.current = openRoom
 
   const createRoom = () => {
     socket.emit('room:create', { name: selectedName(), playerId: storedPlayerId, car }, (response: RoomResponse) => {
@@ -518,6 +570,34 @@ function App() {
     socket.emit('room:join', { code, name: selectedName(), playerId: storedPlayerId, car }, (response: RoomResponse) => {
       if (response.ok && response.room) openRoom(response.room)
       else setLobbyError(response.error ?? 'Não foi possível entrar na sala.')
+    })
+  }
+
+  /** Arquibancada: assistir sem ocupar vaga, com o grid cheio ou a prova em andamento. */
+  const spectateRoom = () => {
+    const code = joinCode.trim().toUpperCase()
+    if (!code) return setLobbyError('Digite o código da sala.')
+    socket.emit('room:spectate', { code, name: selectedName(), spectatorId: storedPlayerId }, (response: RoomResponse) => {
+      if (response.ok && response.room) openRoom(response.room, 'espectador')
+      else setLobbyError(response.error ?? 'Não foi possível assistir a esta sala.')
+    })
+  }
+
+  /** Do lobby: quem assistia desce para uma vaga livre do grid. */
+  const entrarNoGrid = () => {
+    if (!room) return
+    socket.emit('room:join', { code: room.code, name: pilotName, playerId: storedPlayerId, car }, (response: RoomResponse) => {
+      if (response.ok && response.room) openRoom(response.room, 'piloto')
+      else setLobbyNotice(response.error ?? 'Não foi possível entrar no grid.')
+    })
+  }
+
+  /** Do lobby: quem estava no grid sobe para assistir, liberando a vaga. */
+  const irParaArquibancada = () => {
+    if (!room) return
+    socket.emit('room:spectate', { code: room.code, name: pilotName, spectatorId: storedPlayerId }, (response: RoomResponse) => {
+      if (response.ok && response.room) openRoom(response.room, 'espectador')
+      else setLobbyNotice(response.error ?? 'Não foi possível ir para a arquibancada.')
     })
   }
 
@@ -699,6 +779,7 @@ function App() {
   const leaveLobby = () => {
     roomCodeRef.current = null
     esquecer(ROOM_KEY)
+    voltarAPiloto()
     setRoom(null)
     setRaceSetup(null)
     setLobbyNotice('')
@@ -710,7 +791,7 @@ function App() {
     setResult(null)
     setOutcome(null)
     setRaceSetup(null)
-    if (room) socket.emit('room:set-ready', { code: room.code, playerId: storedPlayerId, ready: false })
+    if (room && papel === 'piloto') socket.emit('room:set-ready', { code: room.code, playerId: storedPlayerId, ready: false })
     setScreen(room ? 'lobby' : 'menu')
   }
 
@@ -843,15 +924,19 @@ function App() {
         onLeave={leaveLobby}
         onError={setLobbyError}
         onChangeCar={() => openGarage('lobby')}
+        espectador={papel === 'espectador'}
+        onJoinGrid={entrarNoGrid}
+        onSpectate={irParaArquibancada}
       />
     )
   }
 
   if (screen === 'race' && raceSetup) {
     const online = raceSetup.mode === 'online'
+    const assistindo = online && papel === 'espectador'
     const me = room?.players.find((player) => player.id === storedPlayerId)
     const rivals = online
-      ? (room?.players ?? []).filter((player) => player.id !== storedPlayerId).map((player) => {
+      ? (room?.players ?? []).filter((player) => assistindo || player.id !== storedPlayerId).map((player) => {
           let ghost = ghostsRef.current.get(player.id)
           if (!ghost) {
             ghost = new GhostTracker()
@@ -862,20 +947,23 @@ function App() {
       : []
     return (
       <RaceCanvas
-        key={`${raceSetup.mode}-${raceSetup.startAt}-${raceSetup.difficulty}-${raceKey}`}
+        key={`${raceSetup.mode}-${papel}-${raceSetup.startAt}-${raceSetup.difficulty}-${raceKey}`}
         pilotName={pilotName}
-        // Online vale o carro que o servidor registrou: é o mesmo que os rivais veem.
-        car={online ? (me?.car ?? car) : car}
+        // Online vale o carro que o servidor registrou: é o mesmo que os rivais
+        // veem. Na arquibancada, o grid mostra o carro do primeiro piloto até a
+        // câmera ter alguém para seguir.
+        car={assistindo ? (room?.players[0]?.car ?? car) : online ? (me?.car ?? car) : car}
         rivals={rivals}
         startAt={raceSetup.startAt}
         countdownMs={raceSetup.countdownMs}
         trackSeed={raceSetup.trackSeed}
         difficulty={raceSetup.difficulty}
         now={online ? serverClock.now : undefined}
-        mode={raceSetup.mode}
+        mode={assistindo ? 'espectador' : raceSetup.mode}
+        espectadores={room?.spectators?.length ?? 0}
         connectionNotice={online ? connectionNotice : null}
-        onTelemetry={online ? sendTelemetry : undefined}
-        onAbandon={online ? abandonRace : undefined}
+        onTelemetry={online && !assistindo ? sendTelemetry : undefined}
+        onAbandon={online && !assistindo ? abandonRace : undefined}
         recorde={raceSetup.mode === 'contrarrelogio' ? contrarrelogio?.recorde : null}
         onRestart={
           raceSetup.mode === 'contrarrelogio'
@@ -908,13 +996,19 @@ function App() {
     const plDe = (playerId: string) => resultadosRanqueados?.find((resultado) => resultado.playerId === playerId) ?? null
 
     const contra = !online && raceSetup?.mode === 'contrarrelogio' ? resultadoDoContrarrelogio : null
+    const assistiu = online && papel === 'espectador'
+    const vencedor = outcome?.entries.find((entry) => entry.playerId === outcome.winnerId)
     const manchete = contra
       ? contra.novoRecorde
         ? 'Novo recorde.'
         : 'Prova concluída.'
       : !online
       ? 'Prova concluída.'
-      : !outcome
+      : assistiu
+        ? outcome
+          ? 'Bandeirada.'
+          : 'Chegada a caminho.'
+        : !outcome
         ? 'Chegada registrada.'
         : me?.outcome === 'abandoned'
           ? 'Você abandonou.'
@@ -938,10 +1032,12 @@ function App() {
                 : 'BANDEIRA QUADRICULADA'}
           </p>
           <div className={`result-mark ${venci || contra?.novoRecorde ? 'winner' : ''}`}>
-            {online && outcome ? String(minhaPosicao).padStart(2, '0') : '01'}
+            {online && outcome && !assistiu ? String(minhaPosicao).padStart(2, '0') : '01'}
           </div>
           <h1>{manchete}</h1>
-          <p className="result-pilot">{pilotName}</p>
+          <p className="result-pilot">
+            {assistiu ? (vencedor && outcome?.winnerId ? `VENCEU ${vencedor.name}` : 'VOCÊ ASSISTIU DA ARQUIBANCADA') : pilotName}
+          </p>
 
           {online && outcome ? (
             <>
@@ -1113,7 +1209,9 @@ function App() {
             <p className="result-note">LARGADA PERDIDA POR {result.lateStart.toFixed(1)} S NESTE DISPOSITIVO</p>
           )}
 
-          {daCopa && outcome ? (
+          {assistiu ? (
+            outcome && <p className="result-note">A PRÓXIMA LARGADA DA SALA TAMBÉM APARECE AQUI</p>
+          ) : daCopa && outcome ? (
             // Na copa, quem segue só espera: a próxima rodada larga sozinha.
             sigoNaCopa || !rodadaDaCopa ? null : (
               <button
@@ -1262,6 +1360,10 @@ function App() {
                 <input value={joinCode} maxLength={5} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="ABCDE" aria-label="Código da sala" />
                 <button onClick={enterRoom} disabled={connection !== 'connected'}>ENTRAR <span>↗</span></button>
               </div>
+              {/* Sala cheia ou prova em andamento não barram quem só quer ver. */}
+              <button type="button" className="text-button watch-button" onClick={spectateRoom} disabled={connection !== 'connected'}>
+                SÓ ASSISTIR, SEM OCUPAR VAGA <span>↗</span>
+              </button>
             </section>
 
             <section className="mode-card training-mode">

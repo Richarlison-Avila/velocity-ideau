@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CORRECAO_MAXIMA_MPS,
   gapBetween,
   GhostTracker,
   INTERPOLATION_DELAY_MS,
@@ -46,13 +47,94 @@ describe('interpolação do fantasma', () => {
     expect(tracker.sample(BASE + 100 + INTERPOLATION_DELAY_MS)?.lateral).toBeCloseTo(0, 5)
   })
 
-  it('desenha o fantasma no passado recente, e não na última medição', () => {
+  it('desenha o fantasma no presente, projetado da última medição', () => {
     const tracker = new GhostTracker()
     comTelemetriaRegular(tracker)
-    const agora = BASE + 500
-    const amostra = tracker.sample(agora)
     const ultima = tracker.latest!
-    expect(amostra!.progress).toBeLessThan(ultima.progress)
+    // A medição mais nova tem 60 ms: a 70 m/s, o carro já andou mais 4,2 m.
+    const amostra = tracker.sample(ultima.t + 60)
+    expect(amostra!.progress).toBeCloseTo(ultima.progress + 4.2, 1)
+  })
+
+  it('dois carros lado a lado se veem lado a lado, apesar do atraso da rede', () => {
+    // O rival está exatamente na mesma posição do jogador, mas cada medição
+    // chega com 80 ms de rede. Desenhado no passado, ele apareceria uns 11 m
+    // atrás — e os dois se achariam em primeiro.
+    const tracker = new GhostTracker()
+    const verdade = (t: number) => ((t - BASE) / 1000) * 70
+    let pior = 0
+    for (let agora = BASE + 100; agora <= BASE + 3_000; agora += 16) {
+      for (let t = BASE; t <= agora - 80; t += 100) tracker.push(snapshot(t, verdade(t)))
+      const visto = tracker.sample(agora)!
+      if (agora > BASE + 400) pior = Math.max(pior, Math.abs(visto.progress - verdade(agora)))
+    }
+    expect(pior).toBeLessThan(1)
+  })
+})
+
+describe('projeção e correção', () => {
+  it('a projeção leva em conta a aceleração das últimas medições', () => {
+    const tracker = new GhostTracker()
+    // Acelerando a 10 m/s²: de 50 para 55 m/s em meio segundo.
+    for (let i = 0; i <= 5; i += 1) {
+      const s = i / 10
+      tracker.push(snapshot(BASE + i * 100, 50 * s + 5 * s * s, { speed: (50 + 10 * s) * 3.6 }))
+    }
+    const ultima = tracker.latest!
+    const amostra = tracker.sample(ultima.t + 200)!
+    // 0,2 s a 55 m/s com mais 10 m/s²: 11 m + 0,2 m.
+    expect(amostra.progress).toBeCloseTo(ultima.progress + 11.2, 1)
+  })
+
+  it('freando até parar, a projeção não vira ré', () => {
+    const tracker = new GhostTracker()
+    for (let i = 0; i <= 3; i += 1) tracker.push(snapshot(BASE + i * 100, 1_000 + i * 2, { speed: Math.max(0, 60 - i * 20) }))
+    const ultima = tracker.latest!
+    let anterior = -Infinity
+    for (let agora = ultima.t; agora < ultima.t + 800; agora += 16) {
+      const amostra = tracker.sample(agora)!
+      expect(amostra.progress).toBeGreaterThanOrEqual(anterior)
+      expect(amostra.progress).toBeLessThan(ultima.progress + 2)
+      anterior = amostra.progress
+    }
+  })
+
+  it('uma correção pequena é absorvida sem salto, no teto de ritmo', () => {
+    const tracker = new GhostTracker()
+    comTelemetriaRegular(tracker, 6)
+    let agora = BASE + 500
+    let anterior = tracker.sample(agora)!.progress
+    // A próxima medição mostra o rival 6 m além do que a projeção dizia.
+    tracker.push(snapshot(BASE + 600, 5 * 7 + 7 + 6))
+    let maiorPasso = 0
+    for (agora += 16; agora <= BASE + 1_000; agora += 16) {
+      const atual = tracker.sample(agora)!.progress
+      maiorPasso = Math.max(maiorPasso, atual - anterior)
+      anterior = atual
+    }
+    // 70 m/s do carro mais o teto da correção, em 16 ms.
+    expect(maiorPasso).toBeLessThan(((70 + CORRECAO_MAXIMA_MPS) * 16) / 1000 + 0.01)
+  })
+
+  it('uma diferença grande demais reposiciona o carro de uma vez', () => {
+    const tracker = new GhostTracker()
+    comTelemetriaRegular(tracker, 6)
+    tracker.sample(BASE + 500)
+    // Voltou depois de uma queda: 200 m à frente do que se via.
+    tracker.push(snapshot(BASE + 520, 35 + 200))
+    expect(tracker.sample(BASE + 536)!.progress).toBeGreaterThan(35 + 200)
+  })
+
+  it('a posição lateral acompanha sem trancos', () => {
+    const tracker = new GhostTracker()
+    tracker.push(snapshot(BASE, 0, { lateral: -0.5 }))
+    tracker.sample(BASE)
+    tracker.push(snapshot(BASE + 100, 7, { lateral: 0.5 }))
+    const logo = tracker.sample(BASE + 116)!.lateral
+    // Um quadro depois, o carro começou a ir, mas ainda não chegou.
+    expect(logo).toBeGreaterThan(-0.5)
+    expect(logo).toBeLessThan(0.5)
+    expect(tracker.sample(BASE + 700)!.lateral).toBeCloseTo(0.5, 1)
   })
 })
 
@@ -136,12 +218,34 @@ describe('perda de sinal', () => {
     expect(limite?.progress).toBeCloseTo(100 + MAX_EXTRAPOLATION_MS / 10, 5)
   })
 
+  it('sem sinal, o fantasma para de verdade: velocidade zero', () => {
+    const tracker = new GhostTracker()
+    tracker.push(snapshot(BASE, 100, { speed: 252 }))
+    expect(tracker.sample(BASE + MAX_EXTRAPOLATION_MS + 100)?.speed).toBe(0)
+  })
+
   it('quem já chegou não continua andando', () => {
     const tracker = new GhostTracker()
     tracker.push(snapshot(BASE, 4_800, { state: 'finished', speed: 252 }))
     const amostra = tracker.sample(BASE + INTERPOLATION_DELAY_MS + 400)
     expect(amostra?.progress).toBe(4_800)
     expect(amostra?.state).toBe('finished')
+    expect(amostra?.finishedAt).toBe(BASE)
+  })
+
+  it('a chegada no mesmo milissegundo da última medição vale mais do que ela', () => {
+    const tracker = new GhostTracker()
+    tracker.push(snapshot(BASE, 4_800))
+    tracker.push(snapshot(BASE, 4_800, { state: 'finished', speed: 0 }))
+    expect(tracker.sample(BASE + 50)?.state).toBe('finished')
+  })
+
+  it('medições com números estragados não quebram o fantasma', () => {
+    const tracker = new GhostTracker()
+    tracker.push(snapshot(BASE, 100, { lateral: Number.NaN, speed: Number.POSITIVE_INFINITY }))
+    const amostra = tracker.sample(BASE + 100)!
+    expect(Number.isFinite(amostra.progress)).toBe(true)
+    expect(amostra.lateral).toBe(0)
   })
 
   it('reiniciar limpa o histórico para a próxima corrida', () => {

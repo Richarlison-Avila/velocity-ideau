@@ -117,6 +117,10 @@ button { cursor: pointer; }
 .join-control input { height: 42px; border-radius: 2px 0 0 2px; font: 700 14px 'Barlow Condensed', sans-serif; letter-spacing: .2em; text-transform: uppercase; }
 .join-control button { border: 1px solid #3a444e; border-left: 0; background: #19212a; color: #fff; padding: 0 12px; font: 800 9px 'Barlow Condensed', sans-serif; letter-spacing: .12em; }
 .join-control button span { margin-left: 4px; color: var(--orange); }
+/* Assistir sem ocupar vaga: discreto, logo abaixo de entrar. */
+.watch-button { margin: 12px 0 0; padding: 0; color: #8b96a1; font-size: 9px; }
+.watch-button span { margin-left: 4px; color: #43e7ff; }
+.watch-button:disabled { opacity: .45; }
 .training-mode .difficulty-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin-top: 0; }
 .training-mode .difficulty-picker legend { grid-column: 1 / -1; }
 .training-mode .difficulty-picker button { min-width: 0; padding: 9px 3px; font-size: 8px; letter-spacing: .08em; }
@@ -422,6 +426,60 @@ button { cursor: pointer; }
 .rival-panel span { display: block; color: #43e7ff; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .22em; text-transform: uppercase; }
 .rival-panel strong { display: block; margin-top: 3px; font: 700 15px 'Barlow Condensed', sans-serif; letter-spacing: .06em; font-variant-numeric: tabular-nums; }
 .rival-panel em { display: block; margin-top: 4px; color: #93a0ab; font: 600 10px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .1em; }
+
+/* Fantasmas de rede: classificação ao vivo, marcas na barra de progresso,
+   plateia e a câmera da arquibancada. */
+.ao-vivo { margin-left: 6px; padding: 2px 7px; background: #e1261c; color: #fff; font: 800 9px 'Barlow Condensed', sans-serif; letter-spacing: .16em; animation: ao-vivo 1.6s ease-in-out infinite; }
+@keyframes ao-vivo { 50% { opacity: .55; } }
+.publico { margin-left: 8px; color: rgba(255,255,255,.62); font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.publico::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: #43e7ff; vertical-align: 1px; }
+
+.progress-marcas { position: relative; height: 0; }
+.progress-marcas i { position: absolute; top: -6px; width: 8px; height: 8px; margin-left: -4px; border: 1px solid rgba(4,7,11,.9); border-radius: 50%; transition: left .2s linear; }
+.progress-marcas i.destaque { top: -8px; z-index: 1; width: 12px; height: 12px; margin-left: -6px; border: 2px solid #fff; }
+
+.classificacao { position: absolute; z-index: 4; top: 142px; left: 24px; display: grid; gap: 2px; width: 176px; margin: 0; padding: 0; list-style: none; pointer-events: none; }
+.classificacao li { --cor: var(--orange); background: rgba(4,7,11,.64); }
+.classificacao .linha { display: grid; grid-template-columns: 14px 3px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; padding: 3px 8px; border: 0; background: transparent; color: #dfe5ea; font: 700 12px 'Barlow Condensed', sans-serif; letter-spacing: .06em; text-align: left; text-transform: uppercase; }
+.classificacao b { color: rgba(255,255,255,.55); font-weight: 800; text-align: right; }
+.classificacao i { align-self: stretch; min-height: 13px; background: var(--cor); }
+.classificacao span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.classificacao em { color: #9aa6b1; font-size: 11px; font-style: normal; font-variant-numeric: tabular-nums; }
+.classificacao li.destaque { background: color-mix(in srgb, var(--cor) 28%, rgba(4,7,11,.8)); }
+.classificacao li.destaque .linha, .classificacao li.destaque b, .classificacao li.destaque em { color: #fff; }
+.classificacao li.chegou em { color: #45e7ad; }
+.classificacao li.sem-sinal { opacity: .55; }
+.classificacao.clicavel { pointer-events: auto; }
+.classificacao.clicavel .linha { cursor: pointer; }
+.classificacao.clicavel .linha:hover, .classificacao.clicavel .linha:focus-visible { background: rgba(255,255,255,.1); outline: none; }
+
+.espectador-controles { position: absolute; z-index: 5; left: 50%; bottom: 12px; display: grid; grid-template-columns: 46px minmax(230px, auto) 46px auto; align-items: stretch; gap: 6px; transform: translateX(-50%); }
+.espectador-controles button { border: 1px solid rgba(255,255,255,.22); background: rgba(8,12,17,.72); color: #fff; font: 800 12px 'Barlow Condensed', sans-serif; letter-spacing: .14em; backdrop-filter: blur(4px); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.espectador-controles button:hover { border-color: rgba(255,255,255,.45); }
+.espectador-controles .trocar { font: 300 30px/1 sans-serif; }
+.espectador-controles .lider { padding: 0 14px; }
+.espectador-controles .lider.on { border-color: var(--orange); background: rgba(255,75,43,.32); }
+.espectador-controles .seguido { position: relative; display: grid; align-content: center; min-height: 58px; padding: 7px 16px 7px 94px; border: 1px solid rgba(255,255,255,.16); background: rgba(4,7,11,.74); backdrop-filter: blur(5px); }
+.espectador-controles .seguido img { position: absolute; top: 50%; left: 10px; width: 74px; transform: translateY(-50%); }
+.espectador-controles .seguido span { color: #43e7ff; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .22em; }
+.espectador-controles .seguido strong { font: 800 italic 17px 'Barlow Condensed', sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+.espectador-controles .seguido em { color: #9aa6b1; font: 700 10px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .12em; }
+
+@media (max-width: 600px) {
+  .classificacao { top: 198px; left: 12px; width: 128px; }
+  .classificacao .linha { grid-template-columns: 11px 3px minmax(0, 1fr) auto; gap: 5px; padding: 2px 6px; font-size: 10px; }
+  .classificacao i { min-height: 11px; }
+  .classificacao em { font-size: 9px; }
+  .espectador-controles { right: 12px; bottom: max(16px, env(safe-area-inset-bottom)); left: 12px; grid-template-columns: 40px minmax(0, 1fr) 40px auto; transform: none; }
+  .espectador-controles .seguido { padding-left: 74px; }
+  .espectador-controles .seguido img { width: 56px; }
+  .espectador-controles .lider { padding: 0 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ao-vivo { animation: none; }
+  .progress-marcas i { transition: none; }
+}
 .rival-panel.stale { border-color: rgba(255,174,0,.4); }
 .rival-panel.stale strong { color: var(--amber); }
 /* Com o rival à vista na pista, o painel sai da frente. */
@@ -511,6 +569,11 @@ button { cursor: pointer; }
 .qr-wrap { display: inline-flex; padding: 12px; background: #f4f4ee; }
 .share-panel > span { display: block; margin: 12px 0; color: #69747f; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .17em; }
 .copy-button { width: 180px; padding: 11px; border: 1px solid #343d46; background: transparent; color: #d5dadd; font: 700 10px 'Barlow Condensed', sans-serif; letter-spacing: .13em; }
+/* O link da arquibancada, embaixo do de entrar. */
+.copy-button.watch { margin-top: 8px; border-color: rgba(67,231,255,.35); color: #9fefff; }
+/* Quem assiste, logo abaixo do grid: nomes corridos, sem vaga nem botão. */
+.arquibancada { margin: 12px 0 16px; color: #8d97a1; font: 600 12px 'Barlow Condensed', sans-serif; letter-spacing: .06em; line-height: 1.5; }
+.arquibancada span { display: block; margin-bottom: 2px; color: #43e7ff; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .18em; }
 
 @media (min-width: 900px) {
   .touch-controls .steer, .touch-controls .boost-button { opacity: .36; }

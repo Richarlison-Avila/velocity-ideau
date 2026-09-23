@@ -36,6 +36,13 @@ export type LobbyRoom = {
   ranqueada?: boolean
   /** Sala de uma rodada da Copa do Dia: largada automática, e o último sai. */
   copa?: { divisao: number; rodada: number }
+  /** Quem assiste da arquibancada: fora das vagas do grid. */
+  spectators?: LobbySpectator[]
+}
+
+export type LobbySpectator = {
+  id: string
+  name: string
 }
 
 export type RoomResponse = {

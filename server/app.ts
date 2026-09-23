@@ -66,7 +66,7 @@ type Ack = (response: { ok: boolean; room?: PublicRoom | null; error?: string })
 type Resposta = (response: { ok: boolean; error?: string } & Record<string, unknown>) => void
 
 /** O que o servidor sabe de cada conexão: quem ela é na sala e qual perfil a abriu. */
-type DadosDoSocket = { playerId?: string; perfilId?: string }
+type DadosDoSocket = { playerId?: string; perfilId?: string; espectadorDe?: string }
 
 /**
  * O piloto de uma mensagem precisa ser o da conexão que a enviou.
@@ -468,6 +468,8 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       try {
         const room = rooms.join(payload.code, socket.id, payload.playerId, payload.name, payload.car)
         ;(socket.data as DadosDoSocket).playerId = payload.playerId
+        // Quem assistia e desceu para o grid deixa de ser espectador.
+        ;(socket.data as DadosDoSocket).espectadorDe = undefined
         socket.join(room.code)
 
         const key = graceKey(room.code, payload.playerId)
@@ -500,6 +502,44 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
         }
       } catch (error) {
         ack({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível entrar na sala.' })
+      }
+    })
+
+    /**
+     * Arquibancada: assistir sem ocupar vaga no grid.
+     *
+     * O espectador entra no mesmo canal da sala, então recebe tudo o que os
+     * pilotos recebem — a sala, a largada, a telemetria de cada um e o
+     * resultado. Quem chega no meio da prova ganha o instante oficial e a
+     * última posição de todos, para a corrida aparecer inteira na hora.
+     */
+    socket.on('room:spectate', (payload: { code: string; name: string; spectatorId: string }, ack: Ack) => {
+      try {
+        const eraPiloto = rooms.get(payload.code)?.players.some((player) => player.id === payload.spectatorId) ?? false
+        const room = rooms.spectate(payload.code, socket.id, payload.spectatorId, payload.name)
+        const dados = socket.data as DadosDoSocket
+        // Quem estava no grid desta sala e subiu para assistir não fala mais pelo piloto.
+        if (eraPiloto && dados.playerId === payload.spectatorId) dados.playerId = undefined
+        dados.espectadorDe = room.code
+        socket.join(room.code)
+        ack({ ok: true, room })
+        publish(room.code, room)
+        // Quem subiu podia ser o único que faltava confirmar.
+        scheduleIfReady(room.code)
+
+        if (room.startAt && (room.status === 'countdown' || room.status === 'racing')) {
+          socket.emit('race:scheduled', {
+            code: room.code,
+            startAt: room.startAt,
+            countdownMs: room.countdownMs,
+            trackSeed: room.trackSeed,
+            difficulty: room.difficulty,
+            serverTime: Date.now(),
+          })
+          for (const telemetria of rooms.allTelemetries(room.code)) socket.emit('race:rival', telemetria)
+        }
+      } catch (error) {
+        ack({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível assistir a esta sala.' })
       }
     })
 
@@ -785,7 +825,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
     socket.on('room:leave', () => {
       const quemSai = (socket.data as DadosDoSocket).playerId
       for (const update of rooms.leaveBySocket(socket.id)) {
-        clearStartTimer(update.code)
+        if (update.cancelledCountdown) clearStartTimer(update.code)
         socket.leave(update.code)
         if (update.room && update.cancelledCountdown) {
           io.to(update.code).emit('race:cancelled', { code: update.code, reason: 'Um piloto saiu da sala.' })
@@ -802,6 +842,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
 
     socket.on('disconnect', () => {
       ranqueada.sairPorSocket(socket.id)
+      for (const update of rooms.dropSpectatorsBySocket(socket.id)) publish(update.code, update.room)
       for (const update of rooms.markDisconnected(socket.id)) {
         if (!update.room) continue
         if (update.cancelledCountdown) {

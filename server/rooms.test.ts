@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_CAR } from '../src/game/cars.js'
-import { LATERAL_LIMIT, minRaceSeconds, RoomError, RoomStore, type Telemetry } from './rooms.js'
+import { LATERAL_LIMIT, MAX_SPECTATORS, minRaceSeconds, RoomError, RoomStore, type Telemetry } from './rooms.js'
 
 /** Relógio controlado para testar agendamento e janela de reconexão. */
 function createClock(start = 1_000_000) {
@@ -1026,5 +1026,162 @@ describe('anfitrião tira piloto do grid', () => {
     expect(rooms.get(code)?.status).toBe('countdown')
     expect(() => rooms.kick(code, 'a', 'c')).toThrow(RoomError)
     expect(rooms.get(code)?.players).toHaveLength(3)
+  })
+})
+
+describe('arquibancada', () => {
+  /** Dois pilotos confirmados e a prova já correndo. */
+  function provaCorrendo() {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now, countdownMs: 1_000 })
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    clock.advance(1_000)
+    rooms.beginRace(code)
+    return { rooms, code, clock }
+  }
+
+  it('assiste a uma sala cheia sem ocupar vaga', () => {
+    const rooms = new RoomStore()
+    const code = roomWithSixPilots(rooms)
+    expect(() => rooms.join(code, 'socket-g', 'g', 'Gil')).toThrow(RoomError)
+    const sala = rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    expect(sala.players).toHaveLength(6)
+    expect(sala.spectators).toEqual([{ id: 'g', name: 'Gil' }])
+  })
+
+  it('entra para assistir com a prova em andamento', () => {
+    const { rooms, code } = provaCorrendo()
+    expect(() => rooms.join(code, 'socket-g', 'g', 'Gil')).toThrow(/já começou/)
+    expect(rooms.spectate(code, 'socket-g', 'g', 'Gil').status).toBe('racing')
+  })
+
+  it('não conta para a largada: os pilotos confirmam sem esperar a arquibancada', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    rooms.setReady(code, 'a', true)
+    expect(rooms.setReady(code, 'b', true).status).toBe('ready')
+  })
+
+  it('a saída do espectador não mexe na contagem', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    const [saida] = rooms.leaveBySocket('socket-g')
+    expect(saida.cancelledCountdown).toBe(false)
+    expect(saida.room?.status).toBe('countdown')
+    expect(saida.room?.spectators).toEqual([])
+  })
+
+  it('a saída do espectador no meio da prova não reinicia a corrida de ninguém', () => {
+    const { rooms, code } = provaCorrendo()
+    rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    expect(rooms.leaveBySocket('socket-g')[0].room?.status).toBe('racing')
+  })
+
+  it('queda de conexão tira o espectador na hora, e só ele', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    const [update] = rooms.dropSpectatorsBySocket('socket-g')
+    expect(update.room?.spectators).toEqual([])
+    expect(rooms.dropSpectatorsBySocket('socket-a')).toEqual([])
+    expect(rooms.get(code)?.players).toHaveLength(2)
+  })
+
+  it('quem volta reencontra o próprio lugar, sem se repetir', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    expect(rooms.spectate(code, 'socket-g2', 'g', 'Gil Novo').spectators).toEqual([{ id: 'g', name: 'Gil Novo' }])
+  })
+
+  it('desce da arquibancada para uma vaga livre do grid', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    const sala = rooms.join(code, 'socket-g', 'g', 'Gil')
+    expect(sala.players.map((player) => player.id)).toContain('g')
+    expect(sala.spectators).toEqual([])
+  })
+
+  it('recusado no grid, continua na arquibancada', () => {
+    const rooms = new RoomStore()
+    const code = roomWithSixPilots(rooms)
+    rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    expect(() => rooms.join(code, 'socket-g', 'g', 'Gil')).toThrow(RoomError)
+    expect(rooms.get(code)?.spectators).toEqual([{ id: 'g', name: 'Gil' }])
+  })
+
+  it('sobe do grid para assistir antes da largada, e abre a vaga', () => {
+    const rooms = new RoomStore()
+    const code = roomWithSixPilots(rooms)
+    const sala = rooms.spectate(code, 'socket-f', 'f', 'Fábio')
+    expect(sala.players).toHaveLength(5)
+    expect(sala.spectators.map((spectator) => spectator.id)).toEqual(['f'])
+    // Quem subiu não conta mais: os outros cinco confirmados largam.
+    for (const id of ['a', 'b', 'c', 'd', 'e']) rooms.setReady(code, id, true)
+    expect(rooms.get(code)?.status).toBe('ready')
+  })
+
+  it('com a largada marcada, quem está no grid não sai para assistir', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    expect(() => rooms.spectate(code, 'socket-b', 'b', 'Beto')).toThrow(/largada marcada/)
+    expect(rooms.get(code)?.players).toHaveLength(2)
+  })
+
+  it('o anfitrião que sobe para assistir passa a sala adiante', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    expect(rooms.spectate(code, 'socket-a', 'a', 'Ana').hostId).toBe('b')
+  })
+
+  it('a sala segue aberta enquanto houver alguém na arquibancada', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    rooms.leaveBySocket('socket-a')
+    rooms.leaveBySocket('socket-b')
+    expect(rooms.get(code)?.players).toEqual([])
+    expect(rooms.get(code)?.hostId).toBeNull()
+    // O primeiro a chegar no grid vazio vira o anfitrião.
+    expect(rooms.join(code, 'socket-h', 'h', 'Hugo').hostId).toBe('h')
+    rooms.leaveBySocket('socket-h')
+    rooms.leaveBySocket('socket-g')
+    expect(rooms.get(code)).toBeNull()
+  })
+
+  it('a arquibancada tem lotação', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    for (let i = 0; i < MAX_SPECTATORS; i += 1) rooms.spectate(code, `socket-x${i}`, `x${i}`, `X${i}`)
+    expect(() => rooms.spectate(code, 'socket-y', 'y', 'Yuri')).toThrow(/lotada/)
+    // Quem já está lá continua podendo voltar depois de uma queda.
+    expect(rooms.spectate(code, 'socket-x0-de-novo', 'x0', 'X0').spectators).toHaveLength(MAX_SPECTATORS)
+  })
+
+  it('quem chega no meio da prova recebe a última posição de todos os pilotos', () => {
+    const { rooms, code, clock } = provaCorrendo()
+    const medicao = (progress: number): Telemetry => ({ t: clock.now(), progress, lateral: 0, speed: 200, state: 'racing' })
+    rooms.acceptTelemetry(code, 'a', medicao(10))
+    rooms.acceptTelemetry(code, 'b', medicao(12))
+    expect(rooms.allTelemetries(code).map((telemetria) => telemetria.playerId).sort()).toEqual(['a', 'b'])
+  })
+
+  it('não entra no resultado da prova', () => {
+    const { rooms, code } = provaCorrendo()
+    rooms.spectate(code, 'socket-g', 'g', 'Gil')
+    const encerrada = rooms.abandonRace(code, 'a')
+    expect(encerrada?.outcome?.entries.map((entry) => entry.playerId).sort()).toEqual(['a', 'b'])
   })
 })
