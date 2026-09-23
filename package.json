@@ -9,7 +9,7 @@
     "dev:server": "cross-env PORT=3001 tsx watch server/index.ts",
     "dev:paralelo": "concurrently -k -n SERVIDOR,JOGO -c yellow,cyan \"cross-env PORT=3002 tsx watch server/index.ts\" \"cross-env GAME_SERVER_URL=http://127.0.0.1:3002 vite --port 5175 --strictPort\"",
     "build": "tsc -b && tsc --noEmit -p tsconfig.server.json && vite build",
-    "start": "tsx server/index.ts",
+    "start": "node server.js",
     "preview": "vite preview",
     "test": "vitest run",
     "piloto": "tsx scripts/piloto-virtual.ts",

@@ -9,10 +9,12 @@ RUN npm run build
 FROM node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PORT=3001
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY server ./server
+COPY server.js ./
 # A pasta inteira, e não um arquivo escolhido a dedo: o servidor importa as
 # regras e a simulação do jogo, e estas importam outros módulos daqui. Listar
 # um por um já deixou a imagem sem `rules.ts` e sem `simulation.ts`, e a falha
