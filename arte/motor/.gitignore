@@ -1,0 +1,4 @@
+# Cópias decodificadas para WAV ficam só na máquina de quem corta.
+*.wav
+# A gravação do Mercedes V10 não tem licença livre: nunca entra no repositório.
+v10.*
