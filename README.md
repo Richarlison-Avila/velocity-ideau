@@ -292,21 +292,111 @@ npm run piloto -- CODIGO --nome Rival --velocidade 250 --carro schumacher
 
 Ele entra na sala como mais um piloto, confirma presença, corre no ritmo pedido e envia telemetria pelo mesmo protocolo do navegador. Sem `--carro`, corre com a Red Bull, diferente do carro padrão do navegador, para o fantasma mostrar a pintura do rival. Para encher o grid, rode um por vaga, cada um com o próprio `--nome` e `--carro`.
 
+Com `--parado`, ele entra e nunca confirma: é o celular esquecido na mesa, para testar o anfitrião tirando alguém do grid. Tirado, o piloto virtual se despede e encerra.
+
 ## Controles
 
 - `A` / `D` ou setas: direção
 - `Espaço`: boost
 - Celular: botões de direção e boost na tela
-- **SOM** liga e desliga todo o áudio; **MÚSICA** liga e desliga só a trilha, e as duas escolhas ficam guardadas na aba
+- **SOM** liga e desliga todo o áudio; **MÚSICA** liga e desliga só a trilha — na corrida e no lobby —, e as duas escolhas ficam guardadas na aba
+- **RÁDIO ⏭** ou `R`: próxima faixa da Rádio Fantasma
+
+### Motor
+
+Cada carro tem a voz do motor da época dele, tocada por `src/game/motorF1.ts` a partir de laços em `public/audio/motor`, cortados de gravações de verdade:
+
+| Voz | Carros | Câmbio | Gravação |
+| --- | --- | --- | --- |
+| Honda V6 turbo | Senna (McLaren) | 6 marchas, troca a 12.500 | McLaren-Honda MP4/4 (1988) |
+| TAG V6 turbo | Senna (Lotus) | 5 marchas, troca a 11.400 | McLaren-TAG MP4/2C (1986) |
+| Mercedes V10 | Schumacher | 7 marchas, troca a 18.300 | McLaren-Mercedes MP4-16 (2001) |
+| Cosworth V10 | Barrichello (Ferrari) | 7 marchas, troca a 17.900 | Red Bull-Cosworth RB1 (2005) |
+| Renault V10 | Alonso (Renault) | 6 marchas, troca a 16.600 | Williams-Renault FW18 (1996) |
+| Ferrari V8 | Massa (Ferrari) | 7 marchas, troca a 17.800 | Ferrari F60 (2009) |
+| Mercedes V8 | Barrichello (Brawn) | 7 marchas, troca a 17.800 | Brawn-Mercedes BGP 001 (2009) |
+| Renault V8 | Vettel | 7 marchas, troca a 17.800 | Red Bull-Renault RB5 (2009) e RB8 (2012) |
+| V6 turbo híbrido | os oito da era híbrida | 8 marchas, troca a 14.600 | passagens de F1 numa pista, em 2024 |
+
+Quando não havia gravação da fábrica certa, entrou a da mesma época: a Lotus de 1985 ganha o V6 turbo TAG, e as duas Ferrari de V10 ficaram com vozes diferentes para não soarem iguais.
+
+- **Como os laços foram cortados.** A rotação foi rastreada ao longo de cada gravação pela soma das ordens do motor — num quatro tempos, a explosão é a ordem 3 no V6, 4 no V8 e 5 no V10, e as ordens de meia volta aparecem em todos —, trecho a trecho, numa faixa estreita de rotação para não pular de oitava. Cada trecho de aceleração plena foi reamostrado com taxa variável até o motor girar em rotação constante; o volume foi achatado, para o carro passando perto do microfone não virar uma onda; os trechos de uma mesma camada foram equalizados até terem o mesmo timbre e emendados onde mais se parecem; e o fim de cada laço cruza com o começo num múltiplo exato do ciclo de duas voltas, por isso ele toca para sempre sem pulsar. Trechos com estalo de troca de marcha ou chiado de pneu ficaram de fora.
+- **Como tocam.** Em cada instante soam as duas camadas vizinhas da rotação, cada uma esticada até ela e cruzadas com potência constante, numa escala logarítmica, que é como o ouvido mede altura; a camada que domina nunca é esticada mais de um quinto. Perdendo velocidade — batida, grama, reset —, a mistura passa para o laço sem carga, onde a gravação tem um, ou o motor abaixa.
+- **Câmbio.** O cruzeiro cai sempre na penúltima marcha, a uns nove décimos da troca, e o boost puxa a última até o grito. As quedas são as de corrida — da primeira para a segunda o motor cai quase um terço, da última troca pouco mais de um décimo —, e a primeira troca nunca derruba o motor abaixo do giro da largada. Na troca, a ignição corta por 45 ms.
+- **Sem depender do arquivo.** Enquanto os laços não chegam — ou se não chegarem —, toca o motor de osciladores de antes. O volume das amostras foi casado com o dele por medição, e as nove vozes ficam a menos de um decibel e meio umas das outras em cruzeiro. Só a voz do carro escolhido é baixada, entre 40 e 150 kB por laço, e tocá-la custa menos de 1% de um núcleo.
+
+#### Créditos dos sons
+
+Os laços são obras derivadas: trechos recortados, com a rotação normalizada, o volume achatado, o timbre equalizado e fechados em laço.
+
+| Voz | Origem | Autor | Licença |
+| --- | --- | --- | --- |
+| Honda V6 turbo | [McLaren-Honda MP4/4 (1988) driven by Bruno Senna](https://commons.wikimedia.org/wiki/File:McLaren-Honda_MP4_4_(1988)_driven_by_Bruno_Senna.ogg) | Ed Pond (Edvvc), Wikimedia Commons | [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/) |
+| TAG V6 turbo | [McLaren-Tag MP4/2C (1986)](https://commons.wikimedia.org/wiki/File:McLaren-Tag_MP4_2C_(1986).ogg) | Ed Pond (Edvvc), Wikimedia Commons | CC BY-SA 3.0 |
+| Cosworth V10 | [Red Bull-Cosworth RB1 (2005)](https://commons.wikimedia.org/wiki/File:Red_Bull-Cosworth_RB1_(2005).ogg) | Ed Pond (Edvvc), Wikimedia Commons | CC BY-SA 3.0 |
+| Renault V10 | [Williams-Renault FW18 (1996)](https://commons.wikimedia.org/wiki/File:Williams-Renault_FW18_(1996).ogg) | Ed Pond (Edvvc), Wikimedia Commons | CC BY-SA 3.0 |
+| Ferrari V8 | [Ferrari F60 (2009)](https://commons.wikimedia.org/wiki/File:Ferrari_F60_(2009).ogg) | Ed Pond (Edvvc), Wikimedia Commons | CC BY-SA 3.0 |
+| Mercedes V8 | [Brawn-Mercedes BGP 001 (2009)](https://commons.wikimedia.org/wiki/File:Brawn-Mercedes_BGP_001_(2009).ogg) | Ed Pond (Edvvc), Wikimedia Commons | CC BY-SA 3.0 |
+| Renault V8 | [Red Bull-Renault RB5 (2009)](https://commons.wikimedia.org/wiki/File:Red_Bull-Renault_RB5_(2009).ogg) e [F-1raceCar-IdleAndRaceStartDemo](https://freesound.org/people/Ears68/sounds/181187/) | Ed Pond (Edvvc), Wikimedia Commons; Ears68, Freesound | CC BY-SA 3.0; [CC0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| V6 turbo híbrido | passagens do pacote [Racetrack Session](https://freesound.org/people/Geoff-Bremner-Audio/packs/41400/) | Geoff Bremner, Freesound | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+| Mercedes V10 | vídeo "MCLAREN Mercedes MP4-16 de Mika Hakkinen - F1 2001 no Assetto Corsa", do canal Super Danilo F1 - Sim Racing, no YouTube | Super Danilo F1 (som de simulador) | sem licença livre |
+
+Os laços feitos de gravações CC BY-SA 3.0 ficam sob a mesma licença. O do Mercedes V10 é a exceção: a gravação é de terceiros e está em uso como referência no protótipo acadêmico; para publicar o jogo fora desse contexto, é preciso autorização ou trocar esses cinco laços por uma gravação de licença livre, cortada pelo mesmo método.
 
 ### Trilha sonora
 
-Rock de corrida, gerado na hora como o resto do som — sem arquivo nenhum. `src/game/trilha.ts` guarda a composição como partitura, testada sem navegador, e a sintetiza pelo mesmo contexto de áudio do motor:
+A música da corrida é a **Rádio Fantasma** (`src/game/radio.ts`): cinco faixas, geradas na hora — sem arquivo nenhum —, tocando uma depois da outra com a vinheta da rádio entre elas. Cada uma guarda a composição como partitura, testada sem navegador, e a sintetiza pelo mesmo contexto de áudio do motor. O lobby toca a **Turbo**; na corrida, a semente do traçado escolhe a faixa que abre — rock ou Turbo —, então todos os pilotos da sala largam ouvindo a mesma. Dali em diante cada um anda na própria rádio, e pode pular de faixa quando quiser.
+
+| Faixa | Estilo | Partitura |
+| --- | --- | --- |
+| Pé Embaixo | rock de corrida | `trilha.ts` |
+| Motor Quente | hard rock de boogie | `trilhaMotorQuente.ts` |
+| Turbo | synth de 16 bits | `trilhaTurbo.ts` |
+| Última Volta | rock épico | `trilhaUltimaVolta.ts` |
+| Largada Queimada | punk rock | `trilhaLargada.ts` |
+
+A abertura e a segunda faixa são sempre de estilos diferentes: o rock e a Turbo ficam intercaladas com as outras. Só a faixa no ar existe no grafo de áudio — as outras nem são criadas —, e os amplificadores simulados nascem na primeira nota que os pede: uma banda parada ainda processaria silêncio a cada bloco. Todas saem da mesma banda (`src/game/banda.ts`), que lê a partitura de cada uma: bateria, baixo, guitarra base pesada ou de amplificador aberto, guitarra solo, violão de doze cordas, flauta e teclado.
+
+**Rock** (`src/game/trilha.ts`):
 
 - Mi menor, 150 batidas por minuto, em quatro seções de oito compassos: **estrofe** com a guitarra abafada em galope, **refrão** com acordes soltos e a guitarra solo por cima, **estrofe** de novo e **ponte** com o bumbo nos quatro tempos até a virada de caixa que devolve ao começo. São 51 segundos, e a trilha dá a volta.
 - Bateria de seno e ruído filtrado, baixo em serra, power chords de seis serras desafinadas somadas antes de uma saturação e de uma caixa de som simulada, e a guitarra solo com vibrato e eco.
-- Entra no "VAI!" com o prato do primeiro compasso — online, a mesma largada em todos os aparelhos — e some aos poucos na bandeirada. Fica sob o motor, que é retorno de jogo.
-- As notas são agendadas pouco adiante, no relógio do áudio, e não no de animação: a música não atrasa quando o quadro engasga. Renderizada fora de tempo real, a trilha inteira custa cerca de 8% de um núcleo de computador de mesa.
+
+**Turbo** (`src/game/trilhaTurbo.ts`), o outro lado de Top Gear — o do chip do Super Nintendo. A composição é original; de Top Gear vem a receita:
+
+- Lá maior, 160 batidas por minuto: **tema**, **refrão**, **tema** e **ponte**, oito compassos cada, 48 segundos. A ponte passa pelo sol natural, o sétimo grau abaixado que é o sotaque das trilhas de corrida da época, antes do mi que devolve ao tema.
+- Baixo de onda quadrada pulando de oitava em semicolcheias, arpejo de chip por baixo, metais de serra com o filtro abrindo em cada ataque nos contratempos, e o lead de onda quadrada com vibrato e eco por cima.
+- A mistura foi acertada por medição: cada instrumento renderizado sozinho, fora de tempo real, com a loudness do BS.1770. A faixa fica em −19 LUFS com pico de 0,62 no master, contra −17,5 LUFS e 0,58 da de rock — trocar de faixa não dá tombo de volume. As seis serras dos metais largam com 1,5 ms entre uma e outra: juntas, começavam em fase e somavam um estalo que era o pico da faixa.
+
+**Motor Quente** (`src/game/trilhaMotorQuente.ts`), o rock de estrada dos anos setenta e oitenta. A composição é original; do gênero vem a receita:
+
+- Lá, 132 batidas por minuto. Introdução com a guitarra sozinha, estrofe de doze compassos sobre o blues em lá, refrão de oito, solo de doze, refrão e um final com o acorde soando — um minuto e vinte e poucos.
+- A guitarra de amplificador aberto toca o boogie de quinta, sexta e sétima sobre a corda solta; o baixo sobe e desce pelo acorde; o refrão bate acordes cheios, com as cordas soando uma depois da outra como numa palhetada; o solo corre a pentatônica com a nota de blues de passagem.
+
+**Última Volta** (`src/game/trilhaUltimaVolta.ts`), o arco das grandes faixas de rock dos anos setenta — de novo, o arco, e não as notas nem a harmonia de música nenhuma:
+
+- Lá menor, 144 batidas por minuto contadas em semicolcheias, que no começo soam como 72. **Abertura** de dezesseis compassos com violão de doze cordas dedilhando e a flauta entrando no quinto; **subida** de oito com a bateria em meio tempo e a guitarra batendo os acordes; **tempestade** de dezesseis no dobro do andamento — lá, sol, fá, sol — com o solo correndo; e o **final**, com o tema da flauta de volta na guitarra solo, uma oitava acima. Um minuto e vinte.
+- A abertura acústica foi medida contra o motor: mais baixa, ela ficava catorze decibéis abaixo de um V10 em cruzeiro, e meio minuto de música não se ouvia. Agora fica sete abaixo da tempestade — calma, mas presente.
+
+**Largada Queimada** (`src/game/trilhaLargada.ts`), punk rock rápido:
+
+- Ré maior, 184 batidas por minuto. A caixa chama a banda, estrofe e refrão duas vezes, uma ponte parada em que a banda inteira bate junto e se cala, e o último refrão — pouco mais de um minuto.
+- Na estrofe a palma abafa a guitarra fora do um e do três; ela só abre no refrão, e é esse contraste que faz o refrão explodir.
+
+As três novas foram medidas como a Turbo: entre −17,4 e −18,0 LUFS, com pico abaixo de 0,8 no master, e cada uma custa cerca de 11% de um núcleo, o mesmo que o rock. As notas abafadas da guitarra leve usam uma serra por corda, e não o par desafinado do acorde aberto: ali o par só dobraria o custo sem se ouvir.
+
+Em todas: a música entra no "VAI!" com o prato do primeiro compasso — online, a mesma largada em todos os aparelhos — e some aos poucos na bandeirada, sempre sob o motor, que é retorno de jogo. As notas são agendadas pouco adiante, no relógio do áudio, e não no de animação: a música não atrasa quando o quadro engasga. Renderizada fora de tempo real, a de rock inteira custa cerca de 8% de um núcleo de computador de mesa.
+
+## O lobby
+
+A sala comporta seis pilotos, e o lobby foi desenhado para o grid cheio:
+
+- **Quem falta.** Um medidor de seis segmentos mostra quem está pronto, quem está no grid e quem perdeu o sinal, e a linha de estado diz pelo nome quem falta confirmar — com seis na sala, "aguardando todos" não diz nada.
+- **Cada carro na sua cor.** Cada vaga ocupada traz a faixa da cor do carro, e a sua vem destacada. Quando falta espaço, a equipe é cortada antes do nome do piloto.
+- **Convite na vaga livre.** A primeira vaga vazia tem o botão de convite, que copia o link da sala.
+- **O anfitrião tira quem está parado.** A largada só sai com todos confirmados, e um celular esquecido na mesa segura a prova de cinco. O anfitrião pode tirar um piloto do grid — o primeiro toque pergunta, o segundo confirma —, menos com a largada marcada ou a prova em andamento. Quem é tirado volta ao menu com o aviso.
+- **A largada não espera quem saiu.** Se quem faltava confirmar sai da sala, é tirado ou não volta dentro da janela de reconexão, e todos os que ficaram já confirmaram, a largada é marcada na hora.
+- Em telas largas as vagas ficam em duas colunas e o lobby inteiro cabe em 1366 × 768; quando o painel estreita, as vagas passam a uma coluna.
 
 ## Como a largada é sincronizada
 
@@ -349,6 +439,7 @@ A revanche precisa do pedido de todos. Com eles, a sala limpa telemetria e resul
 - [x] Sombra no chão, terra da grama e suspensão que responde ao relevo
 - [x] Salas de dois a seis pilotos com código, link e QR code
 - [x] Lobby em tempo real, confirmação e tratamento de sala cheia/inexistente
+- [x] Lobby de seis: medidor de prontos, quem falta confirmar pelo nome, convite na vaga livre e anfitrião tirando piloto parado
 - [x] Relógio sincronizado entre cliente e servidor
 - [x] Largada agendada e idêntica em todos os aparelhos
 - [x] Cancelamento da largada por desistência, saída ou queda de conexão
@@ -366,6 +457,9 @@ A revanche precisa do pedido de todos. Com eles, a sala limpa telemetria e resul
 - [x] Garagem com dezesseis carros em arte própria, agrupados por piloto: a escolha vale no treino e online, e cada fantasma usa a pintura do rival
 - [x] Quadros de curva e de derrapagem com contraesterço, assados da arte de cada carro, com transição guiada pela física da curva
 - [x] Trilha sonora de rock procedural, com botão próprio
+- [x] Nove vozes de motor gravadas — V6 turbo, V10, V8 e V6 híbrido —, uma por época de carro, com o câmbio de cada uma e o motor de osciladores de reserva
+- [x] Rádio Fantasma: cinco faixas originais, vinheta entre elas e troca de faixa por botão ou tecla
+- [x] Segunda faixa, synth de 16 bits no molde de Top Gear: toca no lobby e alterna com o rock nas corridas
 - [x] QR code definitivo e roteiro do workshop
 
 ## Limitações conhecidas

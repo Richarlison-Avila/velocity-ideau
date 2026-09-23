@@ -173,6 +173,19 @@ function App() {
       tracker.push(payload)
     }
 
+    // O anfitrião tirou este piloto do grid: volta ao menu dizendo por quê.
+    const onKicked = (payload: { code: string }) => {
+      if (roomCodeRef.current !== payload.code) return
+      roomCodeRef.current = null
+      esquecer(ROOM_KEY)
+      setRoom(null)
+      setRaceSetup(null)
+      setLobbyNotice('')
+      setScreen('menu')
+      setLobbyError('O anfitrião tirou você da sala.')
+      history.replaceState(null, '', location.pathname)
+    }
+
     // Resultado oficial: o mesmo objeto chega nas duas telas.
     const onResult = (payload: RaceOutcome) => {
       setOutcome(payload)
@@ -186,6 +199,7 @@ function App() {
     socket.on('race:cancelled', onCancelled)
     socket.on('race:rival', onRival)
     socket.on('race:result', onResult)
+    socket.on('room:kicked', onKicked)
     if (socket.connected) onConnect()
 
     return () => {
@@ -196,6 +210,7 @@ function App() {
       socket.off('race:cancelled', onCancelled)
       socket.off('race:rival', onRival)
       socket.off('race:result', onResult)
+      socket.off('room:kicked', onKicked)
     }
   }, [])
 

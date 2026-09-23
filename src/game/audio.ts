@@ -1,18 +1,39 @@
 /**
- * Som da corrida, gerado na hora.
+ * Som da corrida.
  *
- * Nada de arquivo: a demonstração precisa funcionar sem depender de asset
- * nenhum, então motor, vento, rolamento e cascalho saem de osciladores e de
- * um buffer de ruído criado no próprio navegador.
+ * O motor é um V10 gravado, tocado por `motorF1.ts` a partir de laços em
+ * `public/audio/motor`. Todo o resto — vento, rolamento, cascalho, boost — sai
+ * de um buffer de ruído criado no próprio navegador, e o motor também tem a
+ * sua versão de osciladores: é ela que toca enquanto as amostras não chegam,
+ * ou se não chegarem. A demonstração nunca depende de um arquivo para ter som.
  *
  * A parte que decide *o quê* tocar é pura e fica aqui em cima, separada da
  * parte que fala com o Web Audio. É o que permite testar a marcha, a rotação
  * e a mistura sem precisar de um navegador.
  *
- * A trilha de rock mora em `trilha.ts`, e toca pelo mesmo contexto e pelo
- * mesmo volume geral: desligar o som desliga a música junto.
+ * A música é a Rádio Fantasma, de `radio.ts`: cinco faixas — o rock de
+ * `trilha.ts`, o Turbo de `trilhaTurbo.ts` e as de `trilhaMotorQuente.ts`,
+ * `trilhaUltimaVolta.ts` e `trilhaLargada.ts` —, tocando pelo mesmo contexto e
+ * pelo mesmo volume geral: desligar o som desliga a música junto.
  */
-import { TrilhaRock } from './trilha'
+import type { CarId } from './cars'
+import { MotorF1, vozDoCarro } from './motorF1'
+import { Radio, type FaixaDaRadio } from './radio'
+
+/** As faixas da trilha sonora. */
+export type Faixa = 'rock' | 'turbo'
+
+/**
+ * A faixa de uma corrida sai da semente do traçado.
+ *
+ * A semente é a mesma em todos os aparelhos da sala, então todos os pilotos
+ * largam ouvindo a mesma música — e a próxima prova, com outra semente, tem
+ * metade de chance de trocar de faixa.
+ */
+export function faixaDaCorrida(semente: number): Faixa {
+  const inteiro = Number.isFinite(semente) ? Math.abs(Math.floor(semente)) : 0
+  return inteiro % 2 === 0 ? 'rock' : 'turbo'
+}
 
 /** O que a corrida informa ao som a cada quadro. */
 export type AudioLevels = {
@@ -140,13 +161,16 @@ export class RaceAudio {
   private readonly rollGain: GainNode
   private readonly gravelGain: GainNode
   private readonly boostGain: GainNode
-  private readonly trilha: TrilhaRock
+  /** O V10 gravado. Enquanto ele não está pronto, tocam os osciladores. */
+  private readonly motorF1: MotorF1
+  private readonly trilha: Radio
   private silenciado = false
   private encerrado = false
   /** Marcha do quadro anterior, para marcar a troca. */
   private marcha = 0
 
-  constructor(private readonly ctx: AudioHost) {
+  /** `carro` escolhe a voz do motor: o V6 turbo, o V10, o V8 ou o híbrido da época dele. */
+  constructor(private readonly ctx: AudioHost, faixa: Faixa = 'rock', carro?: CarId) {
     const agora = ctx.currentTime
 
     this.master = ctx.createGain()
@@ -161,6 +185,10 @@ export class RaceAudio {
     this.engineGain = ctx.createGain()
     this.engineGain.gain.setValueAtTime(0, agora)
     this.engineFilter.connect(this.engineGain).connect(this.master)
+
+    // As amostras começam a chegar agora; até ficarem prontas, os osciladores
+    // abaixo fazem o papel do motor.
+    this.motorF1 = new MotorF1(ctx, this.master, vozDoCarro(carro))
 
     for (const [tipo, desafinacao, ganho] of [
       ['sawtooth', 0, 1],
@@ -189,9 +217,9 @@ export class RaceAudio {
     this.boostGain = this.camadaDeRuido(ctx, 'highpass', 2_600, 0.7)
     this.ruido.start()
 
-    // A trilha usa o mesmo ruído para a bateria: é o mesmo chiado que vira
-    // vento, só que cortado em golpes.
-    this.trilha = new TrilhaRock(ctx, this.master, this.ruido.buffer!)
+    // A rádio abre na faixa da corrida e usa o mesmo ruído para a bateria: é
+    // o mesmo chiado que vira vento, só que cortado em golpes.
+    this.trilha = new Radio(ctx, this.master, this.ruido.buffer!, faixa)
   }
 
   private camadaDeRuido(ctx: AudioHost, tipo: BiquadFilterType, frequencia: number, q: number) {
@@ -223,7 +251,11 @@ export class RaceAudio {
     this.osciladores[2].frequency.setTargetAtTime(tone.frequency * 2, agora, RAMPA * 0.5)
     this.engineFilter.frequency.setTargetAtTime(mix.cutoff, agora, RAMPA)
 
-    this.engineGain.gain.setTargetAtTime(trocou ? mix.engine * 0.35 : mix.engine, agora, trocou ? 0.01 : RAMPA)
+    // Com o V10 gravado tocando, os osciladores se calam: os dois juntos
+    // soariam como um motor e uma sirene.
+    const comAmostras = this.motorF1.update(levels)
+    const osciladores = comAmostras ? 0 : trocou ? mix.engine * 0.35 : mix.engine
+    this.engineGain.gain.setTargetAtTime(osciladores, agora, comAmostras ? 0.15 : trocou ? 0.01 : RAMPA)
     this.windGain.gain.setTargetAtTime(mix.wind, agora, RAMPA)
     this.rollGain.gain.setTargetAtTime(mix.roll, agora, RAMPA)
     this.gravelGain.gain.setTargetAtTime(mix.gravel, agora, RAMPA)
@@ -278,6 +310,21 @@ export class RaceAudio {
     if (!this.encerrado) this.trilha.setEnabled(ligada)
   }
 
+  /** Pula para a próxima faixa da rádio. */
+  proximaFaixa() {
+    if (!this.encerrado) this.trilha.proxima()
+  }
+
+  /** A faixa no ar — ou a que abre a corrida, antes da largada. */
+  get faixaNoAr(): FaixaDaRadio {
+    return this.trilha.faixa
+  }
+
+  /** Avisa a cada faixa que entra no ar. Devolve a função que cancela o aviso. */
+  aoTrocarDeFaixa(ouvinte: (faixa: FaixaDaRadio) => void) {
+    return this.trilha.aoTrocar(ouvinte)
+  }
+
   get muted() {
     return this.silenciado
   }
@@ -296,6 +343,7 @@ export class RaceAudio {
   close() {
     if (this.encerrado) return
     this.trilha.close()
+    this.motorF1.close()
     this.encerrado = true
     for (const osc of this.osciladores) {
       try {
@@ -314,7 +362,7 @@ export class RaceAudio {
 }
 
 /** Dois segundos de ruído branco em laço: base do vento e do cascalho. */
-function ruidoBranco(ctx: AudioHost) {
+export function ruidoBranco(ctx: Pick<AudioHost, 'createBuffer' | 'sampleRate'>) {
   const amostras = Math.floor(ctx.sampleRate * 2)
   const buffer = ctx.createBuffer(1, amostras, ctx.sampleRate)
   const canal = buffer.getChannelData(0)

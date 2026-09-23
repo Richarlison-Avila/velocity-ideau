@@ -540,6 +540,29 @@ export class RoomStore {
     return updates
   }
 
+  /**
+   * O anfitrião tira um piloto do grid.
+   *
+   * Com seis vagas, basta um piloto que largou o celular na mesa para
+   * ninguém largar: a prova só começa com todos confirmados. Só vale antes da
+   * contagem — com as luzes acesas, tirar alguém seria cancelar a largada dos
+   * outros cinco. Devolve o socket de quem saiu, para o servidor avisá-lo.
+   */
+  kick(codeInput: string, requesterId: string, targetId: string) {
+    const room = this.requireRoom(codeInput)
+    if (room.hostId !== requesterId) {
+      throw new RoomError('NOT_HOST', 'Só o anfitrião pode tirar um piloto da sala.')
+    }
+    if (targetId === requesterId) throw new RoomError('NOT_IN_ROOM', 'Para sair, use o botão de sair da sala.')
+    const target = room.players.find((player) => player.id === targetId)
+    if (!target) throw new RoomError('NOT_IN_ROOM', 'Esse piloto já não está na sala.')
+    if (room.state === 'countdown' || room.state === 'racing') {
+      throw new RoomError('RACE_IN_PROGRESS', 'Com a largada marcada, ninguém sai do grid.')
+    }
+    room.players = room.players.filter((player) => player.id !== targetId)
+    return { ...this.afterDeparture(room.code, room), socketId: target.socketId }
+  }
+
   /** Queda de conexão: o piloto continua na sala até a janela de retorno expirar. */
   markDisconnected(socketId: string) {
     const updates: Array<RoomUpdate & { playerId: string }> = []

@@ -111,6 +111,25 @@ describe('sala pelo socket', () => {
     beto.emit('room:leave')
     expect((await sozinha).players.map((player) => player.name)).toEqual(['Ana'])
   })
+
+  it('o anfitrião tira quem não confirma, e a largada sai com os que ficaram', async () => {
+    const { ana, beto, code } = await gridCompleto()
+    const caio = await connect()
+    await ask<RoomAck>(caio, 'room:join', { code, name: 'Caio', playerId: 'caio' })
+    await ask<RoomAck>(ana, 'room:set-ready', { code, playerId: 'ana', ready: true })
+    await ask<RoomAck>(beto, 'room:set-ready', { code, playerId: 'beto', ready: true })
+
+    const recusa = await ask<RoomAck>(beto, 'room:kick', { code, playerId: 'beto', targetId: 'caio' })
+    expect(recusa.ok).toBe(false)
+
+    const avisado = waitFor<{ code: string }>(caio, 'room:kicked')
+    const largada = waitFor<Scheduled>(beto, 'race:scheduled')
+    const resposta = await ask<RoomAck>(ana, 'room:kick', { code, playerId: 'ana', targetId: 'caio' })
+    expect(resposta.ok).toBe(true)
+    expect((await avisado).code).toBe(code)
+    expect((await largada).code).toBe(code)
+    expect(server.rooms.get(code)?.players.map((player) => player.name)).toEqual(['Ana', 'Beto'])
+  })
 })
 
 describe('largada sincronizada pelo socket', () => {

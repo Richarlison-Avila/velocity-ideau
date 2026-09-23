@@ -7,6 +7,10 @@
  *
  *   npm run piloto -- ABC12
  *   npm run piloto -- ABC12 --nome Rival --velocidade 260 --carro schumacher
+ *   npm run piloto -- ABC12 --parado
+ *
+ * Com `--parado`, entra no grid e nunca confirma: é o celular esquecido na
+ * mesa, que segura a largada de todo mundo até o anfitrião tirá-lo da sala.
  */
 import { io, type Socket } from 'socket.io-client'
 // A pista e a curva de tração vêm do jogo: uma cópia aqui divergiria em
@@ -56,6 +60,7 @@ const targetSpeed = Number(readOption('velocidade', '245'))
 // Por padrão, um carro diferente do padrão do navegador: com os dois iguais,
 // o teste não mostraria que o fantasma usa a pintura do rival.
 const carroPedido = readOption('carro', 'verstappen')
+const parado = process.argv.includes('--parado')
 if (!isCarId(carroPedido)) {
   console.error(`Carro desconhecido: ${carroPedido}. Opções: ${CARS.map((car) => car.id).join(', ')}`)
   process.exit(1)
@@ -162,9 +167,19 @@ socket.on('connect', async () => {
       console.error(`Não foi possível entrar na sala ${code}: ${response.error}`)
       process.exit(1)
     }
+    if (parado) {
+      console.log(`Na sala ${code} como "${name}", parado: não vai confirmar.`)
+      return
+    }
     console.log(`Na sala ${code} como "${name}", com o carro de ${carById(car).driver}. Confirmando presença.`)
     socket.emit('room:set-ready', { code, playerId, ready: true })
   })
+})
+
+// Tirado do grid pelo anfitrião: não há mais o que fazer aqui.
+socket.on('room:kicked', () => {
+  console.log(`O anfitrião tirou "${name}" da sala ${code}.`)
+  process.exit(0)
 })
 
 socket.on('room:update', (room: Room) => {
@@ -173,12 +188,12 @@ socket.on('room:update', (room: Room) => {
   const me = room.players.find((player) => player.id === playerId)
 
   // Depois de uma corrida, confirma de novo para a próxima largada.
-  if (room.status === 'waiting' && !racing && me && !me.ready && room.players.length === 2) {
+  if (room.status === 'waiting' && !racing && !parado && me && !me.ready && room.players.length === 2) {
     setTimeout(() => socket.emit('room:set-ready', { code, playerId, ready: true }), 800)
   }
 
   // Com o resultado fechado, aceita a revanche.
-  if (room.status === 'finished' && me && !me.rematch) {
+  if (room.status === 'finished' && !parado && me && !me.rematch) {
     setTimeout(() => socket.emit('race:rematch', { code, playerId }), 900)
   }
 })

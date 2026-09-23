@@ -988,3 +988,43 @@ describe('carro de cada piloto', () => {
     expect(carros(rooms, code).a).toBe('senna')
   })
 })
+
+describe('anfitrião tira piloto do grid', () => {
+  it('libera a vaga e devolve o socket de quem saiu', () => {
+    const rooms = new RoomStore()
+    const code = roomWithSixPilots(rooms)
+    const saida = rooms.kick(code, 'a', 'c')
+    expect(saida.socketId).toBe('socket-c')
+    expect(saida.room?.players.map((player) => player.id)).toEqual(['a', 'b', 'd', 'e', 'f'])
+    // A vaga liberada aceita outro piloto.
+    expect(rooms.join(code, 'socket-g', 'g', 'Gabi').players).toHaveLength(6)
+  })
+
+  it('tirar o único que faltava deixa a sala pronta para largar', () => {
+    const rooms = new RoomStore()
+    const code = roomWithSixPilots(rooms)
+    for (const id of ['a', 'b', 'c', 'd', 'e']) rooms.setReady(code, id, true)
+    expect(rooms.get(code)?.status).toBe('waiting')
+    expect(rooms.kick(code, 'a', 'f').room?.status).toBe('ready')
+  })
+
+  it('só o anfitrião tira, e ninguém tira a si mesmo', () => {
+    const rooms = new RoomStore()
+    const code = roomWithSixPilots(rooms)
+    expect(() => rooms.kick(code, 'b', 'c')).toThrow(RoomError)
+    expect(() => rooms.kick(code, 'a', 'a')).toThrow(RoomError)
+    expect(() => rooms.kick(code, 'a', 'fantasma')).toThrow(RoomError)
+    expect(rooms.get(code)?.players).toHaveLength(6)
+  })
+
+  it('com a largada marcada, ninguém sai do grid', () => {
+    const rooms = new RoomStore()
+    const code = roomWithTwoPilots(rooms)
+    rooms.join(code, 'socket-c', 'c', 'Caio')
+    for (const id of ['a', 'b', 'c']) rooms.setReady(code, id, true)
+    rooms.scheduleStart(code)
+    expect(rooms.get(code)?.status).toBe('countdown')
+    expect(() => rooms.kick(code, 'a', 'c')).toThrow(RoomError)
+    expect(rooms.get(code)?.players).toHaveLength(3)
+  })
+})

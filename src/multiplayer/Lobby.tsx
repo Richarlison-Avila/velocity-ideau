@@ -1,12 +1,20 @@
 import { QRCodeSVG } from 'qrcode.react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { carById } from '../game/cars'
 import { carImageUrl } from '../game/carSprites'
 import { countdownAt } from '../game/countdown'
+import { MusicaDoLobby } from '../game/musicaDoLobby'
+import { definirMusicaDesligada, lerMusicaDesligada, lerSomDesligado } from '../game/preferenciasDeSom'
 import { DIFFICULTIES, DIFFICULTY_LABELS, DIFFICULTY_NOTES, type Difficulty } from '../game/rules'
 import { serverClock, type ClockState } from './clock'
 import { socket } from './socket'
 import type { LobbyRoom, RoomResponse } from './types'
+
+/** Vagas do grid. O servidor recusa o sétimo. */
+const VAGAS_DO_GRID = 6
+
+/** Por quanto tempo o botão de tirar um piloto espera a confirmação. */
+const JANELA_DE_CONFIRMACAO_MS = 3_000
 
 type LobbyProps = {
   room: LobbyRoom
@@ -29,6 +37,54 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${room.code}`
   const [copied, setCopied] = useState(false)
   const [remaining, setRemaining] = useState<number | null>(null)
+  /** Piloto que o anfitrião está prestes a tirar: o primeiro toque só pergunta. */
+  const [tirando, setTirando] = useState<string | null>(null)
+  const [semMusica, setSemMusica] = useState(() => lerMusicaDesligada() || lerSomDesligado())
+  const musicaRef = useRef<MusicaDoLobby | null>(null)
+
+  const prontos = room.players.filter((player) => player.ready).length
+  const vagas = VAGAS_DO_GRID - room.players.length
+  const faltam = room.players.filter((player) => !player.ready)
+  const primeiraVaga = room.players.length
+  /** Com a largada marcada ou a prova em andamento, o grid está fechado. */
+  const gridAberto = room.status !== 'countdown' && room.status !== 'racing'
+  const podeTirar = souAnfitriao && gridAberto && connection === 'connected'
+
+  /**
+   * A faixa Turbo toca enquanto se espera o grid. Se o navegador ainda não
+   * liberou o som, o próximo toque na tela libera.
+   */
+  useEffect(() => {
+    const musica = new MusicaDoLobby(!lerMusicaDesligada() && !lerSomDesligado())
+    musicaRef.current = musica
+    musica.tocar()
+    const destravar = () => {
+      if (!musica.tocando) musica.tocar()
+    }
+    window.addEventListener('pointerdown', destravar)
+    window.addEventListener('keydown', destravar)
+    return () => {
+      window.removeEventListener('pointerdown', destravar)
+      window.removeEventListener('keydown', destravar)
+      musica.encerrar()
+      musicaRef.current = null
+    }
+  }, [])
+
+  const alternarMusica = () => {
+    const desligar = !semMusica
+    definirMusicaDesligada(desligar)
+    setSemMusica(desligar)
+    musicaRef.current?.setLigada(!desligar)
+  }
+
+  // A pergunta de confirmação some sozinha: um toque perdido não pode ficar
+  // armado esperando o próximo.
+  useEffect(() => {
+    if (!tirando) return
+    const timer = window.setTimeout(() => setTirando(null), JANELA_DE_CONFIRMACAO_MS)
+    return () => window.clearTimeout(timer)
+  }, [tirando])
 
   // Enquanto a largada está agendada, mostra a contagem a partir do relógio sincronizado.
   useEffect(() => {
@@ -60,6 +116,15 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
     socket.emit('room:set-ready', { code: room.code, playerId, ready: !me?.ready }, (response: RoomResponse) => {
       if (response.ok && response.room) onRoomChange(response.room)
       else onError(response.error ?? 'Não foi possível confirmar.')
+    })
+  }
+
+  const tirarPiloto = (targetId: string) => {
+    if (tirando !== targetId) return setTirando(targetId)
+    setTirando(null)
+    socket.emit('room:kick', { code: room.code, playerId, targetId }, (response: RoomResponse) => {
+      if (response.ok && response.room) onRoomChange(response.room)
+      else onError(response.error ?? 'Não foi possível tirar o piloto.')
     })
   }
 
@@ -104,7 +169,7 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
     if (room.status === 'countdown') return 'Largada a caminho.'
     if (room.players.length === 1) return 'Aguardando pilotos.'
     if (haPilotoSemSinal) return 'Piloto reconectando.'
-    if (room.players.length === 6) return 'Grid completo.'
+    if (room.players.length === VAGAS_DO_GRID) return 'Grid completo.'
     return `${room.players.length} pilotos no grid.`
   }
 
@@ -112,7 +177,11 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
     if (room.status === 'countdown') return 'As cinco luzes já estão acesas em todos os aparelhos.'
     if (haPilotoSemSinal) return 'Um piloto perdeu a conexão e tem alguns segundos para voltar.'
     if (room.players.length === 1) return 'Compartilhe o código, link ou QR code com até cinco pilotos.'
-    return 'Confirme quando estiver pronto. O servidor marca a largada assim que todos confirmarem.'
+    if (faltam.length === 0) return 'Todos confirmados.'
+    // Com seis no grid, "esperando todos" não diz nada: o nome de quem falta, sim.
+    const nomes = faltam.map((player) => (player.id === playerId ? 'você' : player.name))
+    const lista = nomes.length > 1 ? `${nomes.slice(0, -1).join(', ')} e ${nomes[nomes.length - 1]}` : nomes[0]
+    return `Falta confirmar: ${lista}. A largada sai assim que todos confirmarem.`
   }
 
   const relogio = clock.synced ? `RELÓGIO SINCRONIZADO ±${Math.round(clock.roundTrip / 2)} MS` : 'SINCRONIZANDO RELÓGIO…'
@@ -130,14 +199,41 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
             <p className="lobby-status">{statusLine()}</p>
             {notice && <p className="lobby-notice">{notice}</p>}
 
+            <div className="grid-meter">
+              <div className="grid-meter-bar" role="img" aria-label={`${prontos} de ${room.players.length} pilotos prontos`}>
+                {Array.from({ length: VAGAS_DO_GRID }, (_, position) => {
+                  const player = room.players[position]
+                  const estado = !player ? 'vaga' : !player.connected ? 'sem-sinal' : player.ready ? 'pronto' : 'no-grid'
+                  return <i key={position} className={estado} />
+                })}
+              </div>
+              <span>
+                <b>{prontos}/{room.players.length}</b> PRONTOS · {vagas === 0 ? 'SEM VAGAS' : vagas === 1 ? '1 VAGA' : `${vagas} VAGAS`}
+              </span>
+              <button
+                type="button"
+                className={`sound-button ${semMusica ? 'off' : ''}`}
+                onClick={alternarMusica}
+                aria-pressed={!semMusica}
+                aria-label={semMusica ? 'Ligar a música' : 'Desligar a música'}
+              >
+                {semMusica ? 'MÚSICA ✕' : 'MÚSICA ♫'}
+              </button>
+            </div>
+
             <div className="driver-list">
-              {Array.from({ length: 6 }, (_, position) => {
+              {Array.from({ length: VAGAS_DO_GRID }, (_, position) => {
                 const player = room.players[position]
                 const offline = player && !player.connected
                 const carro = player ? carById(player.car) : null
                 const souEu = player?.id === playerId
+                const cor = carro ? ({ '--slot-accent': carro.accent }) as CSSProperties : undefined
                 return (
-                  <div className={`driver-slot ${player ? 'occupied' : ''} ${offline ? 'offline' : ''}`} key={position}>
+                  <div
+                    className={`driver-slot ${player ? 'occupied' : ''} ${offline ? 'offline' : ''} ${souEu ? 'me' : ''}`}
+                    style={cor}
+                    key={position}
+                  >
                     <b>0{position + 1}</b>
                     {player ? <img className="slot-car" src={carImageUrl(player.car)} alt="" /> : <span />}
                     <div>
@@ -149,8 +245,9 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                       </span>
                       <strong>{player?.name ?? 'Aguardando piloto'}</strong>
                       {carro && (
-                        <em style={{ color: carro.accent }}>
-                          {carro.driver} · {carro.team} #{carro.number}
+                        <em style={{ color: carro.accent }} title={`${carro.driver} · ${carro.team} #${carro.number}`}>
+                          <span>{carro.driver}</span>
+                          <span>{'\u00a0· '}{carro.team} #{carro.number}</span>
                         </em>
                       )}
                     </div>
@@ -163,6 +260,20 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                         onClick={onChangeCar}
                       >
                         TROCAR
+                      </button>
+                    ) : player && podeTirar ? (
+                      <button
+                        type="button"
+                        className={`slot-change slot-kick ${tirando === player.id ? 'armed' : ''}`}
+                        onClick={() => tirarPiloto(player.id)}
+                        aria-label={tirando === player.id ? `Confirmar: tirar ${player.name} da sala` : `Tirar ${player.name} da sala`}
+                      >
+                        {tirando === player.id ? 'CONFIRMAR' : 'TIRAR'}
+                      </button>
+                    ) : !player && position === primeiraVaga && gridAberto ? (
+                      // A primeira vaga livre convida: é ali que o olho procura.
+                      <button type="button" className="slot-change slot-invite" onClick={copyLink}>
+                        {copied ? 'COPIADO' : 'CONVIDAR'}
                       </button>
                     ) : (
                       <span className="slot-spacer" />
@@ -213,7 +324,7 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                 }
                 onClick={toggleReady}
               >
-                {me?.ready ? 'CANCELAR PRONTO' : 'ESTOU PRONTO'} <span>↗</span>
+                {room.players.length < 2 ? 'AGUARDANDO RIVAIS' : me?.ready ? 'CANCELAR PRONTO' : 'ESTOU PRONTO'} <span>↗</span>
               </button>
             )}
 

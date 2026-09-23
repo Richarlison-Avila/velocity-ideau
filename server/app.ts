@@ -217,6 +217,30 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       }
     })
 
+    // O anfitrião tira um piloto parado. Quem sai é avisado e deixa o canal da
+    // sala; se os que ficaram já tinham confirmado, a largada sai na hora.
+    socket.on('room:kick', (payload: { code: string; playerId: string; targetId: string }, ack?: Ack) => {
+      try {
+        const update = rooms.kick(payload.code, payload.playerId, payload.targetId)
+        const graceKeyDoAlvo = graceKey(update.code, payload.targetId)
+        const grace = graceTimers.get(graceKeyDoAlvo)
+        if (grace) {
+          clearTimeout(grace)
+          graceTimers.delete(graceKeyDoAlvo)
+        }
+        const alvo = io.sockets.sockets.get(update.socketId)
+        if (alvo) {
+          alvo.leave(update.code)
+          alvo.emit('room:kicked', { code: update.code })
+        }
+        ack?.({ ok: true, room: update.room })
+        publish(update.code, update.room)
+        scheduleIfReady(update.code)
+      } catch (error) {
+        ack?.({ ok: false, error: error instanceof RoomError ? error.message : 'Não foi possível tirar o piloto.' })
+      }
+    })
+
     socket.on('room:leave', () => {
       for (const update of rooms.leaveBySocket(socket.id)) {
         clearStartTimer(update.code)
@@ -225,6 +249,8 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
           io.to(update.code).emit('race:cancelled', { code: update.code, reason: 'Um piloto saiu da sala.' })
         }
         publish(update.code, update.room)
+        // Quem saiu podia ser o único que faltava confirmar.
+        scheduleIfReady(update.code)
       }
     })
 
@@ -260,6 +286,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
               io.to(update.code).emit('race:cancelled', { code: update.code, reason: 'Um piloto não voltou a tempo.' })
             }
             publish(update.code, dropped.room)
+            scheduleIfReady(update.code)
           }, graceMs),
         )
       }

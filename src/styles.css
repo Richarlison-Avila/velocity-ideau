@@ -487,6 +487,48 @@ button { cursor: pointer; }
 .slot-change { padding: 7px 10px; border: 1px solid #343d46; background: transparent; color: #d5dadd; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .13em; }
 .slot-change:hover:not(:disabled) { border-color: var(--orange); color: #fff; }
 .slot-change:disabled { cursor: not-allowed; opacity: .35; }
+/* Lobby de seis: medidor de prontos, cor do carro em cada vaga e ações do anfitrião. */
+.drivers-panel h1 { font-size: clamp(40px, 6vw, 64px); }
+.driver-list { margin: 16px 0 18px; }
+@media (min-width: 721px) {
+  .lobby-grid { grid-template-columns: 1fr 190px; gap: clamp(24px, 4vw, 48px); }
+}
+/* O painel mede a si mesmo: abaixo de ~700 px as duas colunas de vagas não
+   cabem com o botão do anfitrião, e a lista vira uma coluna só. */
+.drivers-panel { container: pilotos / inline-size; }
+@container pilotos (max-width: 699px) {
+  .driver-list { grid-template-columns: 1fr; }
+}
+.driver-slot { grid-template-columns: 36px 40px minmax(0, 1fr) auto auto; gap: 10px; padding: 8px 10px 8px 12px; }
+.driver-slot > b { font-size: 28px; }
+.driver-slot.occupied { box-shadow: inset 3px 0 0 var(--slot-accent, transparent); }
+.driver-slot > div { min-width: 0; }
+.driver-slot div strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Piloto e equipe do carro numa linha: quando falta espaço, a equipe some
+   primeiro — o nome do piloto é o que se reconhece de relance. */
+.driver-slot div em { display: flex; min-width: 0; white-space: nowrap; }
+.driver-slot div em > span { overflow: hidden; text-overflow: ellipsis; color: inherit; font: inherit; letter-spacing: inherit; }
+.driver-slot div em > span + span { flex-shrink: 1000; }
+.slot-change { padding: 7px 8px; }
+.lobby-screen { padding-block: clamp(12px, 3vh, 30px); }
+.lobby-card { padding-block: clamp(26px, 5vh, 58px); }
+.driver-slot.me { background: linear-gradient(90deg, rgba(255,255,255,.05), transparent 70%); }
+.grid-meter { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 16px; }
+.grid-meter-bar { display: flex; gap: 4px; }
+.grid-meter-bar i { width: 26px; height: 7px; border: 1px solid rgba(255,255,255,.16); transform: skewX(-18deg); transition: background .25s, border-color .25s; }
+.grid-meter-bar i.no-grid { background: rgba(255,255,255,.28); border-color: transparent; }
+.grid-meter-bar i.pronto { background: #45e7ad; border-color: transparent; box-shadow: 0 0 10px rgba(69,231,173,.45); }
+.grid-meter-bar i.sem-sinal { background: var(--amber); border-color: transparent; }
+.grid-meter > span { color: #7f8a95; font: 700 10px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.grid-meter > span b { color: #f4f4ee; font-size: 13px; }
+.grid-meter .sound-button { margin-left: auto; }
+.slot-kick { color: #ff9a86; border-color: rgba(255,75,43,.35); }
+.slot-kick.armed { background: var(--orange); border-color: var(--orange); color: #fff; }
+.slot-invite { border-style: dashed; color: #9fa9b2; }
+.driver-slot:not(.occupied):has(.slot-invite) { opacity: .8; }
+@media (prefers-reduced-motion: reduce) {
+  .grid-meter-bar i { transition: none; }
+}
 .score-row { grid-template-columns: 42px 34px 1fr auto; }
 .score-car { width: 34px; height: 37px; object-fit: contain; }
 
@@ -532,4 +574,21 @@ button { cursor: pointer; }
      continua na ponta da primeira linha. */
   .slot-change { grid-row: 2; grid-column: 3 / -1; justify-self: start; }
   .slot-spacer { display: none; }
+}
+
+/* Rádio Fantasma: o aviso da faixa que acabou de entrar, no canto de cima,
+   como o visor de um toca-fitas. Entra deslizando e some sozinho. */
+.radio-no-ar { position: absolute; z-index: 5; top: 122px; right: 24px; display: grid; justify-items: end; gap: 2px; padding: 8px 14px 9px; border-right: 3px solid #e8c15a; background: rgba(6,10,15,.78); text-align: right; pointer-events: none; animation: radio-entra 4.5s ease-out forwards; }
+.radio-no-ar span { color: #e8c15a; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .24em; }
+.radio-no-ar strong { color: #fff; font: 800 italic 17px/1.05 'Barlow Condensed', sans-serif; letter-spacing: .04em; }
+.radio-no-ar em { color: #93a0ab; font: 600 10px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .12em; text-transform: uppercase; }
+@keyframes radio-entra { 0% { opacity: 0; transform: translateX(16px); } 8% { opacity: 1; transform: none; } 85% { opacity: 1; } 100% { opacity: 0; } }
+.sound-button:disabled { opacity: .45; cursor: default; }
+@media (max-width: 600px) {
+  .radio-no-ar { top: 104px; right: 12px; padding: 6px 10px; }
+  .radio-no-ar strong { font-size: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .radio-no-ar { animation: radio-some 4.5s steps(1, end) forwards; }
+  @keyframes radio-some { 0%, 99% { opacity: 1; } 100% { opacity: 0; } }
 }

@@ -9,7 +9,8 @@ import {
   type GhostSample,
   type GhostSnapshot,
 } from './ghost'
-import { RaceAudio } from './audio'
+import { RaceAudio, faixaDaCorrida } from './audio'
+import { definirMusicaDesligada, definirSomDesligado, lerMusicaDesligada, lerSomDesligado } from './preferenciasDeSom'
 import { carById, type CarId } from './cars'
 import { drawCar, prepareCar, type CarPose } from './carSprites'
 import { createFeel, registerImpact, updateFeel } from './feel'
@@ -178,56 +179,6 @@ const initialTelemetry: Telemetry = {
   resets: 0,
   nota: null,
 }
-
-
-/** Preferência de som, guardada entre corridas e entre recargas da página. */
-const SOM_KEY = 'ghost-racer-mudo'
-
-function lerPreferencia() {
-  try {
-    return sessionStorage.getItem(SOM_KEY) === '1'
-  } catch {
-    // Navegação privada pode recusar o armazenamento; o som segue ligado.
-    return false
-  }
-}
-
-function guardarPreferencia(mudo: boolean) {
-  try {
-    sessionStorage.setItem(SOM_KEY, mudo ? '1' : '0')
-  } catch {
-    // Sem armazenamento só se perde a lembrança entre recargas.
-  }
-}
-
-let somDesligado = lerPreferencia()
-
-/**
- * Preferência da trilha, separada da do som.
- *
- * Há quem queira o motor e não a música — no workshop, com vinte celulares
- * tocando ao mesmo tempo na mesma sala, é quase todo mundo. Desligar a música
- * não pode custar o som do carro, que é retorno de jogo.
- */
-const MUSICA_KEY = 'ghost-racer-sem-musica'
-
-function lerPreferenciaDaMusica() {
-  try {
-    return sessionStorage.getItem(MUSICA_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function guardarPreferenciaDaMusica(semMusica: boolean) {
-  try {
-    sessionStorage.setItem(MUSICA_KEY, semMusica ? '1' : '0')
-  } catch {
-    // Sem armazenamento só se perde a lembrança entre recargas.
-  }
-}
-
-let musicaDesligada = lerPreferenciaDaMusica()
 
 /**
  * Lados da pista, em constante de módulo.
@@ -414,6 +365,8 @@ function RaceCanvas({
   // Os carros entram por referência: o laço de quadro não é refeito por eles.
   const carRef = useRef(car)
   const sendTelemetryRef = useRef(onTelemetry)
+  /** A semente escolhe a faixa: todos os pilotos da sala ouvem a mesma. */
+  const trackSeedRef = useRef(trackSeed)
   const [telemetry, setTelemetry] = useState(initialTelemetry)
   const [rival, setRival] = useState<RivalHud | null>(null)
   const [phase, setPhase] = useState<RacePhase>('countdown')
@@ -424,14 +377,17 @@ function RaceCanvas({
   const [tangencias, setTangencias] = useState(0)
   const [lateStart, setLateStart] = useState(0)
   const audioRef = useRef<RaceAudio | null>(null)
-  const [mudo, setMudo] = useState(somDesligado)
-  const [semMusica, setSemMusica] = useState(musicaDesligada)
+  const [mudo, setMudo] = useState(lerSomDesligado)
+  const [semMusica, setSemMusica] = useState(lerMusicaDesligada)
+  /** A faixa que acabou de entrar na rádio, enquanto o aviso dela está na tela. */
+  const [faixaNoAr, setFaixaNoAr] = useState<{ nome: string; estilo: string; desde: number } | null>(null)
 
   clockRef.current = now ?? Date.now
   finishRef.current = onFinish
   rivalsRef.current = rivals
   carRef.current = car
   sendTelemetryRef.current = onTelemetry
+  trackSeedRef.current = trackSeed
 
   /**
    * Motor, vento e rolamento, criados na primeira vez que o som é pedido.
@@ -449,11 +405,14 @@ function RaceCanvas({
       (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
     if (!AudioContextClass) return null
     try {
-      const motor = new RaceAudio(new AudioContextClass())
-      motor.setMuted(somDesligado)
-      motor.setMusicEnabled(!musicaDesligada)
+      // O carro escolhe a voz do motor; a semente, a faixa que abre a rádio.
+      const motor = new RaceAudio(new AudioContextClass(), faixaDaCorrida(trackSeedRef.current), carRef.current)
+      motor.setMuted(lerSomDesligado())
+      motor.setMusicEnabled(!lerMusicaDesligada())
       motor.resume()
       audioRef.current = motor
+      // Cada faixa que entra na rádio aparece por uns segundos na tela.
+      motor.aoTrocarDeFaixa((faixa) => setFaixaNoAr({ nome: faixa.nome, estilo: faixa.estilo, desde: Date.now() }))
       return motor
     } catch {
       // Sem áudio o jogo segue igual: é reforço, não regra.
@@ -466,20 +425,30 @@ function RaceCanvas({
   }, [som])
 
   const alternarSom = useCallback(() => {
-    const proximo = !somDesligado
-    somDesligado = proximo
-    guardarPreferencia(proximo)
+    const proximo = !lerSomDesligado()
+    definirSomDesligado(proximo)
     setMudo(proximo)
     audioRef.current?.setMuted(proximo)
   }, [])
 
   const alternarMusica = useCallback(() => {
-    const proximo = !musicaDesligada
-    musicaDesligada = proximo
-    guardarPreferenciaDaMusica(proximo)
+    const proximo = !lerMusicaDesligada()
+    definirMusicaDesligada(proximo)
     setSemMusica(proximo)
     audioRef.current?.setMusicEnabled(!proximo)
   }, [])
+
+  /** Pula para a próxima faixa da Rádio Fantasma. */
+  const proximaFaixa = useCallback(() => {
+    audioRef.current?.proximaFaixa()
+  }, [])
+
+  // O aviso da faixa some sozinho depois de uns segundos.
+  useEffect(() => {
+    if (!faixaNoAr) return
+    const timer = window.setTimeout(() => setFaixaNoAr(null), 4_500)
+    return () => window.clearTimeout(timer)
+  }, [faixaNoAr])
 
   const setInput = (key: keyof RaceInput, active: boolean) => {
     inputRef.current[key] = active
@@ -509,6 +478,8 @@ function RaceCanvas({
       if (event.code === 'ArrowLeft' || event.code === 'KeyA') setInput('left', true)
       if (event.code === 'ArrowRight' || event.code === 'KeyD') setInput('right', true)
       if (event.code === 'Space') setInput('boost', true)
+      // R troca a estação: uma vez por toque, e não enquanto a tecla repete.
+      if (event.code === 'KeyR' && !event.repeat) audioRef.current?.proximaFaixa()
     }
     const up = (event: KeyboardEvent) => {
       if (event.code === 'ArrowLeft' || event.code === 'KeyA') setInput('left', false)
@@ -2018,6 +1989,15 @@ function RaceCanvas({
           >
             {semMusica ? 'MÚSICA ✕' : 'MÚSICA ♫'}
           </button>
+          <button
+            className="sound-button"
+            onClick={proximaFaixa}
+            disabled={semMusica}
+            aria-label="Próxima faixa da rádio"
+            title="Próxima faixa (R)"
+          >
+            RÁDIO ⏭
+          </button>
           {onAbandon && phase === 'racing' && (
             <button className="abandon-button" onClick={onAbandon}>ABANDONAR</button>
           )}
@@ -2028,6 +2008,14 @@ function RaceCanvas({
           <em style={{ color: carById(car).accent }}>{carById(car).team} #{carById(car).number}</em>
         </div>
       </div>
+
+      {faixaNoAr && !semMusica && (
+        <div key={faixaNoAr.desde} className="radio-no-ar" role="status" aria-live="polite">
+          <span>RÁDIO FANTASMA</span>
+          <strong>♫ {faixaNoAr.nome}</strong>
+          <em>{faixaNoAr.estilo}</em>
+        </div>
+      )}
 
       <section className="hud" aria-label="Telemetria">
         <div className="position-block">
