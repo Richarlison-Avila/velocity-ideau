@@ -30,6 +30,13 @@ export type LobbyRoom = {
   difficulty: Difficulty
   /** Quem criou a sala. Só ele escolhe a dificuldade. */
   hostId: string | null
+  /** Quem assiste da arquibancada: fora das vagas do grid. */
+  spectators?: LobbySpectator[]
+}
+
+export type LobbySpectator = {
+  id: string
+  name: string
 }
 
 export type RoomResponse = {

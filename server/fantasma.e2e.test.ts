@@ -237,8 +237,9 @@ describe('o fantasma acompanha o progresso real do rival', () => {
 
     expect(corrida.amostras).toBeGreaterThan(80)
     expect(corrida.pacotesEnviados).toBeGreaterThan(20)
-    // Um erro pequeno diante dos 70 m/s do carro.
-    expect(corrida.erroMaximo).toBeLessThan(12)
+    // Projetado até o presente, o fantasma fica a poucos metros de onde o
+    // rival está de fato — antes, desenhado no passado, eram até 12 m.
+    expect(corrida.erroMaximo).toBeLessThan(4)
     expect(corrida.recuos).toBe(0)
     // O fantasma nunca pode avançar visivelmente mais rápido do que o carro
     // do rival de fato anda. Medido como ritmo, o valor é o próprio
@@ -257,7 +258,17 @@ describe('o fantasma acompanha o progresso real do rival', () => {
     // Com a rede degradada a correção pode adiantar o fantasma por um
     // instante; o que não pode é ele dar um salto visível na tela.
     expect(corrida.maiorRitmo).toBeLessThan(RIVAL_SPEED_MS * 1.6)
-    expect(corrida.erroMaximo).toBeLessThan(25)
+    expect(corrida.erroMaximo).toBeLessThan(8)
+  }, 15_000)
+
+  it('com a rede lenta, continua onde o rival está, e não onde ele estava', async () => {
+    // Todo pacote leva 120 ms a mais. Desenhado no passado, o fantasma ficava
+    // uns 20 m atrás do carro de verdade durante a prova inteira.
+    const corrida = await medirFantasma({ duracaoMs: 3_000, atrasarPacote: () => 120 })
+
+    expect(corrida.recuos).toBe(0)
+    expect(corrida.maiorRitmo).toBeLessThan(RIVAL_SPEED_MS * 1.2)
+    expect(corrida.erroMaximo).toBeLessThan(4)
   }, 15_000)
 
   it('atravessa perdas de pacote sem travar nem saltar', async () => {
@@ -269,6 +280,6 @@ describe('o fantasma acompanha o progresso real do rival', () => {
 
     expect(corrida.recuos).toBe(0)
     expect(corrida.maiorRitmo).toBeLessThan(RIVAL_SPEED_MS * 1.6)
-    expect(corrida.erroMaximo).toBeLessThan(30)
+    expect(corrida.erroMaximo).toBeLessThan(8)
   }, 15_000)
 })

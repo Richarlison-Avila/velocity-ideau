@@ -27,15 +27,38 @@ type LobbyProps = {
   onError: (message: string) => void
   /** Abre a garagem para trocar de carro sem sair da sala. */
   onChangeCar: () => void
+  /** Na arquibancada: vê a sala inteira, mas não confirma nem mexe em nada. */
+  espectador?: boolean
+  /** Quem assiste desce para uma vaga livre. */
+  onJoinGrid?: () => void
+  /** Quem está no grid sobe para assistir, liberando a vaga. */
+  onSpectate?: () => void
 }
 
-function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeave, onError, onChangeCar }: LobbyProps) {
+function Lobby({
+  room,
+  playerId,
+  clock,
+  connection,
+  notice,
+  onRoomChange,
+  onLeave,
+  onError,
+  onChangeCar,
+  espectador = false,
+  onJoinGrid,
+  onSpectate,
+}: LobbyProps) {
   const me = room.players.find((player) => player.id === playerId)
   const souAnfitriao = room.hostId === playerId
   const rivals = room.players.filter((player) => player.id !== playerId)
   const haPilotoSemSinal = rivals.some((player) => !player.connected)
   const shareUrl = `${window.location.origin}${window.location.pathname}?room=${room.code}`
+  /** O link da arquibancada: abre direto para assistir, sem ocupar vaga. */
+  const watchUrl = `${shareUrl}&assistir=1`
+  const arquibancada = room.spectators ?? []
   const [copied, setCopied] = useState(false)
+  const [copiedWatch, setCopiedWatch] = useState(false)
   const [remaining, setRemaining] = useState<number | null>(null)
   /** Piloto que o anfitrião está prestes a tirar: o primeiro toque só pergunta. */
   const [tirando, setTirando] = useState<string | null>(null)
@@ -138,21 +161,21 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
    * oferece a área de transferência moderna. O caminho antigo ainda funciona e
    * é justamente o cenário do workshop.
    */
-  const copyLink = async () => {
+  const copyLink = async (url = shareUrl, marcar = setCopied) => {
     const marcarCopiado = () => {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1_800)
+      marcar(true)
+      window.setTimeout(() => marcar(false), 1_800)
     }
 
     try {
-      await navigator.clipboard.writeText(shareUrl)
+      await navigator.clipboard.writeText(url)
       return marcarCopiado()
     } catch {
       // Segue para o caminho antigo.
     }
 
     const campo = document.createElement('textarea')
-    campo.value = shareUrl
+    campo.value = url
     campo.setAttribute('readonly', '')
     campo.style.position = 'fixed'
     campo.style.opacity = '0'
@@ -166,6 +189,11 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
   }
 
   const headline = () => {
+    if (espectador) {
+      if (room.status === 'racing') return 'Prova em andamento.'
+      if (room.status === 'countdown') return 'Largada a caminho.'
+      return 'Você está assistindo.'
+    }
     if (room.status === 'countdown') return 'Largada a caminho.'
     if (room.players.length === 1) return 'Aguardando pilotos.'
     if (haPilotoSemSinal) return 'Piloto reconectando.'
@@ -174,6 +202,12 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
   }
 
   const statusLine = () => {
+    if (espectador) {
+      if (room.players.length === 0) return 'O grid está vazio. A prova aparece aqui assim que os pilotos confirmarem.'
+      if (room.status === 'racing' || room.status === 'countdown') return 'A câmera segue o líder; toque em outro piloto para mudar.'
+      if (faltam.length === 0 && room.players.length >= 2) return 'Todos confirmados: a largada sai em instantes.'
+      return `Da arquibancada, sem ocupar vaga. A largada sai quando ${room.players.length === 1 ? 'chegar um rival e os dois confirmarem' : 'todos os pilotos confirmarem'}.`
+    }
     if (room.status === 'countdown') return 'As cinco luzes já estão acesas em todos os aparelhos.'
     if (haPilotoSemSinal) return 'Um piloto perdeu a conexão e tem alguns segundos para voltar.'
     if (room.players.length === 1) return 'Compartilhe o código, link ou QR code com até cinco pilotos.'
@@ -270,9 +304,9 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                       >
                         {tirando === player.id ? 'CONFIRMAR' : 'TIRAR'}
                       </button>
-                    ) : !player && position === primeiraVaga && gridAberto ? (
+                    ) : !player && position === primeiraVaga && gridAberto && !espectador ? (
                       // A primeira vaga livre convida: é ali que o olho procura.
-                      <button type="button" className="slot-change slot-invite" onClick={copyLink}>
+                      <button type="button" className="slot-change slot-invite" onClick={() => copyLink()}>
                         {copied ? 'COPIADO' : 'CONVIDAR'}
                       </button>
                     ) : (
@@ -285,6 +319,13 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
                 )
               })}
             </div>
+
+            {arquibancada.length > 0 && (
+              <p className="arquibancada" aria-label={`${arquibancada.length} na arquibancada`}>
+                <span>ARQUIBANCADA · {arquibancada.length}</span>
+                {arquibancada.map((pessoa) => (pessoa.id === playerId ? 'você' : pessoa.name)).join(', ')}
+              </p>
+            )}
 
             <div className="lobby-difficulty">
               <span>DIFICULDADE DA SALA</span>
@@ -308,7 +349,15 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
               </em>
             </div>
 
-            {room.status === 'countdown' && remaining !== null ? (
+            {espectador && !(room.status === 'countdown' && remaining !== null) ? (
+              <button
+                className="primary-button ready-button"
+                disabled={!gridAberto || vagas === 0 || connection !== 'connected'}
+                onClick={onJoinGrid}
+              >
+                {!gridAberto ? 'PROVA EM ANDAMENTO' : vagas === 0 ? 'GRID CHEIO' : 'ENTRAR NO GRID'} <span>↗</span>
+              </button>
+            ) : room.status === 'countdown' && remaining !== null ? (
               <div className="countdown-panel" role="status">
                 <span>LARGADA EM</span>
                 <strong>{(Math.max(0, remaining) / 1000).toFixed(1)}s</strong>
@@ -336,10 +385,19 @@ function Lobby({ room, playerId, clock, connection, notice, onRoomChange, onLeav
           <aside className="share-panel">
             <div className="qr-wrap"><QRCodeSVG value={shareUrl} size={156} bgColor="#f4f4ee" fgColor="#090d12" /></div>
             <span>APONTE A CÂMERA</span>
-            <button className="copy-button" onClick={copyLink}>{copied ? 'LINK COPIADO' : 'COPIAR LINK'}</button>
+            <button className="copy-button" onClick={() => copyLink()}>{copied ? 'LINK COPIADO' : 'COPIAR LINK'}</button>
+            {/* O link da arquibancada: para o telão, ou para quem chegou tarde. */}
+            <button className="copy-button watch" onClick={() => copyLink(watchUrl, setCopiedWatch)}>
+              {copiedWatch ? 'LINK COPIADO' : 'LINK PARA ASSISTIR'}
+            </button>
           </aside>
         </div>
-        <button className="text-button" onClick={leave}>SAIR DA SALA</button>
+        {!espectador && onSpectate && gridAberto && (
+          <button className="text-button" onClick={onSpectate} disabled={connection !== 'connected'}>
+            SAIR DO GRID E ASSISTIR
+          </button>
+        )}
+        <button className="text-button" onClick={leave}>{espectador ? 'SAIR DA ARQUIBANCADA' : 'SAIR DA SALA'}</button>
       </section>
     </main>
   )

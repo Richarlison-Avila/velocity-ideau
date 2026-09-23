@@ -56,6 +56,19 @@ export type PublicRoom = {
    * escolha — mostrar um seletor a quem não manda nele seria mentir.
    */
   hostId: string | null
+  /**
+   * Quem assiste da arquibancada.
+   *
+   * Fora das vagas do grid: uma sala cheia, ou com a prova em andamento, ainda
+   * aceita quem só quer assistir. Não confirma, não corre e não entra no
+   * resultado — recebe a mesma sala, a mesma largada e a telemetria de todos.
+   */
+  spectators: PublicSpectator[]
+}
+
+export type PublicSpectator = {
+  id: string
+  name: string
 }
 
 export type RivalState = 'racing' | 'finished'
@@ -81,6 +94,12 @@ type Player = {
   car: CarId
 }
 
+type Spectator = {
+  id: string
+  name: string
+  socketId: string
+}
+
 type RaceState = 'idle' | 'countdown' | 'racing' | 'finished'
 
 type Room = {
@@ -97,6 +116,8 @@ type Room = {
   hostId: string | null
   /** Resultado oficial da última corrida, idêntico para os dois pilotos. */
   outcome: RaceOutcome | null
+  /** A arquibancada: não ocupa vaga e não mexe na prova. */
+  spectators: Spectator[]
 }
 
 export type RoomUpdate = {
@@ -108,7 +129,7 @@ export type RoomUpdate = {
 
 export class RoomError extends Error {
   constructor(
-    public code: 'ROOM_NOT_FOUND' | 'ROOM_FULL' | 'RACE_IN_PROGRESS' | 'NOT_IN_ROOM' | 'NOT_HOST',
+    public code: 'ROOM_NOT_FOUND' | 'ROOM_FULL' | 'RACE_IN_PROGRESS' | 'NOT_IN_ROOM' | 'NOT_HOST' | 'SPECTATORS_FULL',
     message: string,
   ) {
     super(message)
@@ -125,6 +146,15 @@ export const RECONNECT_GRACE_MS = 12_000
 
 /** Quantidade máxima de pilotos que podem dividir a mesma sala. */
 export const MAX_PLAYERS = 6
+
+/**
+ * Lugares na arquibancada de cada sala.
+ *
+ * Não é regra do jogo, é proteção do servidor: cada espectador recebe a
+ * telemetria dos seis pilotos, sessenta mensagens por segundo. Trinta cabem
+ * com folga numa máquina modesta — e uma turma inteira assistindo cabe neles.
+ */
+export const MAX_SPECTATORS = 30
 
 /** Teto de velocidade aceito na telemetria: acima disso o avanço é impossível. */
 export const MAX_PLAUSIBLE_SPEED_MS = 120
@@ -235,6 +265,7 @@ export class RoomStore {
       hostId: playerId,
       outcome: null,
       players: [this.createPlayer(playerId, socketId, rawName, car)],
+      spectators: [],
     })
     return this.get(code)!
   }
@@ -256,9 +287,69 @@ export class RoomStore {
       throw new RoomError('RACE_IN_PROGRESS', 'A corrida desta sala já começou.')
     }
     if (room.players.length >= MAX_PLAYERS) throw new RoomError('ROOM_FULL', 'Esta sala já está cheia.')
+    // Quem assistia e desceu para o grid deixa a arquibancada — só depois de a
+    // vaga estar garantida, para uma recusa não o deixar sem lugar nenhum.
+    room.spectators = room.spectators.filter((spectator) => spectator.id !== playerId)
     room.players.push(this.createPlayer(playerId, socketId, rawName, car))
     this.ensureHost(room)
     return this.toPublic(room)
+  }
+
+  /**
+   * Entra na arquibancada da sala.
+   *
+   * Vale com o grid cheio e com a prova em andamento: é para isso que ela
+   * existe. Quem estava no grid pode subir para assistir enquanto a largada não
+   * foi marcada — depois, sair do grid seria abandonar. Quem volta depois de uma
+   * queda reencontra o próprio lugar.
+   */
+  spectate(codeInput: string, socketId: string, spectatorId: string, rawName: string) {
+    const room = this.ensureOpenRoom(codeInput) ?? this.requireRoom(codeInput)
+
+    const noGrid = room.players.find((player) => player.id === spectatorId)
+    if (noGrid) {
+      if (room.state === 'countdown' || room.state === 'racing') {
+        throw new RoomError('RACE_IN_PROGRESS', 'Com a largada marcada, quem está no grid não sai para assistir.')
+      }
+      room.players = room.players.filter((player) => player.id !== spectatorId)
+      this.ensureHost(room)
+      if (room.state === 'finished') this.resetRace(room)
+    }
+
+    const returning = room.spectators.find((spectator) => spectator.id === spectatorId)
+    if (returning) {
+      returning.socketId = socketId
+      returning.name = this.cleanName(rawName)
+      return this.toPublic(room)
+    }
+    if (room.spectators.length >= MAX_SPECTATORS) {
+      throw new RoomError('SPECTATORS_FULL', 'A arquibancada desta sala está lotada.')
+    }
+    room.spectators.push({ id: spectatorId, name: this.cleanName(rawName), socketId })
+    return this.toPublic(room)
+  }
+
+  /** Última telemetria conhecida de todos os pilotos: é o que o espectador vê ao chegar. */
+  allTelemetries(codeInput: string) {
+    const room = this.rooms.get(this.normalize(codeInput))
+    if (!room) return []
+    return room.players.flatMap((player) => (player.telemetry ? [{ playerId: player.id, ...player.telemetry }] : []))
+  }
+
+  /**
+   * Tira da arquibancada quem perdeu a conexão.
+   *
+   * Sem janela de retorno, ao contrário do piloto: o espectador não segura
+   * nada de ninguém, e quem volta simplesmente entra de novo.
+   */
+  dropSpectatorsBySocket(socketId: string) {
+    const updates: RoomUpdate[] = []
+    for (const [code, room] of this.rooms) {
+      if (!room.spectators.some((spectator) => spectator.socketId === socketId)) continue
+      room.spectators = room.spectators.filter((spectator) => spectator.socketId !== socketId)
+      updates.push(this.afterSpectatorLeft(code, room))
+    }
+    return updates
   }
 
   /**
@@ -529,13 +620,17 @@ export class RoomStore {
     )
   }
 
-  /** Saída explícita: remove o piloto imediatamente. */
+  /** Saída explícita: remove o piloto — ou o espectador — imediatamente. */
   leaveBySocket(socketId: string) {
     const updates: RoomUpdate[] = []
     for (const [code, room] of this.rooms) {
-      if (!room.players.some((player) => player.socketId === socketId)) continue
-      room.players = room.players.filter((player) => player.socketId !== socketId)
-      updates.push(this.afterDeparture(code, room))
+      if (room.players.some((player) => player.socketId === socketId)) {
+        room.players = room.players.filter((player) => player.socketId !== socketId)
+        updates.push(this.afterDeparture(code, room))
+      } else if (room.spectators.some((spectator) => spectator.socketId === socketId)) {
+        room.spectators = room.spectators.filter((spectator) => spectator.socketId !== socketId)
+        updates.push(this.afterSpectatorLeft(code, room))
+      }
     }
     return updates
   }
@@ -604,13 +699,24 @@ export class RoomStore {
 
   private afterDeparture(code: string, room: Room): RoomUpdate {
     const cancelledCountdown = room.state === 'countdown'
-    if (room.players.length === 0) {
+    // A sala só fecha quando fica vazia de verdade: com gente na arquibancada,
+    // ela espera o próximo piloto chegar.
+    if (room.players.length === 0 && room.spectators.length === 0) {
       this.rooms.delete(code)
       return { code, room: null, cancelledCountdown }
     }
     this.ensureHost(room)
     if (room.state !== 'idle') this.resetRace(room)
     return { code, room: this.toPublic(room), cancelledCountdown }
+  }
+
+  /** A saída de um espectador não mexe na prova: só fecha a sala se ela ficou vazia. */
+  private afterSpectatorLeft(code: string, room: Room): RoomUpdate {
+    if (room.players.length === 0 && room.spectators.length === 0) {
+      this.rooms.delete(code)
+      return { code, room: null, cancelledCountdown: false }
+    }
+    return { code, room: this.toPublic(room), cancelledCountdown: false }
   }
 
   /**
@@ -699,6 +805,7 @@ export class RoomStore {
       hostId: null,
       outcome: null,
       players: [],
+      spectators: [],
     }
     this.rooms.set(code, room)
     return room
@@ -772,6 +879,7 @@ export class RoomStore {
       trackSeed: room.trackSeed,
       difficulty: room.difficulty,
       hostId: room.hostId,
+      spectators: room.spectators.map(({ id, name }) => ({ id, name })),
     }
   }
 }

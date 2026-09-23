@@ -213,12 +213,14 @@ describe('roteiro da demonstração', () => {
       speed: 252,
       state: 'racing',
     })
-    await chegouTelemetria
+    const medicao = await chegouTelemetria
 
-    // O fantasma é desenhado um pouco no passado e projeta poucos milímetros
-    // à frente entre uma medição e outra, então a comparação tem folga.
-    const visto = fantasmaDaAna.sample(Date.now() + INTERPOLATION_DELAY_MS)
-    expect(visto?.progress).toBeCloseTo(1_200, 0)
+    // O fantasma é desenhado no presente, projetado a 70 m/s desde a medição:
+    // lido no instante dela, está exatamente onde o Beto disse que estava. Lido
+    // com Date.now(), o resultado dependia de quanto a máquina demorou para
+    // entregar o pacote — com a suíte inteira rodando, 11 ms eram 0,77 m.
+    const visto = fantasmaDaAna.sample(medicao.t + INTERPOLATION_DELAY_MS)
+    expect(visto?.progress).toBeCloseTo(1_200, 5)
     expect(visto?.lateral).toBeCloseTo(0.3, 5)
 
     // Passo 5: cada piloto avisa a chegada no instante em que cruza a linha.
