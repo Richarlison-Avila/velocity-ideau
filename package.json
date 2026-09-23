@@ -20,6 +20,8 @@
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "express": "latest",
+    "openskill": "^5.0.1",
+    "pg": "^8.23.0",
     "qrcode.react": "latest",
     "react": "latest",
     "react-dom": "latest",
@@ -31,6 +33,7 @@
   "devDependencies": {
     "@types/express": "latest",
     "@types/node": "latest",
+    "@types/pg": "^8.23.1",
     "@types/pngjs": "^6.0.5",
     "@types/qrcode": "^1.5.6",
     "@types/react": "latest",

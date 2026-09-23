@@ -1,5 +1,7 @@
 import { networkInterfaces } from 'node:os'
 import { createGameServer } from './app.js'
+import { aberturaAs, CLASSIFICACAO_MS } from './copa/copa.js'
+import { criarRepositorio } from './dados/index.js'
 import { COUNTDOWN_MS } from './rooms.js'
 
 const port = Number(process.env.PORT) || 3001
@@ -10,7 +12,17 @@ const openRooms = (process.env.DEMO_ROOMS ?? 'DEMO1')
   .map((code) => code.trim().toUpperCase())
   .filter(Boolean)
 
-const { http } = createGameServer({ openRooms })
+// Perfis, tempos da Pista do Dia e ranqueada: no Postgres com DATABASE_URL, na
+// memória sem ela — o jogo casual funciona igual nos dois casos.
+const repositorio = await criarRepositorio()
+
+// Copa do Dia: o horário de Brasília em que abre (padrão 21:00) e quantos
+// minutos dura a classificação (padrão 10). Num evento, dá para marcá-la para
+// o meio da apresentação.
+const horarioDaCopa = process.env.COPA_HORARIO ?? '21:00'
+const classificacaoMs = (Number(process.env.COPA_CLASSIFICACAO_MIN) || CLASSIFICACAO_MS / 60_000) * 60_000
+
+const { http } = createGameServer({ openRooms, repositorio, copa: { abertura: aberturaAs(horarioDaCopa), classificacaoMs } })
 
 /** Endereços da máquina na rede local, para acessar pelo celular no evento. */
 function enderecosLocais() {
@@ -25,4 +37,6 @@ http.listen(port, '0.0.0.0', () => {
   for (const endereco of enderecosLocais()) console.log(`  na rede local: ${endereco}`)
   console.log(`Largada agendada com ${COUNTDOWN_MS} ms de antecedência.`)
   if (openRooms.length > 0) console.log(`Sala(s) de demonstração sempre abertas: ${openRooms.join(', ')}`)
+  console.log(`Perfis e rankings: ${repositorio.descricao}`)
+  console.log(`Copa do Dia: às ${horarioDaCopa} de Brasília, com ${classificacaoMs / 60_000} min de classificação.`)
 })

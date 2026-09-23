@@ -97,10 +97,169 @@ Com pilotos de habilidade diferente o melhor continua ganhando; o vácuo só enc
 os carros quando já estão empatados, que é justamente a disputa que se quer
 dramática.
 
+**Três jeitos de ganhar tempo com os mesmos dois comandos.** A pesquisa que
+orienta o jogo competitivo está em [PESQUISA_COMPETITIVA.md](PESQUISA_COMPETITIVA.md);
+o risco que ela aponta primeiro é o jogador sentir que não faz nada — e aqui a
+aceleração é automática. Então cada comando ganhou uma segunda camada:
+
+- **Largada turbo.** Aperte o boost no instante em que as luzes se apagam. As
+  cinco acendem em ritmo fixo, 900 ms cada, então acertar é antecipar o ritmo,
+  e não reagir mais rápido que a tela. Até 150 ms depois é a **perfeita** — o
+  carro sai da linha a 90 km/h, com um segundo de impulso —; até 350 ms, a boa;
+  até 700 ms, a turbo. Boost apertado desde antes da hora **queima a largada**:
+  o motor afoga e o carro fica 0,8 s parado. Apertar e soltar antes não custa
+  nada; o que queima é estar segurando quando as luzes se apagam
+  (`src/game/largada.ts`).
+- **Mini-turbo de curva, sem botão novo.** Segurar a direção para dentro de uma
+  curva de verdade carrega um turbo; endireitar o dispara. Por dentro da pista a
+  carga sobe duas vezes e meia mais rápido que por fora — é a receita do Mario
+  Kart, com a linha fazendo o papel do ângulo do direcional. São três níveis
+  (0,4, 0,8 e 1,2 s de carga), com faíscas azul, laranja e roxa, cada uma
+  maior, e uma nota que sobe a cada nível; o terceiro só sai de uma super curva
+  feita inteira pela linha de dentro. Em reta não carrega nada, e é isso que
+  impede encadear turbos em zigue-zague. De boost também não: na curva o piloto
+  escolhe entre o nitro, que a curva cobra, e a carga, que ela paga na saída. E
+  apertar o boost com a carga guardada a solta, porque é o gesto natural de
+  quem endireita e acelera. Grama e batida jogam a carga fora.
+- **O impulso** que o mini-turbo e a largada pagam leva o carro à velocidade do
+  boost sem gastar a barra — com o boost apertado, a barra espera o impulso
+  acabar. Nunca passa do teto do nível, então o tempo mínimo que o servidor
+  aceita continua valendo.
+- **Tangências seguidas rendem mais**: 22, 27 e 32% de boost, à vista no aviso
+  (×2, ×3). Uma zebra perdida, o muro ou um reset zeram a sequência.
+- **Raspão**: passar rente a uma barreira, sem tocar, devolve 6% de boost — o
+  boost ganho por risco de Burnout, pequeno e uma vez por peça.
+
+Os pilotos de teste medem a escada, em `src/game/habilidade.test.ts`: no normal,
+na média de cinco sementes, quem corrige só na borda do asfalto faz 75,6 s; quem
+desvia com o boost ligado, 69,8 s; quem lê a nota de curva e tangencia, 67,3 s;
+e quem usa tudo — tangência, mini-turbo e largada perfeita —, 65,2 s. Cada
+degrau vale tempo em todos os níveis, e o teste falha se algum deixar de valer.
+
 **O volante castiga quem o maltrata.** Uma correção de curva mexe pouco e some;
 zigue-zague sustentado acumula e cobra aderência. Os dois sistemas não brigam: uma
 correção firme e mantida não é punida, porque o que conta é o curso do volante, e
 não a posição do carro.
+
+## Pista do Dia e contrarrelógio
+
+O traçado da corrida é sorteado a cada prova: justo dentro da sala, porque
+todos correm a mesma pista, mas impossível de comparar entre provas. A **Pista
+do Dia** resolve do jeito do Spelunky e da Track of the Day do Trackmania: uma
+semente por dia, a mesma para todo mundo, virando à meia-noite de Brasília
+(`src/game/contrarrelogio.ts`).
+
+- Corre no nível **difícil**, o oficial — o mesmo da ranqueada —, para os
+  tempos serem comparáveis e a população pequena não se dividir em três quadros.
+- **Fantasma do recorde.** A melhor volta fica guardada no navegador, dez
+  amostras por segundo, uns 9 KB (`src/game/gravador.ts`), e corre na pista na
+  tentativa seguinte, com o carro do próprio piloto. Ele não deixa vácuo: se
+  deixasse, o tempo dependeria de colar nele.
+- **Delta ao vivo** embaixo do cronômetro — o tempo de agora menos o do recorde
+  no mesmo ponto da pista —, e a **parcial** de cada setor, na saída de cada
+  super curva, em verde ou vermelho.
+- **Recomeço instantâneo**: `Backspace` ou o botão RECOMEÇAR, com contagem de
+  2,4 s. Tentar de novo tem de custar menos que desistir.
+- **Medalhas.** Uma pista sorteada não tem autor, então o "tempo do autor" é o
+  do piloto de teste que usa tudo, rodado fora da tela na hora: **Piloto** é
+  bater esse tempo, **Ouro** fica 3% acima dele, **Prata** 7% e **Bronze** 12%.
+  Na prática, quem tangencia pega ouro, quem só desvia com boost pega prata, e
+  o iniciante que corrige na borda ainda não pega nada.
+
+Toda prova — treino, online ou contrarrelógio — termina com o **resumo**
+(`src/game/analise.ts`):
+
+- **onde você perdeu tempo**, com os segundos estimados: tangências perdidas,
+  batidas, resets, grama e largada;
+- **o que você usou da pista**: tangências, sequência, mini-turbos por nível e
+  raspões;
+- **cinco metas de corrida limpa**, à moda dos bônus secretos de Top Gear 3000:
+  todas as tangências, sem batidas, nunca na grama, boost sem travar e largada
+  perfeita.
+
+Nada disso entra na classificação. Uma meta paralela que valesse ponto
+desviaria o piloto de tentar chegar primeiro — a lição do Mario Kart Tour e da
+Aegis do LoL.
+
+### Desafios da Semana
+
+O Playground do Horizon Chase Turbo: **cinco pistas por semana**, cada uma com
+uma regra mexida, e um quadro por desafio que zera toda segunda-feira à
+meia-noite de Brasília (`src/game/desafios.ts`). As sementes saem da semana, então
+o aparelho e o servidor chegam aos mesmos cinco desafios sem combinar nada.
+
+| Desafio | O que muda |
+| --- | --- |
+| Clássico | Nada: a pista pura, no nível difícil |
+| Nitro livre | O boost não gasta |
+| Só tangência | O boost só recarrega na tangência |
+| Chuva | Menos aderência nas curvas, e sair da linha custa mais |
+| Profissional | O nível profissional |
+
+Cada desafio tem medalhas próprias, com o piloto de teste correndo sob a mesma
+regra, e o resultado do contrarrelógio diz qual desafio foi corrido.
+
+## Ranqueada
+
+A fila pública (`server/ranqueada/`), no molde da Riot de 2025–2026 e do TFT. **Só ela conta**: salas por código ou QR continuam casuais, para amigos não combinarem resultado.
+
+- **Dois números por piloto, como no LoL.**
+  - O **MMR**, oculto, é o OpenSkill com o modelo Bradley-Terry completo (`openskill`, licença MIT): cada corrida de seis vira quinze duelos. Foi o de menor erro em partidas de todos contra todos no artigo que o criou, e em salas de seis reduz a incerteza duas vezes mais depressa que o Plackett-Luce.
+  - Os **PL** (pontos de liga), visíveis, andam pela colocação: com seis, +30, +20, +10, −10, −20, −30. A metade de cima nunca perde, como no TFT; salas menores movem menos, e o duelo vale ±10.
+  - Os PL convergem para o MMR com um multiplicador limitado entre 0,75 e 1,25, como o +35/−25 do LoL. Quem está acima dos próprios PL ganha mais e perde menos, e a tela avisa.
+- **Tiers:** Bronze, Prata, Ouro, Platina e Diamante, com divisões III, II e I de 100 PL. Acima disso vem o Mestre, uma escada aberta, e os cinco primeiros do Mestre recebem o selo de **Lenda**.
+- **Colocação e proteções:**
+  - 5 corridas de colocação sem perda de PL, com teto no Ouro I.
+  - Promoção automática, sem série.
+  - Bronze e Prata não caem de tier, e perdem pela metade.
+  - Acima da Prata, cair de tier leva à divisão I de baixo com 75 PL, e subir dá 3 corridas de escudo.
+  - Sem decay: a ausência só aumenta a incerteza do MMR, e quem some por duas semanas sai da vista na escada do Mestre.
+- **Corrida:**
+  - A fila espera até 20 s para juntar até seis pilotos, agrupados pela ordem do MMR em salas de tamanho parecido.
+  - A largada sai sozinha, no nível **difícil**, numa das dez pistas da semana. Esse pool é curado pelos pilotos de teste: fica a semente em que o iniciante termina entre 60 e 90 s e em que usar tudo rende tempo.
+  - Três minutos depois da largada, quem não chegou fica como "não completou", e o resultado sai.
+- **Integridade:**
+  - Na sala ranqueada, a telemetria fica presa ao que cabe desde a largada, e a chegada só vale se a telemetria validada estiver a menos de 150 m da linha.
+  - Abandono conta como último lugar e custa 5 PL extras.
+  - Sair ou cair na contagem cancela a sala para todos, sem PL, e quem saiu espera 1, 5 e depois 30 minutos para voltar.
+  - O mesmo grupo correndo junto mais de três vezes por hora ganha e perde metade dos PL.
+- **Transparência:** o resultado mostra o delta de cada piloto para todos e, contra cada rival, a chance que o MMR dava de ficar à frente dele. É a lição das mudanças opacas de rating do Mario Kart.
+- **Temporadas:** uma por semestre (`2026.2`), acompanhando o calendário acadêmico. Na virada, o MMR volta 30% do caminho até a média e vêm 3 corridas de colocação. Recompensas, se vierem, são só cosméticas.
+
+**Fantasmas quando falta gente.** Quem espera sozinho na fila por 40 s corre contra **voltas gravadas** de outros pilotos, na mesma pista do pool — o que o Horizon Chase 2 faz completando salas com IA, só que com voltas de gente de verdade:
+
+- toda chegada ranqueada leva a volta gravada, e o servidor a guarda quando ela bate com o tempo oficial, junto do MMR que o piloto tinha ao corrê-la;
+- a sala junta até cinco voltas das últimas duas semanas, de MMR mais perto do de quem espera — voltas típicas, não recordes;
+- o servidor reproduz cada volta como telemetria, pelo mesmo caminho de um rival, e marca a chegada no tempo dela. Os fantasmas não têm colisão nem deixam vácuo além do que a posição deles dá, como qualquer rival;
+- no rating, o fantasma entra com o **MMR congelado** e só o humano é atualizado. No placar, o nome dele leva "(fantasma)".
+
+A simulação em `server/ranqueada/rating.test.ts` confere que o rating encontra quem é bom: com sessenta pilotos de habilidade oculta, em salas de seis e vinte corridas cada, a ordem do MMR bate com a habilidade real (Spearman acima de 0,9).
+
+Para testar a ranqueada sem um segundo aparelho, o piloto virtual entra na fila e corre com a física de verdade:
+
+```bash
+npm run piloto -- --ranqueada --nome Rival --carro schumacher
+```
+
+## Copa do Dia
+
+O Cup of the Day do Trackmania e o Grand Prix do F-Zero 99, no tamanho de uma sala de seis (`server/copa/copa.ts`). Com pouca gente jogando, é a **hora marcada** que junta os pilotos.
+
+1. **Inscrição**, pelo card do menu, a qualquer hora do dia até o fim da classificação.
+2. **Classificação**, às **21h de Brasília**, por **10 minutos**: é a Pista do Dia no contrarrelógio de sempre. Vale a melhor volta **aceita** pelo servidor e largada dentro da janela; uma volta pendente não entra, porque a copa não espera conferência. A volta que largou antes do fim ainda tem uma folga para chegar.
+3. **Divisões:** pela ordem da classificação, só com quem está conectado, no menor número de salas de até seis, repartidas por igual — sete pilotos viram 4 e 3, e ninguém é campeão sem correr.
+4. **Eliminação:** cada divisão corre na pista do dia, com largada automática, telemetria estrita e limite de três minutos, como a ranqueada. Em cada corrida sai **o último**; quem não completou fica atrás de quem chegou, com o empate desfeito pela classificação. Quem abandona, cai ou pede para sair sai na hora, todos juntos. Sair na contagem elimina quem saiu, e os outros largam de novo numa sala nova. Quem sobra é o **campeão da divisão**.
+5. **Troféus:** 1º, 2º e 3º de cada divisão ganham um troféu **só cosmético**, que aparece no card da copa. Quem abandonou não leva troféu. A copa não mexe no MMR nem nos PL.
+
+Entre uma rodada e outra, o resultado mostra quem saiu, quem segue e a contagem até a próxima largada. O horário e a duração da classificação se ajustam por `COPA_HORARIO` e `COPA_CLASSIFICACAO_MIN` — num evento, dá para marcar a copa para o meio da apresentação. O estado da copa vive na memória do servidor; os troféus, no repositório.
+
+Para ver uma copa inteira sem mais aparelhos, marque-a para daqui a pouco e rode pilotos virtuais inscritos — eles mandam uma volta de classificação de verdade e correm as rodadas com a física do jogo:
+
+```bash
+COPA_HORARIO=16:45 COPA_CLASSIFICACAO_MIN=3 npm run dev
+npm run piloto -- --copa --nome Rival
+npm run piloto -- --copa --nome Lento --novato --abandona --carro schumacher
+```
 
 ## Executar
 
@@ -127,10 +286,30 @@ O servidor escuta em `0.0.0.0` e imprime os endereços da máquina na rede local
 
 O estado das salas vive na memória, então precisa ser **uma instância só** — duas separariam os pilotos de uma mesma sala.
 
+O que precisa sobreviver entre uma partida e outra — o perfil do piloto, os tempos da Pista do Dia e a ranqueada — vai para o **Postgres** quando existe `DATABASE_URL` (`server/dados/`). Sem ela, fica na memória: o jogo casual funciona igual, e a Pista do Dia e a ranqueada esquecem tudo quando o servidor para, que é o modo do workshop sem internet. As migrações são arquivos SQL em `server/dados/migracoes/`, aplicados na subida, em ordem, cada um numa transação. `docker compose up -d banco` sobe um Postgres para o desenvolvimento (`docker-compose.yml`).
+
 | Variável | Para quê | Padrão |
 | --- | --- | --- |
 | `PORT` | Porta do servidor | `3001` |
 | `DEMO_ROOMS` | Salas que existem sempre, separadas por vírgula | `DEMO1` |
+| `DATABASE_URL` | Postgres de perfis, Pista do Dia, ranqueada e troféus | memória |
+| `COPA_HORARIO` | Horário de Brasília em que a Copa do Dia abre, `HH:MM` | `21:00` |
+| `COPA_CLASSIFICACAO_MIN` | Minutos de classificação da Copa do Dia | `10` |
+
+### Perfil e integridade
+
+Não há cadastro. Na primeira conexão o servidor cria um **perfil** com o nome do piloto e devolve um segredo, que o aparelho guarda; o servidor guarda só o hash dele (`server/perfis.ts`). São no máximo dez perfis novos por hora por rede.
+
+O servidor não confia mais no que o cliente diz ser:
+
+- **Quem fala por quem.** Cada conexão ganha o piloto ao criar ou entrar numa sala, e só fala por ele: telemetria, chegada, abandono, confirmação ou troca de carro em nome de outro são recusados.
+- **Teto da telemetria por nível.** É o teto da física daquele nível, boost e vácuo inteiros, mais 5%. Antes era 120 m/s para todos, um quarto acima do mais rápido.
+- **Chegada recusada avisa.** Antes ela sumia calada e o cliente esperava o resultado para sempre.
+- **Tempos da Pista do Dia** são julgados em camadas (`server/contrarrelogio.ts`):
+  - o relógio do servidor mede a tentativa inteira, e o tempo declarado precisa caber nela — o jogo em câmera lenta, que derrubou o topo do Trackmania, declara menos do que passou;
+  - a volta gravada precisa bater com o tempo, chegar à linha e nunca passar do teto do nível;
+  - volante trocando de lado mais de oito vezes por segundo, ou tempo abaixo do piloto de referência, deixam o tempo **pendente**, fora do quadro até ser conferido.
+- **Re-simulação pelos comandos**, a camada do Trackmania (`src/game/registroDeEntradas.ts`). O jogo roda a física em passos arredondados ao microssegundo e guarda, de cada quadro, o passo e os três botões — esquerda, direita, boost —, compactados em sequências repetidas: uma volta inteira cabe em poucos KB. O servidor refaz a volta com o mesmo `stepRace` e confere com a gravada, com tolerância, porque `Math.exp` e `Math.pow` podem diferir entre motores de JavaScript: mediana do desvio até 5 m, no máximo 10% das amostras acima de 25 m, e a chegada no mesmo segundo. A volta que passa sai de **pendente** direto para o quadro — só o volante suspeito ainda espera conferência. Uma aba escondida que pulou quadros registra o salto, e a re-simulação o repete.
 
 O passo a passo do evento, com conferência de véspera, rede de reserva e roteiro da apresentação, está em [WORKSHOP.md](WORKSHOP.md).
 
@@ -258,6 +437,12 @@ npm test
 
 A suíte cobre a física da corrida, a sequência das cinco luzes, a estimativa de relógio, a interpolação do fantasma, as regras das salas e testes de integração que sobem o servidor real e conectam dois clientes Socket.IO — inclusive medindo o erro do fantasma com pacotes atrasados e perdidos.
 
+O contrato do repositório (`server/dados/repositorio.test.ts`) roda contra a memória sempre, e contra o Postgres quando `TEST_DATABASE_URL` aponta para um banco de teste — que é apagado a cada caso:
+
+```bash
+TEST_DATABASE_URL=postgres://corrida:corrida@localhost:5432/corrida_teste npm test
+```
+
 Três testes merecem destaque:
 
 - **A prova cabe entre 60 e 90 segundos em qualquer semente e qualquer nível**,
@@ -294,10 +479,13 @@ Ele entra na sala como mais um piloto, confirma presença, corre no ritmo pedido
 
 Com `--parado`, ele entra e nunca confirma: é o celular esquecido na mesa, para testar o anfitrião tirando alguém do grid. Tirado, o piloto virtual se despede e encerra.
 
+Com `--ranqueada` ou `--copa`, ele não entra em sala nenhuma: cria um perfil e entra na fila ranqueada, ou se inscreve na Copa do Dia. Nos dois casos corre com a física do jogo — o piloto de teste que usa tudo, ou um novato serpenteando com `--novato` —, porque ali o servidor só aceita a chegada que a telemetria sustenta. Na copa, `--abandona` desiste de cada rodada logo depois da largada, para testar a eliminação sem esperar a prova inteira.
+
 ## Controles
 
-- `A` / `D` ou setas: direção
-- `Espaço`: boost
+- `A` / `D` ou setas: direção — segurada para dentro da curva, carrega o mini-turbo
+- `Espaço`: boost — no apagar das luzes, largada turbo; com carga guardada, solta o mini-turbo
+- `Backspace`: recomeça o contrarrelógio na hora
 - Celular: botões de direção e boost na tela
 - **SOM** liga e desliga todo o áudio; **MÚSICA** liga e desliga só a trilha — na corrida e no lobby —, e as duas escolhas ficam guardadas na aba
 - **RÁDIO ⏭** ou `R`: próxima faixa da Rádio Fantasma

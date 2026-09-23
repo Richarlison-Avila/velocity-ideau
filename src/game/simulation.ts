@@ -77,12 +77,49 @@ export type RaceState = {
   lineFactor: number
   /** Super curvas em que a tangência já foi feita. Cada uma rende uma vez. */
   apexes: Set<number>
+  /**
+   * Tangências seguidas, sem zebra perdida, muro ou reset no meio.
+   *
+   * É o encadeamento de Crash Team Racing, só que à vista: cada tangência da
+   * sequência devolve mais boost que a anterior, e o HUD mostra a conta.
+   */
+  sequencia: number
+  /** Zebra de tangência sob o carro no passo anterior, ou zero. */
+  apiceEmCurso: number
   /** Super curvas em cujo muro o carro já bateu. Cada uma conta uma batida. */
   wallHits: Set<number>
   /** Verdadeiro enquanto o carro está encostado no muro, raspando. */
   onWall: boolean
   finished: boolean
   hitObstacles: Set<number>
+  /** Obstáculos de batida por que o carro passou rente, sem tocar. Cada um rende uma vez. */
+  raspoes: Set<number>
+  /**
+   * Segundos de turbo que não gastam a barra.
+   *
+   * É o que o mini-turbo de curva e a largada perfeita pagam: o carro persegue
+   * a velocidade de boost, com a tração do boost, sem tocar na carga. Não passa
+   * do teto do nível — é o mesmo alvo do boost —, então o tempo mínimo que o
+   * servidor aceita continua valendo por construção.
+   */
+  impulso: number
+  /** Segundos que faltam do motor afogado pela largada queimada. O carro fica parado. */
+  afogado: number
+  /**
+   * Carga do mini-turbo, em segundos de carga ideal.
+   *
+   * Sobe enquanto o volante aponta para dentro de uma curva de verdade, mais
+   * depressa com o carro na metade de dentro da pista. É a receita do Mario
+   * Kart: a carga é por tempo, e mirar a curva a faz subir duas vezes e meia
+   * mais rápido.
+   */
+  carga: number
+  /** Nível que a carga já alcançou: 0 a 3. */
+  nivelCarga: number
+  /** Lado da curva que está sendo carregada: 1, -1, ou zero sem carga. */
+  ladoDaCarga: number
+  /** Segundos desde que o volante deixou de mirar a curva, com carga guardada. */
+  semCarga: number
   /**
    * Regras da corrida, fixadas na largada.
    *
@@ -100,8 +137,15 @@ export type ResetReason = 'crashes' | 'offTrack'
 export type RaceEvent =
   | { type: 'collision'; obstacleId: number }
   | { type: 'reset'; reason: ResetReason }
-  | { type: 'apex'; curveId: number }
+  /** Tangência feita: quanto de boost ela devolveu e em que ponto da sequência está. */
+  | { type: 'apex'; curveId: number; boost: number; sequencia: number }
   | { type: 'wall'; curveId: number }
+  /** A carga do mini-turbo chegou a um nível novo. */
+  | { type: 'carga'; nivel: number }
+  /** O mini-turbo disparou, com o nível que a carga tinha. */
+  | { type: 'miniTurbo'; nivel: number }
+  /** Passou rente a um obstáculo de batida sem tocar. */
+  | { type: 'raspao'; obstacleId: number }
   | { type: 'finish' }
 
 /** Maior passo de simulação aceito, protege contra abas em segundo plano. */
@@ -332,10 +376,19 @@ export function createRaceState(difficulty: Difficulty = 'normal'): RaceState {
     resumeSpeed: 0,
     lineFactor: 1,
     apexes: new Set<number>(),
+    sequencia: 0,
+    apiceEmCurso: 0,
     wallHits: new Set<number>(),
     onWall: false,
     finished: false,
     hitObstacles: new Set<number>(),
+    raspoes: new Set<number>(),
+    impulso: 0,
+    afogado: 0,
+    carga: 0,
+    nivelCarga: 0,
+    ladoDaCarga: 0,
+    semCarga: 0,
   }
 }
 
@@ -387,6 +440,10 @@ function resetar(state: RaceState) {
   state.strikes = 0
   state.offTrack = 0
   state.onWall = false
+  // O reset é a punição inteira: leva junto o turbo, a carga e a sequência.
+  state.impulso = 0
+  state.sequencia = 0
+  perderCarga(state)
   for (const obstacle of state.rules.obstacles) {
     const delta = obstacle.distance - state.progress
     if (delta > -5 && delta < RESET_CLEARANCE_M) state.hitObstacles.add(obstacle.id)
@@ -407,7 +464,7 @@ export function gripFor(agitation: number, rules: RaceRules) {
  * quanto vem maltratando o volante.
  */
 export function targetSpeedFor(state: RaceState) {
-  const base = speedForState(state.offRoad, state.penalty, state.boosting, state.rules, state.slipstream)
+  const base = speedForState(state.offRoad, state.penalty, motorForte(state), state.rules, state.slipstream)
   if (!state.offRoad) return base * state.grip
   const profundidade = clamp((Math.abs(state.lateral) - OFF_ROAD_LIMIT) / (LATERAL_LIMIT - OFF_ROAD_LIMIT), 0, 1)
   return base * (1 - profundidade * state.rules.offRoadDepthLoss) * state.grip
@@ -519,6 +576,108 @@ export const APEX_LATERAL = 0.6
 /** Carga de boost que a tangência devolve. */
 export const APEX_BOOST = 22
 
+/** Quanto cada tangência da sequência devolve a mais que a anterior. */
+export const APEX_COMBO_STEP = 5
+
+/** Degraus da sequência que ainda aumentam o que a tangência devolve: 22, 27, 32. */
+export const APEX_COMBO_MAX = 2
+
+/** O que a tangência devolve, na posição da sequência em que ela cai (0 é a primeira). */
+export function apexRefund(sequenciaAnterior: number) {
+  return APEX_BOOST + APEX_COMBO_STEP * clamp(Math.floor(sequenciaAnterior), 0, APEX_COMBO_MAX)
+}
+
+/**
+ * Carga de curva, na escala da física, a partir da qual a curva carrega o
+ * mini-turbo.
+ *
+ * Em reta não carrega nada, e é isso que impede o "snaking" do Mario Kart de
+ * DS: encadear mini-turbos em zigue-zague numa reta. Só a curva de verdade
+ * paga, e quem a faz pela linha de dentro recebe mais.
+ */
+export const CARGA_CURVA_MIN = 0.3
+
+/**
+ * Quanto o volante precisa apontar para dentro da curva para carregar.
+ *
+ * É lido do volante, que tem inércia, e não da tecla: segurar uma linha com
+ * tecla ou toque é dar pulsos do mesmo lado, e o volante suaviza os pulsos no
+ * mesmo número que o carro sente — o filtro de input de Horizon Chase.
+ */
+export const CARGA_VOLANTE = 0.3
+
+/** Posição lateral, do lado de dentro, a partir da qual a carga sobe na taxa cheia. */
+export const CARGA_DENTRO = 0.2
+
+/** Carga por segundo na metade de dentro da pista, e fora dela: a proporção 5:2 do Mario Kart. */
+export const CARGA_TAXA_DENTRO = 1
+export const CARGA_TAXA_FORA = 0.4
+
+/**
+ * Carga, em segundos ideais, de cada nível do mini-turbo.
+ *
+ * O prêmio cresce mais depressa que o custo, como no Mario Kart 8 Deluxe
+ * (0,62, 1,67 e 2,63 s de turbo): vale segurar a curva inteira pela linha de
+ * dentro, e o terceiro nível só sai de uma super curva feita inteira.
+ */
+export const CARGA_NIVEIS = [0.4, 0.8, 1.2] as const
+
+/** Segundos de impulso que cada nível paga ao disparar. */
+export const IMPULSO_POR_NIVEL = [0, 0.6, 1.2, 2] as const
+
+/**
+ * Segundos com o volante fora da curva até a carga disparar.
+ *
+ * Endireitar solta o mini-turbo. A folga existe para o pulso de tecla não
+ * disparar a carga no meio da curva: o volante suaviza, mas um toque solto por
+ * um décimo de segundo ainda baixa a mira.
+ */
+export const CARGA_FOLGA = 0.12
+
+/** Folga lateral, além da largura de batida, em que passar por um obstáculo conta como raspão. */
+export const RASPAO_FOLGA = 0.12
+
+/** Carga de boost que o raspão devolve. */
+export const RASPAO_BOOST = 6
+
+/**
+ * Metros além do obstáculo em que o raspão é contado.
+ *
+ * Contado com o carro já passando, e não na chegada: a janela de batida vai de
+ * oito metros antes a cinco depois, e um raspão pago na chegada ainda poderia
+ * virar batida logo em seguida.
+ */
+export const RASPAO_PASSOU_M = -3
+
+/** Nível que uma carga alcançou. */
+export function nivelDaCarga(carga: number) {
+  let nivel = 0
+  for (const limiar of CARGA_NIVEIS) if (carga >= limiar) nivel += 1
+  return nivel
+}
+
+/** Se o motor está mandando a força do boost: pelo boost ou por um impulso em curso. */
+export function motorForte(state: RaceState) {
+  return state.boosting || state.impulso > 0
+}
+
+/** Joga fora a carga do mini-turbo, sem disparar. */
+function perderCarga(state: RaceState) {
+  state.carga = 0
+  state.nivelCarga = 0
+  state.ladoDaCarga = 0
+  state.semCarga = 0
+}
+
+/** Dispara o mini-turbo com o nível que a carga alcançou, e zera a carga. */
+function dispararCarga(state: RaceState, events: RaceEvent[]) {
+  const nivel = state.nivelCarga
+  perderCarga(state)
+  if (nivel <= 0) return
+  state.impulso = Math.max(state.impulso, IMPULSO_POR_NIVEL[nivel])
+  events.push({ type: 'miniTurbo', nivel })
+}
+
 /**
  * O que sobra da velocidade na batida contra o muro da super curva.
  *
@@ -583,6 +742,13 @@ export function stepRace(
       if (state.resetting === 0) state.speed = state.resumeSpeed
       continue
     }
+    // Largada queimada: o motor afogou, e o carro fica na linha enquanto os
+    // outros saem. Como o reset, custa tempo no único relógio que conta.
+    if (state.afogado > 0) {
+      state.afogado = Math.max(0, state.afogado - h)
+      state.speed = 0
+      continue
+    }
 
     // A pista relida no ponto em que o carro está neste passo, e não no do
     // começo do quadro. Sem leitor, vale o que o chamador informou.
@@ -636,8 +802,9 @@ export function stepRace(
     // ser o caminho rápido, que é o que a nota de curva promete.
     const proporcao = state.speed / state.rules.cruiseSpeed
     state.lineFactor = lineFactorFor(ganhoDaLinha, state.lateral)
+    // O impulso é força de boost, e a curva cobra dele o mesmo que do boost.
     const carga =
-      curvatura * proporcao * proporcao * Math.sqrt(state.lineFactor) * (state.boosting ? BOOST_IN_CORNER : 1)
+      curvatura * proporcao * proporcao * Math.sqrt(state.lineFactor) * (motorForte(state) ? BOOST_IN_CORNER : 1)
     state.cornerLoad = Math.min(1, Math.abs(carga))
     const escapa = Math.max(0, Math.abs(carga) - state.rules.cornerGrip)
     // Curva à direita joga o carro para a esquerda, daí o sinal invertido.
@@ -662,6 +829,10 @@ export function stepRace(
         state.collisions += 1
         state.strikes += 1
         state.speed *= WALL_IMPACT_KEEP
+        // O muro quebra o que o piloto vinha construindo: turbo, carga e sequência.
+        state.impulso = 0
+        state.sequencia = 0
+        perderCarga(state)
         events.push({ type: 'wall', curveId: muro })
         if (state.strikes >= RESET_STRIKES) {
           resetar(state)
@@ -701,12 +872,60 @@ export function stepRace(
       !state.apexes.has(apice)
     ) {
       state.apexes.add(apice)
-      state.boost = Math.min(100, state.boost + APEX_BOOST)
-      events.push({ type: 'apex', curveId: apice })
+      // Tangências seguidas devolvem mais: 22, 27, 32. O HUD mostra a conta.
+      const devolvido = apexRefund(state.sequencia)
+      state.sequencia += 1
+      state.boost = Math.min(100, state.boost + devolvido)
+      events.push({ type: 'apex', curveId: apice, boost: devolvido, sequencia: state.sequencia })
+    }
+    // Zebra que ficou para trás sem tangência quebra a sequência.
+    if (state.apiceEmCurso > 0 && apice !== state.apiceEmCurso && !state.apexes.has(state.apiceEmCurso)) {
+      state.sequencia = 0
+    }
+    state.apiceEmCurso = apice
+
+    // O impulso some na grama e na penalidade, como qualquer turbo que o
+    // carro perde ao bater ou escapar; livre, corre o relógio dele.
+    if (state.offRoad || state.penalty > 0) state.impulso = 0
+    else state.impulso = Math.max(0, state.impulso - h)
+
+    // Mini-turbo: carga por tempo com a mira na curva, disparo ao endireitar.
+    // Grama e batida jogam a carga fora. O boost não carrega — na curva o
+    // piloto escolhe entre o nitro, que a curva cobra, e a carga, que ela paga
+    // na saída —, e apertá-lo com a carga guardada a solta: é o gesto natural
+    // de quem endireita e acelera, e não pode custar a curva inteira.
+    if (state.offRoad || state.penalty > 0) {
+      perderCarga(state)
+    } else if (input.boost) {
+      if (state.carga > 0) dispararCarga(state, events)
+    } else {
+      const ladoDaCurva = Math.abs(curvatura) >= CARGA_CURVA_MIN ? Math.sign(curvatura) : 0
+      const mirando =
+        ladoDaCurva !== 0 &&
+        state.impulso <= 0 &&
+        state.steerInput * ladoDaCurva >= CARGA_VOLANTE &&
+        (state.ladoDaCarga === 0 || state.ladoDaCarga === ladoDaCurva)
+      if (mirando) {
+        const taxa = state.lateral * ladoDaCurva >= CARGA_DENTRO ? CARGA_TAXA_DENTRO : CARGA_TAXA_FORA
+        state.carga += taxa * h
+        state.ladoDaCarga = ladoDaCurva
+        state.semCarga = 0
+        const nivel = nivelDaCarga(state.carga)
+        if (nivel > state.nivelCarga) {
+          state.nivelCarga = nivel
+          events.push({ type: 'carga', nivel })
+        }
+      } else if (state.carga > 0) {
+        state.semCarga += h
+        if (state.semCarga >= CARGA_FOLGA) dispararCarga(state, events)
+      }
     }
 
+    // O turbo grátis é gasto antes da barra: com um impulso em curso o boost
+    // não drena nada, e o carro já tem a força dele.
     if (state.boostLocked && state.boost >= BOOST_UNLOCK) state.boostLocked = false
-    state.boosting = input.boost && state.boost > 0 && !state.boostLocked && !state.offRoad && state.penalty <= 0
+    state.boosting =
+      input.boost && state.boost > 0 && !state.boostLocked && !state.offRoad && state.penalty <= 0 && state.impulso <= 0
     state.boost = clamp(
       state.boost + (state.boosting ? -state.rules.boostDrain : state.rules.boostRecharge) * h,
       0,
@@ -719,7 +938,7 @@ export function stepRace(
     if (alvo > state.speed) {
       // Tração: forte na saída, cedendo perto do teto.
       const fracao = state.speed / Math.max(1, alvo)
-      const tracao = ACCELERATION_PEAK * (state.boosting ? BOOST_TRACTION : 1)
+      const tracao = ACCELERATION_PEAK * (motorForte(state) ? BOOST_TRACTION : 1)
       state.speed = Math.min(alvo, state.speed + tracao * (1 - Math.pow(fracao, ACCELERATION_SHAPE)) * h)
     } else {
       // A perda é exponencial, que é a forma certa para arrasto e frenagem —
@@ -761,7 +980,25 @@ function conferirBatidas(state: RaceState, events: RaceEvent[]) {
   for (const obstacle of state.rules.obstacles) {
     const delta = obstacle.distance - state.progress
     if (delta <= -5 || delta >= 8) continue
-    if (Math.abs(state.lateral - obstacle.lane) >= HIT_HALF_WIDTH[obstacle.kind]) continue
+    const afastamento = Math.abs(state.lateral - obstacle.lane)
+    if (afastamento >= HIT_HALF_WIDTH[obstacle.kind]) {
+      // Raspão: o carro já passou do obstáculo, colado nele, sem tocar. É o
+      // boost ganho por risco de Burnout, pequeno e uma vez por peça — só nas
+      // que batem, porque passar rente a uma poça não é risco nenhum.
+      if (
+        delta <= RASPAO_PASSOU_M &&
+        HIT_IS_CRASH[obstacle.kind] &&
+        afastamento < HIT_HALF_WIDTH[obstacle.kind] + RASPAO_FOLGA &&
+        !state.offRoad &&
+        !state.hitObstacles.has(obstacle.id) &&
+        !state.raspoes.has(obstacle.id)
+      ) {
+        state.raspoes.add(obstacle.id)
+        state.boost = Math.min(100, state.boost + RASPAO_BOOST)
+        events.push({ type: 'raspao', obstacleId: obstacle.id })
+      }
+      continue
+    }
     if (state.hitObstacles.has(obstacle.id)) continue
     state.hitObstacles.add(obstacle.id)
     state.collisions += 1

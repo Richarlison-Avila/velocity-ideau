@@ -12,6 +12,8 @@ export type LobbyPlayer = {
   rematch: boolean
   /** Carro escolhido na garagem; é com ele que o rival desenha o fantasma. */
   car: CarId
+  /** Volta gravada de outro piloto, completando a sala de quem ficou sozinho na ranqueada. */
+  fantasma?: boolean
 }
 
 export type LobbyStatus = 'waiting' | 'ready' | 'countdown' | 'racing' | 'finished'
@@ -30,6 +32,10 @@ export type LobbyRoom = {
   difficulty: Difficulty
   /** Quem criou a sala. Só ele escolhe a dificuldade. */
   hostId: string | null
+  /** Sala da fila ranqueada: largada automática, sem lobby e sem revanche. */
+  ranqueada?: boolean
+  /** Sala de uma rodada da Copa do Dia: largada automática, e o último sai. */
+  copa?: { divisao: number; rodada: number }
 }
 
 export type RoomResponse = {
