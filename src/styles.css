@@ -422,9 +422,9 @@ button { cursor: pointer; }
   .mode-copy { min-height: 0; }
   .menu-footer { flex-direction: column; gap: 8px; padding: 14px 19px; }
   .topbar { padding: 14px 16px; }
-  .hud { top: 58px; left: 15px; right: 15px; }
+  .hud { top: 58px; left: 15px; right: 15px; grid-template-columns: max-content max-content 1fr; column-gap: 10px; }
   .position-block strong { font-size: 27px; }
-  .timer-block { padding: 7px 12px; }
+  .timer-block { justify-self: start; margin-top: 2px; padding: 2px 0 0 10px; border: 0; border-left: 1px solid rgba(255,255,255,.2); background: transparent; backdrop-filter: none; text-align: left; }
   .timer-block strong { font-size: 17px; }
   .speed-block strong { font-size: 40px; }
   .progress-wrap { top: 124px; width: 60vw; }
@@ -442,6 +442,53 @@ button { cursor: pointer; }
   .boost-button { width: 80px; height: 80px; }
   .result-stats { grid-template-columns: 1fr; }
   .result-stats div + div { border-left: 0; border-top: 1px solid rgba(255,255,255,.1); }
+}
+
+/* Celulares deitados continuam largos o bastante para escapar do breakpoint
+   acima. A altura curta é o sinal correto para compactar o HUD e liberar a
+   pista, sem encolher a cena nem os alvos de toque em telas de desktop. */
+@media (max-height: 600px) and (orientation: landscape) {
+  .topbar { padding: 10px 15px; }
+  .brand-mini { gap: 6px; font-size: 10px; }
+  .brand-mini i { width: 12px; height: 18px; }
+  .topbar-actions { gap: 6px; }
+  .sound-button, .abandon-button { padding: 5px 8px; font-size: 8px; }
+  .pilot-tag { font-size: 11px; }
+  .pilot-tag em { font-size: 8px; }
+
+  .hud { top: 49px; left: 16px; right: 16px; grid-template-columns: max-content max-content 1fr; column-gap: 12px; }
+  .position-block strong { font-size: 26px; }
+  .difficulty-tag { margin-top: 1px; font-size: 8px; }
+  .timer-block { justify-self: start; margin-top: 1px; padding: 2px 0 0 12px; border: 0; border-left: 1px solid rgba(255,255,255,.2); background: transparent; backdrop-filter: none; text-align: left; }
+  .timer-block strong { margin-top: 2px; font-size: 17px; }
+  .speed-block strong { font-size: 38px; }
+  .speed-block span { margin-top: 4px; }
+
+  .progress-wrap { top: 101px; width: min(280px, 32vw); }
+
+  /* O estado do rival fica logo abaixo dos controles centrais. Duas linhas
+     curtas preservam a informação útil sem colocar uma faixa sobre a pista. */
+  .rival-panel,
+  .rival-panel.compact {
+    top: 49px;
+    width: auto;
+    min-width: 0;
+    max-width: min(250px, 36vw);
+    padding: 4px 10px;
+    border-color: rgba(67,231,255,.22);
+    background: rgba(6,14,19,.58);
+  }
+  .rival-panel span,
+  .rival-panel.compact span { display: block; font-size: 7px; }
+  .rival-panel strong,
+  .rival-panel.compact strong { margin-top: 1px; overflow: hidden; font-size: 11px; line-height: 1.05; text-overflow: ellipsis; white-space: nowrap; opacity: .9; }
+  .rival-panel em { margin-top: 2px; overflow: hidden; font-size: 8px; line-height: 1.05; text-overflow: ellipsis; white-space: nowrap; }
+
+  .boost-meter { right: 16px; bottom: 99px; width: 120px; }
+  .slipstream-meter { right: 16px; bottom: 137px; width: 120px; }
+  .touch-controls { inset: auto 14px max(10px, env(safe-area-inset-bottom)); grid-template-columns: 56px 56px 1fr 74px; gap: 7px; }
+  .steer { width: 56px; height: 56px; font-size: 38px; }
+  .boost-button { width: 74px; height: 74px; }
 }
 
 @media (max-width: 720px) {
