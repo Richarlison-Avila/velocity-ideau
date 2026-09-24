@@ -496,15 +496,18 @@ button { cursor: pointer; }
    acima. A altura curta é o sinal correto para compactar o HUD e liberar a
    pista, sem encolher a cena nem os alvos de toque em telas de desktop. */
 @media (max-height: 600px) and (orientation: landscape) {
-  .topbar { padding: 10px 15px; }
+  /* Deitado, o entalhe e os cantos arredondados ficam nas laterais: as
+     margens de lado respeitam a safe-area, como no resto do HUD. */
+  .topbar { padding: 10px max(15px, env(safe-area-inset-right)) 10px max(15px, env(safe-area-inset-left)); }
   .brand-mini { gap: 6px; font-size: 10px; }
   .brand-mini i { width: 12px; height: 18px; }
   .topbar-actions { gap: 6px; }
   .sound-button, .abandon-button { padding: 5px 8px; font-size: 8px; }
+  .abandon-button { min-width: 64px; }
   .pilot-tag { font-size: 11px; }
   .pilot-tag em { font-size: 8px; }
 
-  .hud { top: 49px; left: 16px; right: 16px; grid-template-columns: max-content max-content 1fr; column-gap: 12px; }
+  .hud { top: 49px; left: max(16px, env(safe-area-inset-left)); right: max(16px, env(safe-area-inset-right)); grid-template-columns: max-content max-content 1fr; column-gap: 12px; }
   .position-block strong { font-size: 26px; }
   .difficulty-tag { margin-top: 1px; font-size: 8px; }
   .timer-block { justify-self: start; margin-top: 1px; padding: 2px 0 0 12px; border: 0; border-left: 1px solid rgba(255,255,255,.2); background: transparent; backdrop-filter: none; text-align: left; }
@@ -532,9 +535,12 @@ button { cursor: pointer; }
   .rival-panel.compact strong { margin-top: 1px; overflow: hidden; font-size: 11px; line-height: 1.05; text-overflow: ellipsis; white-space: nowrap; opacity: .9; }
   .rival-panel em { margin-top: 2px; overflow: hidden; font-size: 8px; line-height: 1.05; text-overflow: ellipsis; white-space: nowrap; }
 
-  .boost-meter { right: 16px; bottom: 99px; width: 120px; }
-  .slipstream-meter { right: 16px; bottom: 137px; width: 120px; }
-  .touch-controls { inset: auto 14px max(10px, env(safe-area-inset-bottom)); grid-template-columns: 56px 56px 1fr 74px; gap: 7px; }
+  .boost-meter { right: max(16px, env(safe-area-inset-right)); bottom: 99px; width: 120px; }
+  .slipstream-meter { right: max(16px, env(safe-area-inset-right)); bottom: 137px; width: 120px; }
+  .touch-controls { inset: auto 14px max(10px, env(safe-area-inset-bottom)); left: max(14px, env(safe-area-inset-left)); right: max(14px, env(safe-area-inset-right)); grid-template-columns: 56px 56px 1fr 74px; gap: 7px; }
+  /* Vão de 7 px: cada seta fica com metade dele, mais a borda. */
+  .touch-controls .steer.left::before { right: -4.5px; }
+  .touch-controls .steer.right::before { left: -4.5px; }
   .steer { width: 56px; height: 56px; font-size: 38px; }
   .boost-button { width: 74px; height: 74px; }
 }
