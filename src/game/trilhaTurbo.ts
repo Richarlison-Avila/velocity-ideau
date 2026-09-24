@@ -24,7 +24,7 @@
  *   sol natural — o sétimo grau abaixado, que é o sotaque de toda trilha de
  *   corrida da época — antes do mi que devolve ao tema.
  */
-import { soltarAoAcabar } from './banda'
+import { passosParaRecuperar, QUEDA_DA_TRILHA, soltarAoAcabar } from './banda'
 import { frequenciaDaNota, type HostDaTrilha } from './trilha'
 
 // ---------------------------------------------------------------------------
@@ -225,6 +225,8 @@ export class TrilhaTurbo {
   private passo = 0
   private tocando = false
   private ligada = true
+  /** Quando a música foi desligada com a faixa tocando; veja a `Banda`. */
+  private desligadaEm: number | null = null
 
   constructor(private readonly ctx: HostDaTrilha, destino: AudioNode, private readonly ruido: AudioBuffer) {
     const agora = ctx.currentTime
@@ -290,9 +292,21 @@ export class TrilhaTurbo {
     this.saida.gain.setTargetAtTime(0, this.ctx.currentTime, queda / 3)
   }
 
+  /** Desligada, segue contando os passos mas não monta as notas, como a `Banda`. */
   setEnabled(ligada: boolean) {
+    if (ligada === this.ligada) return
+    const agora = this.ctx.currentTime
+    if (ligada && this.tocando) {
+      const recuar = passosParaRecuperar(this.proximo, TURBO_DURACAO_DO_PASSO, agora, this.desligadaEm)
+      this.proximo -= recuar * TURBO_DURACAO_DO_PASSO
+      this.passo = (this.passo - recuar + TURBO_PASSOS_DA_TRILHA) % TURBO_PASSOS_DA_TRILHA
+    }
+    this.desligadaEm = !ligada && this.tocando ? agora : null
     this.ligada = ligada
-    if (this.tocando) this.saida.gain.setTargetAtTime(ligada ? VOLUME_DA_TURBO : 0, this.ctx.currentTime, 0.08)
+    if (this.tocando) {
+      this.saida.gain.setTargetAtTime(ligada ? VOLUME_DA_TURBO : 0, agora, 0.08)
+      if (ligada) this.agendar()
+    }
   }
 
   get playing() {
@@ -306,7 +320,8 @@ export class TrilhaTurbo {
     // despejar todas as notas atrasadas de uma vez.
     if (this.proximo < agora - 0.05) this.proximo = agora + 0.02
     while (this.proximo < agora + ANTECEDENCIA) {
-      this.tocarPasso(eventosTurbo(this.passo), this.proximo)
+      const soa = this.ligada || (this.desligadaEm !== null && this.proximo < this.desligadaEm + QUEDA_DA_TRILHA)
+      if (soa) this.tocarPasso(eventosTurbo(this.passo), this.proximo)
       this.proximo += TURBO_DURACAO_DO_PASSO
       this.passo = (this.passo + 1) % TURBO_PASSOS_DA_TRILHA
     }

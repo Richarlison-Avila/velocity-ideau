@@ -168,6 +168,34 @@ const ANTECEDENCIA = 0.14
 const INTERVALO_DO_AGENDADOR = 25
 
 /**
+ * Por quanto tempo a trilha desligada ainda monta notas, em segundos: é a
+ * queda do volume (constante de 0,08 s) até ficar 65 dB abaixo. Dali em
+ * diante as notas soariam atrás de um volume zero — e custariam o mesmo que
+ * tocando, na thread de áudio e no lixo de nós da thread principal.
+ */
+export const QUEDA_DA_TRILHA = 0.6
+
+/**
+ * Religando a trilha, os passos pulados que ainda estão no futuro — até dois,
+ * pela antecedência — voltam para a fila. Recua só sobre eles: um passo no
+ * passado atacaria no instante de religar, junto com os outros.
+ *
+ * Devolve quantos passos recuar.
+ */
+export function passosParaRecuperar(
+  proximo: number,
+  duracaoDoPasso: number,
+  agora: number,
+  desligadaEm: number | null,
+) {
+  const puladosDesde = desligadaEm === null ? -Infinity : desligadaEm + QUEDA_DA_TRILHA
+  const limite = Math.max(agora + 0.01, puladosDesde)
+  let passos = 0
+  while (proximo - (passos + 1) * duracaoDoPasso >= limite) passos += 1
+  return passos
+}
+
+/**
  * Curva de saturação da guitarra.
  *
  * Um `tanh` apertado: o sinal passa quase reto enquanto é baixo e achata perto
@@ -229,6 +257,11 @@ export class Banda {
   private passo = 0
   private tocando = false
   private ligada = true
+  /**
+   * Quando a música foi desligada com a faixa tocando, no relógio do áudio.
+   * Nulo com a música ligada, ou desligada desde antes de a faixa começar.
+   */
+  private desligadaEm: number | null = null
   private readonly duracaoDoPasso: number
   private readonly volume: number
 
@@ -403,10 +436,26 @@ export class Banda {
     this.saida.gain.setTargetAtTime(0, this.ctx.currentTime, queda / 3)
   }
 
-  /** Liga ou desliga a trilha sem mexer no resto do som. */
+  /**
+   * Liga ou desliga a trilha sem mexer no resto do som.
+   *
+   * Desligada, ela segue contando os passos — religada, volta no mesmo ponto
+   * em que voltaria tocando em silêncio —, mas deixa de montar as notas.
+   */
   setEnabled(ligada: boolean) {
+    if (ligada === this.ligada) return
+    const agora = this.ctx.currentTime
+    if (ligada && this.tocando) {
+      const recuar = passosParaRecuperar(this.proximo, this.duracaoDoPasso, agora, this.desligadaEm)
+      this.proximo -= recuar * this.duracaoDoPasso
+      this.passo = (this.passo - recuar + this.partitura.passos) % this.partitura.passos
+    }
+    this.desligadaEm = !ligada && this.tocando ? agora : null
     this.ligada = ligada
-    if (this.tocando) this.saida.gain.setTargetAtTime(ligada ? this.volume : 0, this.ctx.currentTime, 0.08)
+    if (this.tocando) {
+      this.saida.gain.setTargetAtTime(ligada ? this.volume : 0, agora, 0.08)
+      if (ligada) this.agendar()
+    }
   }
 
   get playing() {
@@ -421,10 +470,15 @@ export class Banda {
     // música retoma do agora, como um rádio que ficou sem sinal.
     if (this.proximo < agora - 0.05) this.proximo = agora + 0.02
     while (this.proximo < agora + ANTECEDENCIA) {
-      this.tocarPasso(this.partitura.eventos(this.passo), this.proximo)
+      if (this.soa(this.proximo)) this.tocarPasso(this.partitura.eventos(this.passo), this.proximo)
       this.proximo += this.duracaoDoPasso
       this.passo = (this.passo + 1) % this.partitura.passos
     }
+  }
+
+  /** O passo do instante `t` ainda se ouve: a música está ligada, ou caindo. */
+  private soa(t: number) {
+    return this.ligada || (this.desligadaEm !== null && t < this.desligadaEm + QUEDA_DA_TRILHA)
   }
 
   private tocarPasso(e: EventosDaBanda, t: number) {

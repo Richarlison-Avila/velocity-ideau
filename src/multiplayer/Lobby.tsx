@@ -84,11 +84,12 @@ function Lobby({
     const destravar = () => {
       if (!musica.tocando) musica.tocar()
     }
-    window.addEventListener('pointerdown', destravar)
-    window.addEventListener('keydown', destravar)
+    // O dedo que desce não conta como gesto para o áudio; o que sobe, sim. O
+    // pointerdown fica para o mouse.
+    const eventos = ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown'] as const
+    for (const evento of eventos) window.addEventListener(evento, destravar)
     return () => {
-      window.removeEventListener('pointerdown', destravar)
-      window.removeEventListener('keydown', destravar)
+      for (const evento of eventos) window.removeEventListener(evento, destravar)
       musica.encerrar()
       musicaRef.current = null
     }
