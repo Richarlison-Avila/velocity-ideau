@@ -425,13 +425,50 @@ export function volumeDoMotor(levels: AudioLevels, rpm: number, voz: Especificac
  */
 const lacos = new Map<string, Promise<AudioBuffer | null>>()
 
+/**
+ * Bytes da voz baixados antes da corrida, ainda por decodificar: decodificar
+ * pede um contexto de áudio, e o da corrida só nasce na tela da corrida. Até
+ * lá, o que dá para adiantar é o download.
+ */
+const bytesAdiantados = new Map<string, Promise<ArrayBuffer | null>>()
+
+/**
+ * Começa a baixar os arquivos da voz — no menu, na garagem, no lobby.
+ *
+ * A largada da sala é a mesma para todos: sem isso, os seis celulares pedem
+ * os mesmos arquivos no mesmo segundo, pelo mesmo Wi-Fi, e a prova larga no
+ * sintetizador. Guarda uma voz de cada vez: trocar de carro na garagem
+ * descarta o que foi adiantado para a anterior.
+ */
+export function precarregarVoz(voz: EspecificacaoDoMotor) {
+  if (typeof fetch === 'undefined') return
+  const arquivos = camadasDaVoz(voz).map((camada) => camada.arquivo)
+  for (const arquivo of [...bytesAdiantados.keys()]) {
+    if (!arquivos.includes(arquivo)) bytesAdiantados.delete(arquivo)
+  }
+  for (const arquivo of arquivos) {
+    if (lacos.has(arquivo) || bytesAdiantados.has(arquivo)) continue
+    const bytes = fetch(arquivo)
+      .then((resposta) => (resposta.ok ? resposta.arrayBuffer() : null))
+      .catch(() => null)
+    bytesAdiantados.set(arquivo, bytes)
+  }
+}
+
 function laco(ctx: AudioHost, arquivo: string) {
   const guardado = lacos.get(arquivo)
   if (guardado) return guardado
   const decodificar = (ctx as Partial<Pick<AudioContext, 'decodeAudioData'>>).decodeAudioData
   if (typeof fetch === 'undefined' || typeof decodificar !== 'function') return Promise.resolve(null)
-  const promessa = fetch(arquivo)
-    .then((resposta) => (resposta.ok ? resposta.arrayBuffer() : Promise.reject(new Error(`${resposta.status}`))))
+  // Os bytes adiantados servem uma vez só: decodificar consome o buffer.
+  const adiantado = bytesAdiantados.get(arquivo) ?? Promise.resolve(null)
+  bytesAdiantados.delete(arquivo)
+  const baixar = () =>
+    fetch(arquivo).then((resposta) =>
+      resposta.ok ? resposta.arrayBuffer() : Promise.reject(new Error(`${resposta.status}`)),
+    )
+  const promessa = adiantado
+    .then((bytes) => bytes ?? baixar())
     .then((bytes) => decodificar.call(ctx, bytes))
     .catch(() => {
       // Sem a amostra, o sintetizador segue valendo; na próxima corrida tenta de novo.

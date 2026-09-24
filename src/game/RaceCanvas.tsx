@@ -12,7 +12,14 @@ import {
 import { RaceAudio, faixaDaCorrida } from './audio'
 import { definirMusicaDesligada, definirSomDesligado, lerMusicaDesligada, lerSomDesligado } from './preferenciasDeSom'
 import { carById, type CarId } from './cars'
-import { carImageUrl, drawCar, prepareCar, type CarPose } from './carSprites'
+import {
+  carImageUrl,
+  definirMaiorEscala,
+  drawCar,
+  prepareCar,
+  soltarFolhasDeOutroAmbiente,
+  type CarPose,
+} from './carSprites'
 import { classificar, diferencaEmSegundos, formatarDiferenca, liderEmProva, type CarroNaProva } from './classificacao'
 import {
   ALCANCE_DO_RADAR_M,
@@ -48,6 +55,7 @@ import {
 import { definirDensidade } from './reducoes'
 import { DIFFICULTY_LABELS, rulesFor, type Difficulty } from './rules'
 import {
+  advanceRace,
   APEX_BOOST,
   APEX_LATERAL,
   createRaceState,
@@ -55,11 +63,11 @@ import {
   RESET_SECONDS,
   RESET_STRIKES,
   slipstreamFrom,
-  stepRace,
   type RaceContext,
-  type RaceInput,
   type ResetReason,
 } from './simulation'
+import { RitmoDoQuadro } from './ritmoDoQuadro'
+import { Comandos, ladoDoDedo, type Comando } from './toque'
 import { EmissionRate, ParticleField, TRAIL_SETBACK, WHEEL_OFFSET, type Particle } from './particles'
 import {
   CAMERA_DEPTH,
@@ -401,6 +409,18 @@ const ALTURA_DA_FAMILIA: Record<FamiliaDeVaga, number> = {
  */
 const SOMBRA_NO_CHAO = 'rgba(10,20,26,.3)'
 
+const COMANDOS_DE_TOQUE: readonly Comando[] = ['left', 'right', 'boost']
+
+/**
+ * Quanto tempo, no mínimo, o botão de toque fica aceso. É perto do que o
+ * `:active` do Chrome dura num toque rápido: menos que isso, o pulso de
+ * volante acenderia e apagaria antes de a tela ser pintada.
+ */
+const ACESO_MINIMO_MS = 120
+
+/** Janela para o segundo toque que confirma o abandono, a mesma do TIRAR do lobby. */
+const JANELA_DO_ABANDONO_MS = 3_000
+
 function RaceCanvas({
   pilotName,
   car,
@@ -419,7 +439,16 @@ function RaceCanvas({
 }: RaceCanvasProps) {
   const espectador = mode === 'espectador'
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const inputRef = useRef<RaceInput>({ left: false, right: false, boost: false })
+  const comandosRef = useRef(new Comandos())
+  /** Os controles de toque, cujos botões acendem pelo comando e não pelo `:active`. */
+  const controlesRef = useRef<HTMLDivElement>(null)
+  const acesoRef = useRef<Record<Comando, { desde: number; timer: number }>>({
+    left: { desde: 0, timer: 0 },
+    right: { desde: 0, timer: 0 },
+    boost: { desde: 0, timer: 0 },
+  })
+  /** Onde terminam ‹ e começa ›, medidos quando o dedo desce. */
+  const vaoDasSetasRef = useRef({ fimDaEsquerda: 0, inicioDaDireita: 0 })
   const clockRef = useRef(now ?? Date.now)
   const finishRef = useRef(onFinish)
   const raceRef = useRef(createRaceState(difficulty))
@@ -451,6 +480,8 @@ function RaceCanvas({
   const [seguido, setSeguido] = useState<Seguido | null>(null)
   /** No automático, a câmera fica com o líder de quem ainda corre. */
   const [autoLider, setAutoLider] = useState(true)
+  /** O primeiro toque em ABANDONAR só pergunta. */
+  const [abandonoArmado, setAbandonoArmado] = useState(false)
   const modeRef = useRef(mode)
   /** Escolha manual do espectador: o piloto que ele pediu para seguir. */
   const seguindoRef = useRef<string | null>(null)
@@ -474,9 +505,11 @@ function RaceCanvas({
   /**
    * Motor, vento e rolamento, criados na primeira vez que o som é pedido.
    *
-   * O navegador só libera áudio depois de um gesto do usuário, e a primeira
-   * luz da largada vem logo depois do clique que iniciou a corrida — então
-   * é ali que o contexto nasce, já destravado.
+   * O pedido vem na montagem da tela, antes da primeira luz: o celular leva
+   * de dezenas a centenas de milissegundos para abrir a saída de som, e as
+   * amostras do motor começam a baixar ali. No treino a montagem ainda está
+   * dentro do clique que iniciou a corrida, então o contexto nasce destravado;
+   * na sala, a largada vem do servidor, e quem destrava é o primeiro toque.
    */
   const som = useCallback(() => {
     if (audioRef.current) {
@@ -558,27 +591,123 @@ function RaceCanvas({
     return () => window.clearTimeout(timer)
   }, [faixaNoAr])
 
-  const setInput = (key: keyof RaceInput, active: boolean) => {
-    inputRef.current[key] = active
+  // O ABANDONAR mora ao lado do RÁDIO, e abandonar não tem volta: o primeiro
+  // toque só arma o botão, como o TIRAR do lobby. Armado, ele desarma sozinho.
+  useEffect(() => {
+    if (!abandonoArmado) return
+    const timer = window.setTimeout(() => setAbandonoArmado(false), JANELA_DO_ABANDONO_MS)
+    return () => window.clearTimeout(timer)
+  }, [abandonoArmado])
+
+  const tocarEmAbandonar = () => {
+    if (!abandonoArmado) {
+      setAbandonoArmado(true)
+      return
+    }
+    setAbandonoArmado(false)
+    onAbandon?.()
+  }
+
+  const botao = useCallback(
+    (comando: Comando) => controlesRef.current?.querySelector<HTMLButtonElement>(`[data-comando="${comando}"]`) ?? null,
+    [],
+  )
+
+  /**
+   * O botão acende no mesmo evento que liga o comando, e não pelo `:active`
+   * do navegador: com o dedo deslizando de ‹ para ›, o `:active` ficaria no
+   * botão de onde o dedo saiu. O toque rápido fica aceso um instante mínimo,
+   * senão acenderia e apagaria antes de a tela ser pintada.
+   */
+  const acender = useCallback((comando: Comando) => {
+    const aceso = acesoRef.current[comando]
+    window.clearTimeout(aceso.timer)
+    aceso.timer = 0
+    aceso.desde = performance.now()
+    botao(comando)?.setAttribute('data-on', '')
+  }, [botao])
+
+  /** O dedo que desliza para a outra seta apaga a de origem na hora: não houve toque rápido ali. */
+  const apagarSeSolto = useCallback((comando: Comando, naHora = false) => {
+    if (comandosRef.current.dedoEm(comando)) return
+    const aceso = acesoRef.current[comando]
+    const apagar = () => {
+      aceso.timer = 0
+      if (!comandosRef.current.dedoEm(comando)) botao(comando)?.removeAttribute('data-on')
+    }
+    window.clearTimeout(aceso.timer)
+    const falta = naHora ? 0 : ACESO_MINIMO_MS - (performance.now() - aceso.desde)
+    if (falta > 0) aceso.timer = window.setTimeout(apagar, falta)
+    else apagar()
+  }, [botao])
+
+  const apagarTodos = useCallback(() => {
+    for (const comando of COMANDOS_DE_TOQUE) {
+      window.clearTimeout(acesoRef.current[comando].timer)
+      acesoRef.current[comando].timer = 0
+      botao(comando)?.removeAttribute('data-on')
+    }
+  }, [botao])
+
+  const soltarDedo = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const comando = comandosRef.current.dedoSubiu(event.pointerId)
+    if (comando) apagarSeSolto(comando)
   }
 
   /**
    * Controles de toque. O comando é registrado antes de capturar o ponteiro:
    * se a captura falhar no aparelho, o botão continua funcionando.
    */
-  const holdControl = (key: keyof RaceInput) => ({
+  const holdControl = (comando: Comando) => ({
+    'data-comando': comando,
     onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
-      setInput(key, true)
+      comandosRef.current.dedoDesceu(event.pointerId, comando)
+      acender(comando)
+      if (comando !== 'boost') {
+        // As bordas de dentro das setas, para o dedo que deslizar de uma para a outra.
+        const esquerda = botao('left')?.getBoundingClientRect()
+        const direita = botao('right')?.getBoundingClientRect()
+        if (esquerda && direita) {
+          vaoDasSetasRef.current = { fimDaEsquerda: esquerda.right, inicioDaDireita: direita.left }
+        }
+      }
       try {
         event.currentTarget.setPointerCapture(event.pointerId)
       } catch {
         // Sem captura o botão ainda responde ao soltar.
       }
     },
-    onPointerUp: () => setInput(key, false),
-    onPointerCancel: () => setInput(key, false),
-    onLostPointerCapture: () => setInput(key, false),
+    // O polegar que balança entre ‹ e › sem levantar leva a direção junto. O
+    // boost fica de fora: não tem vizinho para onde deslizar.
+    onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const atual = comandosRef.current.comandoDoDedo(event.pointerId)
+      if (atual !== 'left' && atual !== 'right') return
+      const { fimDaEsquerda, inicioDaDireita } = vaoDasSetasRef.current
+      const lado = ladoDoDedo(event.clientX, atual, fimDaEsquerda, inicioDaDireita)
+      if (lado === atual) return
+      comandosRef.current.dedoMudou(event.pointerId, lado)
+      acender(lado)
+      apagarSeSolto(atual, true)
+    },
+    onPointerUp: soltarDedo,
+    onPointerCancel: soltarDedo,
+    onLostPointerCapture: soltarDedo,
   })
+
+  // O áudio só destrava num gesto que o navegador aceita — soltar o dedo,
+  // clicar ou teclar; o toque que desce não conta. Quem chega pelo link da
+  // arquibancada, ou recarrega a página, abre a corrida sem gesto nenhum: o
+  // primeiro toque na tela é que libera o som. Também traz o som de volta
+  // depois de uma ligação, que suspende o áudio no iPhone.
+  useEffect(() => {
+    const destravar = () => audioRef.current?.resume()
+    const opcoes = { capture: true, passive: true }
+    const eventos = ['pointerup', 'touchend', 'click', 'keydown'] as const
+    for (const evento of eventos) window.addEventListener(evento, destravar, opcoes)
+    return () => {
+      for (const evento of eventos) window.removeEventListener(evento, destravar, opcoes)
+    }
+  }, [])
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -592,30 +721,42 @@ function RaceCanvas({
         if (event.code === 'KeyR') audioRef.current?.proximaFaixa()
         return
       }
-      if (event.code === 'ArrowLeft' || event.code === 'KeyA') setInput('left', true)
-      if (event.code === 'ArrowRight' || event.code === 'KeyD') setInput('right', true)
-      if (event.code === 'Space') setInput('boost', true)
+      const comandos = comandosRef.current
+      if (event.code === 'ArrowLeft' || event.code === 'KeyA') comandos.tecla('left', true)
+      if (event.code === 'ArrowRight' || event.code === 'KeyD') comandos.tecla('right', true)
+      if (event.code === 'Space') comandos.tecla('boost', true)
       // R troca a estação: uma vez por toque, e não enquanto a tecla repete.
       if (event.code === 'KeyR' && !event.repeat) audioRef.current?.proximaFaixa()
     }
     const up = (event: KeyboardEvent) => {
-      if (event.code === 'ArrowLeft' || event.code === 'KeyA') setInput('left', false)
-      if (event.code === 'ArrowRight' || event.code === 'KeyD') setInput('right', false)
-      if (event.code === 'Space') setInput('boost', false)
+      const comandos = comandosRef.current
+      if (event.code === 'ArrowLeft' || event.code === 'KeyA') comandos.tecla('left', false)
+      if (event.code === 'ArrowRight' || event.code === 'KeyD') comandos.tecla('right', false)
+      if (event.code === 'Space') comandos.tecla('boost', false)
     }
-    // Perder o foco solta todas as teclas, senão o carro segue virando sozinho.
+    // Perder o foco solta teclas e dedos, senão o carro segue virando sozinho.
+    // No celular, trocar de app ou apagar a tela nem sempre tira o foco antes
+    // de a página congelar: sumir da tela também solta.
     const release = () => {
-      inputRef.current = { left: false, right: false, boost: false }
+      comandosRef.current.soltarTudo()
+      apagarTodos()
+    }
+    const aoSumir = () => {
+      if (document.hidden) release()
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     window.addEventListener('blur', release)
+    window.addEventListener('pagehide', release)
+    document.addEventListener('visibilitychange', aoSumir)
     return () => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
       window.removeEventListener('blur', release)
+      window.removeEventListener('pagehide', release)
+      document.removeEventListener('visibilitychange', aoSumir)
     }
-  }, [seguirLider, seguirOutro])
+  }, [apagarTodos, seguirLider, seguirOutro])
 
   useEffect(() => {
     // Quem abre a tela depois do instante combinado larga já em atraso.
@@ -667,6 +808,9 @@ function RaceCanvas({
       }
     }
 
+    // A saída de som já aberta quando a primeira luz acender: o bipe sai junto
+    // com ela, e não atrasado.
+    som()
     tick()
     if (!startedRef.current) timer = window.setInterval(tick, 50)
     return () => {
@@ -677,7 +821,10 @@ function RaceCanvas({
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const ctx = canvas.getContext('2d')
+    // Opaco: todo quadro cobre a tela inteira com céu e chão opacos, e um
+    // canvas transparente obrigaria o navegador a misturá-lo, pixel a pixel,
+    // com o fundo da página em todo quadro — na resolução nativa do celular.
+    const ctx = canvas.getContext('2d', { alpha: false })
     if (!ctx) return
 
     const race = raceRef.current
@@ -709,9 +856,20 @@ function RaceCanvas({
     let width = 0
     let height = 0
     let previous = performance.now()
-    let lastHudUpdate = 0
-    let lastRivalHud = 0
-    let ultimoPainel = 0
+    // Resolução e ritmo que cedem só no aparelho que não fecha o quadro.
+    const ritmo = new RitmoDoQuadro(Math.min(window.devicePixelRatio || 1, 2))
+    let densidadeAplicada = 0
+    let ultimoDesenho = performance.now()
+    /**
+     * Um só compasso para o HUD. Telemetria, painel do rival e lista ao vivo
+     * mudam no mesmo quadro, e o React junta os três num render só; em
+     * compassos próprios, eram três renders do componente inteiro em quadros
+     * diferentes, cada um num quadro que ainda precisa desenhar a pista.
+     */
+    let ultimaTela = 0
+    let tiquesDaTela = 0
+    /** A lista ao vivo vazia não precisa ser mandada de novo a cada tique. */
+    let painelVazio = true
     let animationFrame = 0
     const flashTimers: number[] = []
 
@@ -736,21 +894,30 @@ function RaceCanvas({
 
     const resize = () => {
       const box = canvas.getBoundingClientRect()
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
-      if (box.width === width && box.height === height) return
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2, ritmo.densidade)
+      if (box.width === width && box.height === height && pixelRatio === densidadeAplicada) return
+      densidadeAplicada = pixelRatio
       width = box.width
       height = box.height
       canvas.width = Math.floor(width * pixelRatio)
       canvas.height = Math.floor(height * pixelRatio)
       ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+      // O canvas opaco redimensionado nasce preto: até o próximo quadro, fica
+      // da cor da página, como ficaria transparente.
+      ctx.fillStyle = '#07101a'
+      ctx.fillRect(0, 0, width, height)
       // As folhas de sprite escolhem a redução pelo tamanho em pixels do
       // aparelho, e não pelo do CSS.
       definirDensidade(ctx, pixelRatio)
+      // O maior carro da tela é o do jogador: é por ele que as folhas sabem
+      // se precisam guardar o tamanho cheio.
+      definirMaiorEscala(Math.max(0.76, width / CAR_SPRITE_REFERENCE_WIDTH) * pixelRatio)
       // Mudar o tamanho do canvas zera o contexto, e com ele a qualidade da
       // ampliação. Quem reduz — carro e cenário — escolhe a própria.
       ctx.imageSmoothingQuality = 'high'
     }
     resize()
+    soltarFolhasDeOutroAmbiente(ambiente.nevoaRGB)
     prepareCar(carRef.current, ambiente.nevoaRGB)
     for (const rival of rivalsRef.current) {
       prepareCar(rival.car, ambiente.nevoaRGB, true)
@@ -890,8 +1057,11 @@ function RaceCanvas({
         const crista = height * (base + onda * Math.sin((x + desvio) * passo + fase)) + queda
         ctx.lineTo(x, crista)
       }
-      ctx.lineTo(width + margem + 40, height * 0.52)
-      ctx.lineTo(-margem, height * 0.52)
+      // A serra termina onde o chão começa: abaixo disso ele a cobre inteira,
+      // e cada faixa pintada por baixo dele é preenchimento jogado fora. Os
+      // dois pixels de sobra ficam sob a borda suavizada do chão.
+      ctx.lineTo(width + margem + 40, height * 0.38 + 2)
+      ctx.lineTo(-margem, height * 0.38 + 2)
       ctx.closePath()
       ctx.fill()
     }
@@ -934,8 +1104,9 @@ function RaceCanvas({
 
     const drawBackdrop = () => {
       const margem = margemDaRolagem()
+      // O céu também para no chão, com a mesma sobra das serras.
       ctx.fillStyle = gradienteDoCeu()
-      ctx.fillRect(-margem, -margem, width + margem * 2, height * 0.44 + margem)
+      ctx.fillRect(-margem, -margem, width + margem * 2, height * 0.38 + 2 + margem)
 
       // A paisagem gira com o rumo do carro. Ela está longe demais para
       // acompanhar a pista, e é esse giro em sentido oposto ao da curva que
@@ -1663,9 +1834,30 @@ function RaceCanvas({
     }
 
     const draw = (frame: number) => {
+      // Na tela de 120 Hz que não acompanha, um quadro sim, outro não: 60
+      // constantes no lugar de 80 a 100 irregulares, com metade do trabalho.
+      // O quadro pulado não mexe no relógio da física.
+      if (ritmo.pular(frame - ultimoDesenho)) {
+        animationFrame = requestAnimationFrame(draw)
+        return
+      }
+      // Mede só com a prova andando: a contagem é outra cena, e comparar uma
+      // janela dela com uma da corrida decidiria pelo motivo errado.
+      const medindo = startedRef.current && !doneRef.current
+      if (medindo && ritmo.registrar(frame - ultimoDesenho, frame) === 'densidade') resize()
+      ultimoDesenho = frame
       const serverNow = clockRef.current()
       const dt = (frame - previous) / 1000
       previous = frame
+      // Os comandos do quadro, com os toques rápidos que acabaram desde o
+      // anterior. Consumidos em todo quadro, até na contagem: um toque dado
+      // antes do VAI! não pode sobrar para a largada.
+      const entrada = comandosRef.current.consumir()
+      const tique = frame - ultimaTela > 80
+      if (tique) {
+        ultimaTela = frame
+        tiquesDaTela += 1
+      }
 
       // Posições dos fantasmas neste quadro, já interpoladas. São lidas antes
       // da simulação porque o rival não é só desenho: a melhor esteira
@@ -1737,7 +1929,7 @@ function RaceCanvas({
         )
         // Quem assiste não pilota: a física é a do carro seguido, que chega pela
         // telemetria. O resto do quadro — câmera, som, efeitos, painel — segue igual.
-        const eventos = noModoEspectador ? [] : stepRace(race, inputRef.current, dt, raceContext)
+        const eventos = noModoEspectador ? [] : advanceRace(race, entrada, dt, raceContext)
         if (!noModoEspectador) ultimoPassoRef.current = performance.now()
         for (const event of eventos) {
           if (event.type === 'collision') {
@@ -1779,8 +1971,10 @@ function RaceCanvas({
             // e some sozinha, sem disputar com os avisos de batida.
             setTangencias((vezes) => vezes + 1)
             // Dois bipes subindo: o som de acerto, o oposto do tranco da batida.
+            // O segundo sai no relógio do áudio, 80 ms exatos depois: num
+            // temporizador, o celular lento o atrasaria um quadro ou mais.
             audioRef.current?.beep(880, 0.07)
-            flashTimers.push(window.setTimeout(() => audioRef.current?.beep(1_320, 0.1), 80))
+            audioRef.current?.beep(1_320, 0.1, 0.08)
           }
           if (event.type === 'reset') {
             setMotivoDoReset(event.reason)
@@ -1929,8 +2123,7 @@ function RaceCanvas({
           })
         }
 
-        if (frame - lastHudUpdate > 80) {
-          lastHudUpdate = frame
+        if (tique) {
           setTelemetry({
             progress: race.progress,
             speed: race.speed,
@@ -2022,8 +2215,7 @@ function RaceCanvas({
       // O painel fala do rival mais perto, à frente ou atrás: é com ele que se
       // disputa a posição naquele trecho. A posição conta todos os que estão à
       // frente.
-      if (frame - lastRivalHud > 100) {
-        lastRivalHud = frame
+      if (tique) {
         const maisProximo = rivalSamples.reduce<(typeof rivalSamples)[number] | null>((atual, candidato) => {
           if (!atual) return candidato
           return Math.abs(candidato.sample.progress - race.progress) < Math.abs(atual.sample.progress - race.progress)
@@ -2051,9 +2243,9 @@ function RaceCanvas({
         }
       }
 
-      // A lista ao vivo, cinco vezes por segundo: mais do que isso só gasta React.
-      if (frame - ultimoPainel > 200) {
-        ultimoPainel = frame
+      // A lista ao vivo, a cada dois tiques: mais do que isso só gasta React.
+      if (tique && tiquesDaTela % 2 === 0 && (ordem.length > 0 || !painelVazio)) {
+        painelVazio = ordem.length === 0
         const referencia = ordem.find((carro) => carro.id === (noModoEspectador ? seguidoId : ID_DO_JOGADOR)) ?? null
         setPainel(
           ordem.map((carro) => ({
@@ -2302,7 +2494,13 @@ function RaceCanvas({
             RÁDIO ⏭
           </button>
           {onAbandon && phase === 'racing' && (
-            <button className="abandon-button" onClick={onAbandon}>ABANDONAR</button>
+            <button
+              className={`abandon-button ${abandonoArmado ? 'armed' : ''}`}
+              onClick={tocarEmAbandonar}
+              aria-label={abandonoArmado ? 'Confirmar: abandonar a corrida' : 'Abandonar a corrida'}
+            >
+              {abandonoArmado ? 'CONFIRMAR' : 'ABANDONAR'}
+            </button>
           )}
         </div>
         <div className="pilot-tag">
@@ -2511,12 +2709,17 @@ function RaceCanvas({
       )}
 
       {espectador ? (
-        <div className="espectador-controles" role="group" aria-label="Câmera do espectador">
+        <div
+          className="espectador-controles"
+          role="group"
+          aria-label="Câmera do espectador"
+          onContextMenu={(event) => event.preventDefault()}
+        >
           <button type="button" className="trocar" onClick={() => seguirOutro(-1)} aria-label="Seguir o piloto anterior" title="Piloto anterior (A)">‹</button>
           <div className="seguido" aria-live="polite">
             {seguido ? (
               <>
-                <img src={carImageUrl(seguido.carro)} alt="" />
+                <img src={carImageUrl(seguido.carro)} alt="" draggable={false} />
                 <span>{autoLider ? 'SEGUINDO O LÍDER' : 'SEGUINDO'}</span>
                 <strong>P{seguido.posicao} · {seguido.nome}</strong>
                 <em>{seguido.chegou ? 'CRUZOU A LINHA' : `${Math.round(seguido.velocidade)} KM/H`}</em>
@@ -2531,7 +2734,13 @@ function RaceCanvas({
           </button>
         </div>
       ) : (
-        <div className="touch-controls" aria-label="Controles de toque">
+        // Segurar o BOOST é toque longo por definição: nada de menu por cima dele.
+        <div
+          ref={controlesRef}
+          className="touch-controls"
+          aria-label="Controles de toque"
+          onContextMenu={(event) => event.preventDefault()}
+        >
           <button className="steer left" aria-label="Virar à esquerda" {...holdControl('left')}>‹</button>
           <button className="steer right" aria-label="Virar à direita" {...holdControl('right')}>›</button>
           <button className="boost-button" aria-label="Ativar boost" {...holdControl('boost')}>

@@ -315,11 +315,12 @@ function assar(flora: Flora, nevoaRGB: string): Folha {
 /**
  * Folhas assadas, com teto.
  *
- * Duas bastam para uma corrida e a revanche; mais do que isso é memória
- * parada. O jogo é feito para um workshop, onde a mesma aba fica aberta a
- * tarde inteira sorteando ambiente.
+ * Uma basta: a revanche no mesmo lugar reaproveita, e a de outro lugar assa a
+ * dela em uns dez milissegundos, durante a contagem. Mais do que isso é
+ * memória parada — e o jogo é feito para um workshop, onde a mesma aba fica
+ * aberta a tarde inteira sorteando ambiente.
  */
-const MAX_FOLHAS = 2
+const MAX_FOLHAS = 1
 const folhas = new Map<string, Folha>()
 
 function folhaDe(flora: Flora, nevoaRGB: string) {
@@ -330,14 +331,15 @@ function folhaDe(flora: Flora, nevoaRGB: string) {
     folhas.set(chave, guardada)
     return guardada
   }
-  const folha = assar(flora, nevoaRGB)
-  folhas.set(chave, folha)
-  while (folhas.size > MAX_FOLHAS) {
+  // A velha sai antes de a nova ser assada: as duas juntas seriam o pico.
+  while (folhas.size >= MAX_FOLHAS) {
     const maisVelha = folhas.keys().next()
     if (maisVelha.done) break
     folhas.get(maisVelha.value)!.tela.width = 0
     folhas.delete(maisVelha.value)
   }
+  const folha = assar(flora, nevoaRGB)
+  folhas.set(chave, folha)
   return folha
 }
 

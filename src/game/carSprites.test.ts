@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PIVO_DA_GUINADA, WHEEL_CENTERS, yawTransform } from './carModel'
-import { CAR_FRAMES, frameForPose, poseOfFrame } from './carSprites'
+import { CAR_FRAMES, frameForPose, poseOfFrame, precisaDaFolhaCheia } from './carSprites'
+import { CAR_SPRITE_REFERENCE_WIDTH } from './track'
 
 /** Onde um ponto do desenho vai parar com a camada girada. */
 function aplicar(t: readonly number[], x: number, y: number) {
@@ -90,5 +91,24 @@ describe('quadros de curva da folha', () => {
     expect(frameForPose(9)).toBe(CAR_FRAMES - 1)
     expect(frameForPose(-9)).toBe(0)
     expect(frameForPose(Number.NaN)).toBe((CAR_FRAMES - 1) / 2)
+  })
+})
+
+describe('folha cheia', () => {
+  /** O carro do jogador, o maior da tela, em pixels do aparelho. */
+  const maiorCarro = (larguraCss: number, densidade: number) =>
+    Math.max(0.76, larguraCss / CAR_SPRITE_REFERENCE_WIDTH) * densidade
+
+  it('celular em pé nunca a escolhe, em nenhuma densidade até 2', () => {
+    for (let largura = 320; largura <= 763; largura += 1) {
+      for (const densidade of [1, 1.25, 1.5, 1.75, 2]) {
+        expect(precisaDaFolhaCheia(maiorCarro(largura, densidade))).toBe(false)
+      }
+    }
+  })
+
+  it('tela grande com densidade alta ainda a usa', () => {
+    expect(precisaDaFolhaCheia(maiorCarro(1280, 2))).toBe(true)
+    expect(precisaDaFolhaCheia(maiorCarro(915, 2))).toBe(true)
   })
 })

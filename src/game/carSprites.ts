@@ -435,6 +435,17 @@ const artes = new Map<CarId, { arte: Arte | null; falhou: boolean }>()
  * descartadas, e o quadro seguinte já sai da arte. Uma imagem que falha não é
  * pedida de novo a cada quadro — só na próxima corrida, em `prepareCar`.
  */
+/**
+ * Começa a baixar a arte do carro antes da corrida — no menu, na garagem, no
+ * lobby. Sem isso a arte só é pedida na montagem da corrida, e não chega a
+ * tempo: a primeira folha sai do molde e é assada de novo quando a imagem
+ * chega. São dois engasgos por carro, bem nas luzes da largada.
+ */
+export function precarregarCarro(id: CarId) {
+  if (artes.get(id)?.falhou) artes.delete(id)
+  arteDe(id)
+}
+
 function arteDe(id: CarId): Arte | null {
   const registro = artes.get(id)
   if (registro) return registro.arte
@@ -603,8 +614,11 @@ type Geometria = {
 /** Uma redução da folha: a mesma grade de quadros, com cada quadro deste tamanho. */
 type Nivel = { tela: HTMLCanvasElement; largura: number; altura: number }
 
-/** Os níveis vão da folha cheia (0) a um dezesseis avos dela. */
-type Folha = { niveis: readonly Nivel[]; geometria: Geometria }
+/**
+ * Os níveis vão da folha cheia (0) a um dezesseis avos dela. Sem a cheia, o
+ * nível 0 é a metade — ver `precisaDaFolhaCheia`.
+ */
+type Folha = { niveis: readonly Nivel[]; geometria: Geometria; semCheia: boolean }
 
 /**
  * Quantas reduções a folha guarda além da cheia: metade, um quarto, um oitavo
@@ -655,6 +669,39 @@ function comReducoes(tela: HTMLCanvasElement): Nivel[] {
 /** Zerar o tamanho devolve a textura na hora, em vez de esperar o coletor. */
 function liberar(folha: Folha) {
   for (const nivel of folha.niveis) nivel.tela.width = 0
+}
+
+/**
+ * Se o carro, no maior tamanho em que aparece nesta tela, ainda escolhe a
+ * folha cheia. `escalaEmPixels` é esse tamanho em pixels do aparelho por
+ * unidade da folha: o do carro do jogador, que nenhum fantasma ultrapassa.
+ */
+export function precisaDaFolhaCheia(escalaEmPixels: number) {
+  return nivelDaReducao(RESOLUCAO / escalaEmPixels, REDUCOES_DA_FOLHA + 1) === 0
+}
+
+let guardarCheia = true
+
+/**
+ * Diz o maior tamanho em que um carro aparece nesta tela.
+ *
+ * Num celular em pé ele sai reduzido mais de duas vezes, e a escolha nunca pega
+ * a folha cheia — que é três quartos da textura de cada folha, uns 9 MB por
+ * carro. Ali ela serve só de fonte para as reduções, e sai assim que elas
+ * ficam prontas. Se a tela crescer a ponto de pedi-la — o celular girou —, as
+ * folhas sem ela são descartadas e assadas de novo, inteiras.
+ */
+export function definirMaiorEscala(escalaEmPixels: number) {
+  if (!(escalaEmPixels > 0)) return
+  const precisa = precisaDaFolhaCheia(escalaEmPixels)
+  if (precisa && !guardarCheia) {
+    for (const [chave, folha] of folhas) {
+      if (!folha.semCheia) continue
+      liberar(folha)
+      folhas.delete(chave)
+    }
+  }
+  guardarCheia = precisa
 }
 
 /**
@@ -721,9 +768,17 @@ function assar(id: CarId, ambiente: string, fantasma: boolean): Folha {
   if (fantasma) banhar(ctx, '#68cfda', 0.3)
 
   const niveis = comReducoes(tela)
+  const semCheia = !guardarCheia
+  if (semCheia) {
+    // Com o mesmo destino no quadro, a metade no lugar da cheia só perderia
+    // nitidez — e esta tela nunca a escolhe.
+    niveis[0].tela.width = 0
+    niveis[0] = niveis[1]
+  }
   if (arte) {
     return {
       niveis,
+      semCheia,
       geometria: {
         rodas: RODAS_DA_ARTE,
         meiaBanda: PNEUS_DA_ARTE.traseira.meiaLargura * 0.93,
@@ -739,6 +794,7 @@ function assar(id: CarId, ambiente: string, fantasma: boolean): Folha {
   const modelo = carModel(id)
   return {
     niveis,
+    semCheia,
     geometria: {
       rodas: WHEEL_CENTERS,
       meiaBanda: 5.2,
@@ -773,6 +829,22 @@ function folhaDe(id: CarId, ambiente: string, fantasma: boolean) {
     folhas.delete(maisVelha.value)
   }
   return folha
+}
+
+/**
+ * Solta as folhas assadas para outro ambiente, antes de assar as desta corrida.
+ *
+ * A luz do ambiente entra na folha, e o ambiente muda a cada semente: numa
+ * revanche noutro lugar, as folhas da anterior não servem para nada, mas
+ * conviveriam com as novas até o teto despejá-las — dezenas de megabytes a
+ * mais, justo no celular com menos memória.
+ */
+export function soltarFolhasDeOutroAmbiente(ambiente: string) {
+  for (const [chave, folha] of folhas) {
+    if (chave.split('|')[1] === ambiente) continue
+    liberar(folha)
+    folhas.delete(chave)
+  }
 }
 
 /** Descarta as folhas de um carro, para a próxima sair de novo — da arte, que acabou de chegar. */

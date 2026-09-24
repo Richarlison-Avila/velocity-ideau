@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { carById, DEFAULT_CAR, toCarId, type CarId } from './game/cars'
-import { carImageUrl } from './game/carSprites'
+import { carImageUrl, precarregarCarro } from './game/carSprites'
+import { precarregarVoz, vozDoCarro } from './game/motorF1'
 import { DEFAULT_COUNTDOWN_MS } from './game/countdown'
 import { GhostTracker, type GhostSnapshot } from './game/ghost'
 import RaceCanvas, { type RaceResult } from './game/RaceCanvas'
@@ -151,6 +152,22 @@ function App() {
   papelRef.current = papel
 
   useEffect(() => serverClock.subscribe(setClock), [])
+
+  // A arte e a voz do carro da corrida começam a baixar antes dela — no menu,
+  // na garagem, no lobby —, e não nas luzes da largada, quando a sala inteira
+  // disputa o mesmo Wi-Fi. Na arquibancada, a voz é a do primeiro piloto.
+  const carroDaVoz = papel === 'espectador' ? (room?.players[0]?.car ?? car) : car
+  useEffect(() => {
+    precarregarCarro(car)
+  }, [car])
+  useEffect(() => {
+    precarregarVoz(vozDoCarro(carroDaVoz))
+  }, [carroDaVoz])
+  // Os carros da sala também: são os fantasmas que a corrida vai desenhar.
+  const carrosDaSala = room?.players.map((player) => player.car).join(' ') ?? ''
+  useEffect(() => {
+    for (const id of carrosDaSala.split(' ')) if (id) precarregarCarro(toCarId(id))
+  }, [carrosDaSala])
 
   useEffect(() => {
     const onConnect = () => {
