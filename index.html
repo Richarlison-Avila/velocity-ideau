@@ -6,6 +6,11 @@
     <meta name="theme-color" content="#070b11" />
     <meta name="description" content="Corrida Fantasma — um duelo veloz inspirado no automobilismo." />
     <title>Corrida Fantasma</title>
+    <!-- As fontes que mais ocupam o menu baixam junto com o JS, e não depois
+         dele: o menu já aparece na fonte certa, sem pular. -->
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fontes/barlow-condensed-900-italic-v13.woff2" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fontes/barlow-condensed-800-v13.woff2" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fontes/inter-400-v20.woff2" />
   </head>
   <body>
     <div id="root"></div>
