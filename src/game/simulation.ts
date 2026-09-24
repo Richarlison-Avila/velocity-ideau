@@ -752,6 +752,41 @@ export function stepRace(
 }
 
 /**
+ * Maior intervalo entre dois quadros que a física recupera, em segundos.
+ *
+ * O mesmo quarto de segundo que a telemetria usa para dizer que o carro está
+ * parado: acima disso não é quadro lento, é a aba que parou.
+ */
+export const MAX_FRAME_SECONDS = 0.25
+
+/**
+ * Avança a simulação por um quadro inteiro, em passos de até
+ * `MAX_STEP_SECONDS`, e devolve os eventos de todos eles.
+ *
+ * O relógio da prova é o do servidor. Se o quadro de um celular lento durasse
+ * mais que um passo e só um passo fosse simulado, o carro andaria menos que o
+ * relógio: a 12 quadros por segundo, pouco mais da metade da distância. É a
+ * vantagem de hardware que o passo fixo existe para evitar. Até 20 quadros por
+ * segundo o quadro cabe num passo só, e nada muda.
+ */
+export function advanceRace(
+  state: RaceState,
+  input: RaceInput,
+  dt: number,
+  context: RaceContext = NO_CONTEXT,
+): RaceEvent[] {
+  const quadro = Math.min(Math.max(0, dt), MAX_FRAME_SECONDS)
+  if (quadro <= MAX_STEP_SECONDS) return stepRace(state, input, quadro, context)
+  // Pedaços iguais: um quadro de 0,1 s vira dois passos de 0,05 s exatos, a
+  // mesma sequência de um aparelho a 20 quadros por segundo.
+  const pedacos = Math.ceil(quadro / MAX_STEP_SECONDS - 1e-9)
+  const passo = quadro / pedacos
+  const events: RaceEvent[] = []
+  for (let i = 0; i < pedacos && !state.finished; i++) events.push(...stepRace(state, input, passo, context))
+  return events
+}
+
+/**
  * Confere as batidas na posição atual e aplica o que cada uma cobra.
  *
  * Devolve true quando a batida resetou o carro: a terceira batida não é mais

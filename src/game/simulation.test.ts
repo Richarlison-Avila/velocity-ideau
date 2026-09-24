@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { rulesFor } from './rules'
 import {
+  advanceRace,
   APEX_BOOST,
   APEX_LATERAL,
   BOOST_IN_CORNER,
@@ -9,6 +10,7 @@ import {
   lineFactorFor,
   MAX_CORNER_LOAD,
   LATERAL_LIMIT,
+  MAX_FRAME_SECONDS,
   OFF_ROAD_LIMIT,
   RESET_SECONDS,
   slipstreamFrom,
@@ -115,6 +117,46 @@ describe('física e progresso', () => {
     const lento = correr(() => PARADO, 0.05)
     expect(Math.abs(rapido.time - medio.time)).toBeLessThan(0.5)
     expect(Math.abs(rapido.time - lento.time)).toBeLessThan(0.5)
+  })
+
+  it('um celular a 12 quadros por segundo chega junto com o de 60', () => {
+    const correrQuadros = (dt: number) => {
+      const state = createRaceState()
+      let time = 0
+      while (!state.finished && time < 300) {
+        advanceRace(state, PARADO, dt)
+        time += dt
+      }
+      return time
+    }
+    // Só com stepRace o quadro longo perde física: o lento fica muito atrás.
+    const soUmPasso = createRaceState()
+    for (let t = 0; t < 10; t += 1 / 12) stepRace(soUmPasso, PARADO, 1 / 12)
+    const inteiro = createRaceState()
+    for (let t = 0; t < 10; t += 1 / 12) advanceRace(inteiro, PARADO, 1 / 12)
+    expect(soUmPasso.progress).toBeLessThan(inteiro.progress * 0.7)
+
+    expect(Math.abs(correrQuadros(1 / 60) - correrQuadros(1 / 12))).toBeLessThan(0.5)
+  })
+
+  it('um quadro de 0,25 s é o mesmo que cinco passos de 0,05 s', () => {
+    const inteiro = createRaceState()
+    const emPassos = createRaceState()
+    avancar(inteiro, PARADO, 3)
+    avancar(emPassos, PARADO, 3)
+    const eventos = advanceRace(inteiro, DIREITA, 0.25)
+    const eventosEmPassos: RaceEvent[] = []
+    for (let i = 0; i < 5; i++) eventosEmPassos.push(...stepRace(emPassos, DIREITA, 0.05))
+    expect(inteiro).toEqual(emPassos)
+    expect(eventos).toEqual(eventosEmPassos)
+  })
+
+  it('um quadro enorme recupera só um quarto de segundo', () => {
+    const parouMuito = createRaceState()
+    const limite = createRaceState()
+    advanceRace(parouMuito, PARADO, 5)
+    advanceRace(limite, PARADO, MAX_FRAME_SECONDS)
+    expect(parouMuito).toEqual(limite)
   })
 
   it('nunca ultrapassa a linha de chegada nem termina duas vezes', () => {
