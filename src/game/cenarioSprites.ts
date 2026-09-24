@@ -29,6 +29,7 @@ import type { Flora, Lugar } from './layout'
 import { lateralOffset, type ObstacleKind } from './track'
 import { LUZ, misturar, rampa, type Rampa } from './paleta'
 import { LADOS } from './pincel'
+import { densidadeDe, nivelDaReducao } from './reducoes'
 import {
   MEIA_LARGURA,
   TONS,
@@ -92,6 +93,24 @@ const FOLGA = 2
 const REDUCAO_SIMPLES = 4
 
 /**
+ * Reduções pela metade que a célula grande guarda além dela mesma.
+ *
+ * A grande vale de sessenta e quatro pixels de tela para cima, e o pior caso é
+ * a barreira — larga, então baixa — numa tela de densidade um: quase seis
+ * vezes menor que a célula. Duas reduções levam isso para menos de duas
+ * vezes. Ver `reducoes.ts`.
+ */
+const REDUCOES_DA_CHEIA = 2
+
+/**
+ * Menor célula que uma redução pode ter, em pixels.
+ *
+ * A pequena desce pela metade até aqui: é o que cobre o objeto no fim da
+ * vista, que chega com três ou quatro pixels de altura.
+ */
+const MENOR_CELULA = 3
+
+/**
  * Largura máxima da folha.
  *
  * Uma tira de uma linha só, como a do carro, daria vinte mil pixels de
@@ -127,25 +146,49 @@ type Celula = {
   meiaLargura: number
 }
 
+/** As células de um objeto num nível de detalhe: a do tamanho medido, e as reduções dela. */
+type Reducoes = Celula[]
+
+/** Índice do nível de detalhe nas células guardadas. */
+const DETALHES = ['cheio', 'simples'] as const
+const indiceDoDetalhe = (detalhe: Detalhe) => (detalhe === 'cheio' ? 0 : 1)
+
 type Folha = {
   tela: HTMLCanvasElement
-  celulas: Map<string, Celula>
+  /**
+   * Por família: variante, tom e detalhe, e aí as reduções. Índices, e não uma
+   * chave em texto: o quadro procura aqui dezenas de vezes, e montar a chave
+   * era uma string nova a cada objeto desenhado.
+   */
+  celulas: Map<FamiliaModelada, Reducoes[][][]>
 }
 
-const chaveDaCelula = (familia: FamiliaModelada, variante: number, tom: number, detalhe: Detalhe) =>
-  `${familia}|${variante}|${tom}|${detalhe}`
+/** Alturas das células de um detalhe: a medida, e as metades dela. */
+function alturasDoDetalhe(familia: FamiliaModelada, detalhe: Detalhe) {
+  const alturas = [
+    detalhe === 'cheio' ? ALTURA_CHEIA[familia] : Math.max(12, Math.round(ALTURA_CHEIA[familia] / REDUCAO_SIMPLES)),
+  ]
+  const quantas = detalhe === 'cheio' ? 1 + REDUCOES_DA_CHEIA : Infinity
+  while (alturas.length < quantas) {
+    const proxima = Math.round(alturas[alturas.length - 1] / 2)
+    if (proxima < MENOR_CELULA) break
+    alturas.push(proxima)
+  }
+  return alturas
+}
 
 /** Toda combinação que a folha precisa guardar, na ordem em que será empacotada. */
 function combinacoes() {
-  const lista: { familia: FamiliaModelada; variante: number; tom: number; detalhe: Detalhe; altura: number }[] = []
+  const lista: {
+    familia: FamiliaModelada; variante: number; tom: number; detalhe: Detalhe; nivel: number; altura: number
+  }[] = []
   for (const familia of Object.keys(VARIANTES) as FamiliaModelada[]) {
     for (let variante = 0; variante < VARIANTES[familia]; variante += 1) {
       for (let tom = 0; tom < TONS[familia]; tom += 1) {
-        for (const detalhe of ['cheio', 'simples'] as const) {
-          const altura = detalhe === 'cheio'
-            ? ALTURA_CHEIA[familia]
-            : Math.max(12, Math.round(ALTURA_CHEIA[familia] / REDUCAO_SIMPLES))
-          lista.push({ familia, variante, tom, detalhe, altura })
+        for (const detalhe of DETALHES) {
+          alturasDoDetalhe(familia, detalhe).forEach((altura, nivel) => {
+            lista.push({ familia, variante, tom, detalhe, nivel, altura })
+          })
         }
       }
     }
@@ -173,12 +216,21 @@ function banhar(ctx: CanvasRenderingContext2D, largura: number, altura: number, 
 }
 
 function assar(flora: Flora, nevoaRGB: string): Folha {
+  // O modelo e os caminhos dele saem uma vez por detalhe: as reduções são o
+  // mesmo desenho, em outro tamanho.
+  const modelos = new Map<string, { modelo: ReturnType<typeof objetoModelado>; caminhos: Path2D[] }>()
   const pedidos = combinacoes().map((pedido) => {
-    const modelo = objetoModelado(pedido.familia, flora, pedido.variante, pedido.tom, pedido.detalhe)
+    const chave = `${pedido.familia}|${pedido.variante}|${pedido.tom}|${pedido.detalhe}`
+    let guardado = modelos.get(chave)
+    if (!guardado) {
+      const modelo = objetoModelado(pedido.familia, flora, pedido.variante, pedido.tom, pedido.detalhe)
+      guardado = { modelo, caminhos: modelo.faces.map((face) => new Path2D(face.d)) }
+      modelos.set(chave, guardado)
+    }
     return {
       ...pedido,
-      modelo,
-      largura: Math.ceil(pedido.altura * modelo.meiaLargura * 2),
+      ...guardado,
+      largura: Math.ceil(pedido.altura * guardado.modelo.meiaLargura * 2),
     }
   })
 
@@ -193,7 +245,8 @@ function assar(flora: Flora, nevoaRGB: string): Folha {
    * na sobra custa um laço de sessenta itens na hora de assar e devolve mais
    * de um megabyte de textura.
    */
-  const celulas = new Map<string, Celula>()
+  const celulas = new Map<FamiliaModelada, Reducoes[][][]>()
+  const onde = new Map<(typeof pedidos)[number], Celula>()
   const restantes = [...pedidos]
   let x = 0
   let y = 0
@@ -202,13 +255,21 @@ function assar(flora: Flora, nevoaRGB: string): Folha {
   const colocar = (pedido: (typeof pedidos)[number]) => {
     // O que fica guardado é o retângulo do desenho, já para dentro da folga:
     // quem desenha não precisa saber que ela existe.
-    celulas.set(chaveDaCelula(pedido.familia, pedido.variante, pedido.tom, pedido.detalhe), {
+    const celula: Celula = {
       x: x + FOLGA,
       y: y + FOLGA,
       largura: pedido.largura,
       altura: pedido.altura,
       meiaLargura: pedido.modelo.meiaLargura,
-    })
+    }
+    onde.set(pedido, celula)
+    let daFamilia = celulas.get(pedido.familia)
+    if (!daFamilia) {
+      daFamilia = []
+      celulas.set(pedido.familia, daFamilia)
+    }
+    const doTom = ((daFamilia[pedido.variante] ??= [])[pedido.tom] ??= [])
+    ;(doTom[indiceDoDetalhe(pedido.detalhe)] ??= [])[pedido.nivel] = celula
     x += pedido.largura + FOLGA * 2
     larguraUsada = Math.max(larguraUsada, x)
   }
@@ -231,17 +292,19 @@ function assar(flora: Flora, nevoaRGB: string): Folha {
   const ctx = tela.getContext('2d')!
 
   for (const pedido of pedidos) {
-    const celula = celulas.get(chaveDaCelula(pedido.familia, pedido.variante, pedido.tom, pedido.detalhe))!
+    const celula = onde.get(pedido)!
     ctx.save()
     // O modelo mede em alturas do objeto, com o chão em zero e o topo em -1:
     // levar a origem para o pé da célula e escalar pela altura dela põe o
-    // desenho inteiro dentro do retângulo, sem conta nenhuma no modelo.
+    // desenho inteiro dentro do retângulo, sem conta nenhuma no modelo. As
+    // reduções saem do vetor, e não da célula grande encolhida: nítidas em
+    // qualquer tamanho, e sem nada da vizinha vazando pela borda.
     ctx.translate(celula.x + celula.largura / 2, celula.y + celula.altura)
     ctx.scale(celula.altura, celula.altura)
-    for (const face of pedido.modelo.faces) {
+    pedido.modelo.faces.forEach((face, i) => {
       ctx.fillStyle = face.fill
-      ctx.fill(new Path2D(face.d))
-    }
+      ctx.fill(pedido.caminhos[i])
+    })
     ctx.restore()
   }
 
@@ -322,9 +385,12 @@ export function desenharObjeto(
   // arquibancada tinha o mesmo problema, em menor grau.
   const lado = altura * Math.max(1, MEIA_LARGURA[familia] * 2)
   const detalhe: Detalhe = lado >= LIMIAR_SIMPLES ? 'cheio' : 'simples'
-  const celula =
-    atual.celulas.get(chaveDaCelula(familia, variante % VARIANTES[familia], tom % TONS[familia], detalhe))
-  if (!celula) return
+  const reducoes =
+    atual.celulas.get(familia)?.[variante % VARIANTES[familia]]?.[tom % TONS[familia]]?.[indiceDoDetalhe(detalhe)]
+  if (!reducoes) return
+  // A redução mais perto do tamanho na tela, em pixels do aparelho.
+  const reducao = reducoes[0].altura / (altura * densidadeDe(ctx))
+  const celula = reducoes[nivelDaReducao(reducao, reducoes.length)]
 
   const largura = altura * celula.meiaLargura * 2
   const base = Math.round(chao)
@@ -335,11 +401,16 @@ export function desenharObjeto(
   ctx.ellipse(x + altura * 0.06, base, largura * 0.42, Math.max(0.7, altura * 0.05), 0, 0, Math.PI * 2)
   ctx.fill()
 
+  // Reduzindo, a suavização comum: a redução pesada já foi feita ao assar.
+  // Ampliando — a célula é metade da maior altura na tela —, a de sempre.
+  const qualidade = ctx.imageSmoothingQuality
+  ctx.imageSmoothingQuality = reducao > 1 ? 'low' : 'high'
   ctx.drawImage(
     atual.tela,
     celula.x, celula.y, celula.largura, celula.altura,
     x - largura / 2, topo, largura, base - topo,
   )
+  ctx.imageSmoothingQuality = qualidade
 }
 
 /** Preto do fundo do buraco: mais fechado que qualquer tom de asfalto. */

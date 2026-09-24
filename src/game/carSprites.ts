@@ -38,6 +38,7 @@ import {
   type Part,
   type Roda,
 } from './carModel'
+import { densidadeDe, nivelDaReducao } from './reducoes'
 import { CAR_SPRITE_HALF_WIDTH } from './track'
 
 const RODAS_TRASEIRAS = ['traseiraEsquerda', 'traseiraDireita'] as const
@@ -347,8 +348,6 @@ function origemDoQuadro(indice: number): [number, number] {
   return [(indice % COLUNAS) * LARGURA_QUADRO, Math.floor(indice / COLUNAS) * ALTURA_QUADRO]
 }
 
-const ORIGENS: readonly (readonly [number, number])[] = POSES.map((_, indice) => origemDoQuadro(indice))
-
 type Peca = {
   imagem: HTMLCanvasElement
   /** Centro e tamanho da peça, nas unidades do desenho. */
@@ -601,17 +600,73 @@ type Geometria = {
   traseira: readonly Afim[]
 }
 
-type Folha = { tela: HTMLCanvasElement; geometria: Geometria }
+/** Uma redução da folha: a mesma grade de quadros, com cada quadro deste tamanho. */
+type Nivel = { tela: HTMLCanvasElement; largura: number; altura: number }
+
+/** Os níveis vão da folha cheia (0) a um dezesseis avos dela. */
+type Folha = { niveis: readonly Nivel[]; geometria: Geometria }
+
+/**
+ * Quantas reduções a folha guarda além da cheia: metade, um quarto, um oitavo
+ * e um dezesseis avos.
+ *
+ * No fim da vista o fantasma sai dezenas de vezes menor que a folha cheia,
+ * com poucos pixels de largura, e a menor redução ainda tem mais do que ele
+ * na tela. Custa um terço a mais de textura, e é o que tira do quadro a
+ * redução com qualidade alta — ver `reducoes.ts`.
+ */
+const REDUCOES_DA_FOLHA = 4
+
+/**
+ * A folha pela metade, quadro a quadro.
+ *
+ * Cada quadro é reduzido só com os próprios pixels: reduzida inteira, a borda
+ * de um quadro levaria junto a coluna do vizinho, e a asa de um carro
+ * apareceria como risco na beira do outro. Com qualidade alta, porque é uma
+ * vez só, na hora de assar.
+ */
+function reduzirPelaMetade(nivel: Nivel): Nivel {
+  const largura = Math.max(1, Math.ceil(nivel.largura / 2))
+  const altura = Math.max(1, Math.ceil(nivel.altura / 2))
+  const tela = document.createElement('canvas')
+  tela.width = largura * COLUNAS
+  tela.height = altura * LINHAS
+  const ctx = tela.getContext('2d')!
+  ctx.imageSmoothingQuality = 'high'
+  for (let indice = 0; indice < QUADROS; indice += 1) {
+    const coluna = indice % COLUNAS
+    const linha = Math.floor(indice / COLUNAS)
+    ctx.drawImage(
+      nivel.tela,
+      coluna * nivel.largura, linha * nivel.altura, nivel.largura, nivel.altura,
+      coluna * largura, linha * altura, largura, altura,
+    )
+  }
+  return { tela, largura, altura }
+}
+
+/** A folha cheia e as reduções dela, da maior para a menor. */
+function comReducoes(tela: HTMLCanvasElement): Nivel[] {
+  const niveis: Nivel[] = [{ tela, largura: LARGURA_QUADRO, altura: ALTURA_QUADRO }]
+  for (let i = 0; i < REDUCOES_DA_FOLHA; i += 1) niveis.push(reduzirPelaMetade(niveis[niveis.length - 1]))
+  return niveis
+}
+
+/** Zerar o tamanho devolve a textura na hora, em vez de esperar o coletor. */
+function liberar(folha: Folha) {
+  for (const nivel of folha.niveis) nivel.tela.width = 0
+}
 
 /**
  * Folhas assadas, com teto.
  *
- * Cada folha são uns oito megabytes de textura, e a chave junta carro,
- * ambiente e fantasma: dezesseis carros em quatro ambientes dariam mais de cem
- * folhas. Numa corrida solta isso nunca aparece — mas o jogo é feito para um
- * workshop, onde a mesma aba fica aberta a tarde inteira trocando de carro e
- * sorteando ambiente. Seis é o que uma sala cheia usa: a folha do jogador e as
- * dos cinco rivais, e mais um par de folga para a revanche não reassar tudo.
+ * Cada folha são uns dez megabytes de textura, contando as reduções, e a
+ * chave junta carro, ambiente e fantasma: dezesseis carros em quatro ambientes
+ * dariam mais de cem folhas. Numa corrida solta isso nunca aparece — mas o
+ * jogo é feito para um workshop, onde a mesma aba fica aberta a tarde inteira
+ * trocando de carro e sorteando ambiente. Seis é o que uma sala cheia usa: a
+ * folha do jogador e as dos cinco rivais, e mais um par de folga para a
+ * revanche não reassar tudo.
  */
 const MAX_FOLHAS = 8
 const folhas = new Map<string, Folha>()
@@ -665,9 +720,10 @@ function assar(id: CarId, ambiente: string, fantasma: boolean): Folha {
   if (ambiente) banhar(ctx, `rgb(${ambiente})`, 0.1)
   if (fantasma) banhar(ctx, '#68cfda', 0.3)
 
+  const niveis = comReducoes(tela)
   if (arte) {
     return {
-      tela,
+      niveis,
       geometria: {
         rodas: RODAS_DA_ARTE,
         meiaBanda: PNEUS_DA_ARTE.traseira.meiaLargura * 0.93,
@@ -682,7 +738,7 @@ function assar(id: CarId, ambiente: string, fantasma: boolean): Folha {
   }
   const modelo = carModel(id)
   return {
-    tela,
+    niveis,
     geometria: {
       rodas: WHEEL_CENTERS,
       meiaBanda: 5.2,
@@ -713,8 +769,7 @@ function folhaDe(id: CarId, ambiente: string, fantasma: boolean) {
     const maisVelha = folhas.keys().next()
     if (maisVelha.done) break
     const despejada = folhas.get(maisVelha.value)
-    // Zerar o tamanho devolve a textura na hora, em vez de esperar o coletor.
-    if (despejada) despejada.tela.width = 0
+    if (despejada) liberar(despejada)
     folhas.delete(maisVelha.value)
   }
   return folha
@@ -725,7 +780,7 @@ function descartarFolhas(id: CarId) {
   const prefixo = `${id}|`
   for (const [chave, folha] of folhas) {
     if (!chave.startsWith(prefixo)) continue
-    folha.tela.width = 0
+    liberar(folha)
     folhas.delete(chave)
   }
 }
@@ -733,7 +788,7 @@ function descartarFolhas(id: CarId) {
 /**
  * Pede a arte e assa a folha antes da largada.
  *
- * Assar custa alguns milissegundos e uns oito megabytes de textura por carro.
+ * Assar custa alguns milissegundos e uns dez megabytes de textura por carro.
  * Feito no primeiro quadro da corrida, engasgaria justamente na arrancada;
  * feito durante a contagem, não aparece. `fantasma` diz qual das duas folhas
  * aquele carro precisa: no modo treino não existe rival, e assar a azulada
@@ -789,7 +844,10 @@ export function drawCar(
   ghostAlpha = 1,
   ambiente = '',
 ) {
-  const { tela, geometria } = folhaDe(id, ambiente, ghostAlpha < 1)
+  const { niveis, geometria } = folhaDe(id, ambiente, ghostAlpha < 1)
+  // A redução mais perto do tamanho do carro na tela, em pixels do aparelho.
+  const reducao = RESOLUCAO / (scale * densidadeDe(ctx))
+  const nivel = niveis[nivelDaReducao(reducao, niveis.length)]
   // O esterço e a derrapagem se somam num eixo só: com o volante todo virado e
   // a traseira escapando, o carro está atravessado.
   const esterco = Math.max(-1, Math.min(1, pose.steer))
@@ -853,9 +911,12 @@ export function drawCar(
     ctx.rotate(pose.tilt)
     ctx.translate(0, -LINHA_DO_CHAO)
   }
+  // Reduzindo, a suavização comum: a redução pesada já foi feita ao assar.
+  // Ampliando — o carro de perto numa tela grande —, a de sempre.
+  ctx.imageSmoothingQuality = reducao > 1 ? 'low' : 'high'
   ctx.drawImage(
-    tela,
-    ORIGENS[quadro][0], ORIGENS[quadro][1], LARGURA_QUADRO, ALTURA_QUADRO,
+    nivel.tela,
+    (quadro % COLUNAS) * nivel.largura, Math.floor(quadro / COLUNAS) * nivel.altura, nivel.largura, nivel.altura,
     CAIXA_DA_FOLHA.x, CAIXA_DA_FOLHA.y, CAIXA_DA_FOLHA.largura, CAIXA_DA_FOLHA.altura,
   )
   desenharRolamento(ctx, pose.travel, guinadas, geometria)

@@ -24,6 +24,7 @@
  *   sol natural — o sétimo grau abaixado, que é o sotaque de toda trilha de
  *   corrida da época — antes do mi que devolve ao tema.
  */
+import { soltarAoAcabar } from './banda'
 import { frequenciaDaNota, type HostDaTrilha } from './trilha'
 
 // ---------------------------------------------------------------------------
@@ -337,6 +338,7 @@ export class TrilhaTurbo {
     const folga = Math.max(0, this.ruido.duration - duracao - 0.05)
     fonte.start(t, Math.random() * folga)
     fonte.stop(t + duracao + 0.02)
+    soltarAoAcabar(fonte, filtro, ganho)
   }
 
   private bumbo(t: number, forca: number) {
@@ -350,6 +352,7 @@ export class TrilhaTurbo {
     osc.connect(ganho).connect(this.bateria)
     osc.start(t)
     osc.stop(t + 0.24)
+    soltarAoAcabar(osc, ganho)
   }
 
   /** Caixa de sampler antigo: ruído curto e um tom agudo que dá o estalo. */
@@ -365,6 +368,7 @@ export class TrilhaTurbo {
     corpo.connect(ganho).connect(this.bateria)
     corpo.start(t)
     corpo.stop(t + 0.08)
+    soltarAoAcabar(corpo, ganho)
   }
 
   /**
@@ -388,6 +392,7 @@ export class TrilhaTurbo {
     osc.connect(filtro).connect(ganho).connect(destino)
     osc.start(t)
     osc.stop(t + duracao + 0.06)
+    soltarAoAcabar(osc, filtro, ganho)
   }
 
   private metais(notas: readonly number[], t: number, duracao: number) {
@@ -408,6 +413,7 @@ export class TrilhaTurbo {
     // voz e outra — como um naipe de verdade, que nunca ataca em uníssono
     // perfeito — já as tira de fase, e o ouvido não percebe o atraso.
     let voz = 0
+    let ultima: OscillatorNode | null = null
     for (const nota of notas) {
       for (const desafinacao of [-9, 9]) {
         const inicio = t + voz * 0.0015
@@ -419,8 +425,11 @@ export class TrilhaTurbo {
         osc.connect(filtro)
         osc.start(inicio)
         osc.stop(t + duracao + 0.12)
+        ultima = osc
       }
     }
+    // Todas as vozes param no mesmo instante.
+    if (ultima) soltarAoAcabar(ultima, filtro, ganho)
   }
 
   /** Lead de onda quadrada, com o vibrato entrando só na nota longa. */
@@ -437,6 +446,7 @@ export class TrilhaTurbo {
     profundidade.gain.setValueAtTime(0, t)
     profundidade.gain.linearRampToValueAtTime(duracao > 0.3 ? 18 : 0, t + Math.min(0.22, duracao))
     vibrato.connect(profundidade)
+    const misturas: GainNode[] = []
     for (const [tipo, desafinacao, volume] of [['square', 0, 1], ['square', 8, 0.5]] as const) {
       const osc = this.ctx.createOscillator()
       osc.type = tipo
@@ -448,9 +458,11 @@ export class TrilhaTurbo {
       osc.connect(mistura).connect(ganho)
       osc.start(t)
       osc.stop(t + duracao + 0.1)
+      misturas.push(mistura)
     }
     vibrato.start(t)
     vibrato.stop(t + duracao + 0.1)
+    soltarAoAcabar(vibrato, profundidade, ...misturas, ganho)
   }
 
   close() {

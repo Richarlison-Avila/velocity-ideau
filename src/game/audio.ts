@@ -16,6 +16,7 @@
  * `trilhaUltimaVolta.ts` e `trilhaLargada.ts` —, tocando pelo mesmo contexto e
  * pelo mesmo volume geral: desligar o som desliga a música junto.
  */
+import { soltarAoAcabar } from './banda'
 import type { CarId } from './cars'
 import { MotorF1, vozDoCarro } from './motorF1'
 import { Radio, type FaixaDaRadio } from './radio'
@@ -278,6 +279,7 @@ export class RaceAudio {
     osc.connect(ganho).connect(this.master)
     osc.start(agora)
     osc.stop(agora + 0.32)
+    soltarAoAcabar(osc, ganho)
   }
 
   /** Bipe das luzes da largada. Passa pelo mesmo contexto de todo o resto. */
@@ -293,6 +295,7 @@ export class RaceAudio {
     osc.connect(ganho).connect(this.master)
     osc.start(agora)
     osc.stop(agora + duracao + 0.02)
+    soltarAoAcabar(osc, ganho)
   }
 
   /** Começa a trilha do primeiro compasso: é o "VAI!" da largada. */

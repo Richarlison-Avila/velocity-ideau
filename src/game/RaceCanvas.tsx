@@ -45,6 +45,7 @@ import {
   SCENERY_SPACING,
   type Flora,
 } from './layout'
+import { definirDensidade } from './reducoes'
 import { DIFFICULTY_LABELS, rulesFor, type Difficulty } from './rules'
 import {
   APEX_BOOST,
@@ -742,8 +743,11 @@ function RaceCanvas({
       canvas.width = Math.floor(width * pixelRatio)
       canvas.height = Math.floor(height * pixelRatio)
       ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+      // As folhas de sprite escolhem a redução pelo tamanho em pixels do
+      // aparelho, e não pelo do CSS.
+      definirDensidade(ctx, pixelRatio)
       // Mudar o tamanho do canvas zera o contexto, e com ele a qualidade da
-      // redução: no padrão, a pintura do carro sai serrilhada ao encolher.
+      // ampliação. Quem reduz — carro e cenário — escolhe a própria.
       ctx.imageSmoothingQuality = 'high'
     }
     resize()
