@@ -3,6 +3,7 @@ import { createServer, type Server as HttpServer } from 'node:http'
 import { resolve } from 'node:path'
 import express from 'express'
 import { Server, type Socket } from 'socket.io'
+import { servirSite } from './estaticos.js'
 import {
   COUNTDOWN_MS,
   RECONNECT_GRACE_MS,
@@ -362,13 +363,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
   })
 
   const webRoot = resolve('dist')
-  if ((options.serveStatic ?? true) && existsSync(webRoot)) {
-    app.use(express.static(webRoot))
-    app.use((request, response, next) => {
-      if (request.method === 'GET') response.sendFile(resolve(webRoot, 'index.html'))
-      else next()
-    })
-  }
+  if ((options.serveStatic ?? true) && existsSync(webRoot)) servirSite(app, webRoot)
 
   const close = async () => {
     for (const timer of startTimers.values()) clearTimeout(timer)
