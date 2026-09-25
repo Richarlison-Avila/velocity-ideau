@@ -53,7 +53,7 @@ import {
   type Flora,
 } from './layout'
 import { definirDensidade } from './reducoes'
-import { DIFFICULTY_LABELS, rulesFor, type Difficulty } from './rules'
+import { DIFFICULTY_LABELS, rulesFor, turboDoPiloto, type Difficulty } from './rules'
 import {
   advanceRace,
   APEX_BOOST,
@@ -451,7 +451,9 @@ function RaceCanvas({
   const vaoDasSetasRef = useRef({ fimDaEsquerda: 0, inicioDaDireita: 0 })
   const clockRef = useRef(now ?? Date.now)
   const finishRef = useRef(onFinish)
-  const raceRef = useRef(createRaceState(difficulty))
+  // Na arquibancada não há carro próprio: o easter egg só vale para quem pilota.
+  const turbo = espectador ? 1 : turboDoPiloto(pilotName, car)
+  const raceRef = useRef(createRaceState(difficulty, turbo))
   const startedRef = useRef(false)
   const doneRef = useRef(false)
   const rivalsRef = useRef(rivals)
@@ -772,7 +774,7 @@ function RaceCanvas({
    * aparelhos mesmo que um deles esteja com a tela em segundo plano.
    */
   useEffect(() => {
-    raceRef.current = createRaceState(difficulty)
+    raceRef.current = createRaceState(difficulty, turbo)
     startedRef.current = false
     doneRef.current = false
     setPhase('countdown')
@@ -816,7 +818,7 @@ function RaceCanvas({
     return () => {
       if (timer) window.clearInterval(timer)
     }
-  }, [beep, countdownMs, difficulty, som, startAt])
+  }, [beep, countdownMs, difficulty, som, startAt, turbo])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -1992,7 +1994,8 @@ function RaceCanvas({
             audioRef.current?.stopMusic()
             const result: RaceResult = {
               time: elapsed,
-              topSpeed: race.topSpeed,
+              // O easter egg é secreto: nenhum número mostra a velocidade a mais.
+              topSpeed: race.topSpeed / race.rules.turbo,
               collisions: race.collisions,
               lateStart: lateAtStart,
             }
@@ -2126,7 +2129,7 @@ function RaceCanvas({
         if (tique) {
           setTelemetry({
             progress: race.progress,
-            speed: race.speed,
+            speed: race.speed / race.rules.turbo,
             boost: race.boost,
             elapsed,
             offRoad: race.offRoad,
@@ -2427,7 +2430,7 @@ function RaceCanvas({
         t: clockRef.current(),
         progress: race.progress,
         lateral: race.lateral,
-        speed: parado ? 0 : race.speed,
+        speed: parado ? 0 : race.speed / race.rules.turbo,
         state: 'racing',
       })
     }, TELEMETRY_INTERVAL_MS)

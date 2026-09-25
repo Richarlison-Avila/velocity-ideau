@@ -306,9 +306,10 @@ export function slipstreamFrom(
   return (1 - atras / SLIPSTREAM_RANGE_M) * alinhamento
 }
 
-export function createRaceState(difficulty: Difficulty = 'normal'): RaceState {
+/** `turbo` multiplica as velocidades: só o easter egg de `turboDoPiloto` passa algo além de 1. */
+export function createRaceState(difficulty: Difficulty = 'normal', turbo = 1): RaceState {
   return {
-    rules: rulesFor(difficulty),
+    rules: rulesFor(difficulty, turbo),
     progress: 0,
     lateral: 0,
     speed: 0,
@@ -719,7 +720,7 @@ export function stepRace(
     if (alvo > state.speed) {
       // Tração: forte na saída, cedendo perto do teto.
       const fracao = state.speed / Math.max(1, alvo)
-      const tracao = ACCELERATION_PEAK * (state.boosting ? BOOST_TRACTION : 1)
+      const tracao = ACCELERATION_PEAK * (state.boosting ? BOOST_TRACTION : 1) * state.rules.turbo
       state.speed = Math.min(alvo, state.speed + tracao * (1 - Math.pow(fracao, ACCELERATION_SHAPE)) * h)
     } else {
       // A perda é exponencial, que é a forma certa para arrasto e frenagem —

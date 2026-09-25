@@ -1185,3 +1185,25 @@ describe('arquibancada', () => {
     expect(encerrada?.outcome?.entries.map((entry) => entry.playerId).sort()).toEqual(['a', 'b'])
   })
 })
+
+describe('easter egg do Hamilton na Mercedes no servidor', () => {
+  it('aceita a chegada mais rápida só de quem ativou o easter egg', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const { code } = rooms.create('socket-a', 'a', 'Ideau', 'hamilton-mercedes')
+    rooms.join(code, 'socket-b', 'b', 'Beto', 'hamilton-mercedes')
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+
+    const turbo = minRaceSeconds('normal', 1.5)
+    expect(turbo).toBeLessThan(minRaceSeconds('normal'))
+    clock.advance((turbo + 1) * 1_000)
+
+    const chegada = { time: turbo + 0.5, topSpeed: 450, collisions: 0 }
+    expect(rooms.recordFinish(code, 'b', chegada)).toBeNull()
+    expect(rooms.recordFinish(code, 'a', chegada)).not.toBeNull()
+  })
+})

@@ -1,7 +1,7 @@
 // A validação da chegada precisa da mesma pista que o jogo desenha, então a
 // definição vem do módulo do jogo em vez de ser copiada para cá.
 import { toCarId, type CarId } from '../src/game/cars.js'
-import { rulesFor, toDifficulty, type Difficulty } from '../src/game/rules.js'
+import { rulesFor, toDifficulty, turboDoPiloto, type Difficulty } from '../src/game/rules.js'
 import { speedForState } from '../src/game/simulation.js'
 import { LATERAL_LIMIT, TRACK_LENGTH } from '../src/game/track.js'
 
@@ -180,8 +180,8 @@ export const CLOCK_TOLERANCE_MS = 5_000
  * que colou no adversário a prova inteira quem tem mais chance de chegar perto
  * deste piso.
  */
-export function minRaceSeconds(difficulty: Difficulty) {
-  return TRACK_LENGTH / (speedForState(false, 0, true, rulesFor(difficulty), 1) / 3.6)
+export function minRaceSeconds(difficulty: Difficulty, turbo = 1) {
+  return TRACK_LENGTH / (speedForState(false, 0, true, rulesFor(difficulty, turbo), 1) / 3.6)
 }
 
 /** Tempo mínimo do nível de referência, mantido para quem não passa a sala. */
@@ -481,10 +481,12 @@ export class RoomStore {
     // Dois envios no mesmo milissegundo — caso da chegada — não podem sumir.
     if (previous && t === previous.t) t = previous.t + 1
 
+    // O carro do easter egg anda mais: o teto dele sobe na mesma proporção.
+    const teto = MAX_PLAUSIBLE_SPEED_MS * turboDoPiloto(player.name, player.car)
     let progress = Math.max(0, input.progress)
     if (previous) {
       const elapsed = Math.max(0, (t - previous.t) / 1000)
-      const ceiling = previous.progress + MAX_PLAUSIBLE_SPEED_MS * elapsed + PROGRESS_TOLERANCE_M
+      const ceiling = previous.progress + teto * elapsed + PROGRESS_TOLERANCE_M
       progress = Math.min(Math.max(progress, previous.progress), ceiling)
     }
 
@@ -492,7 +494,7 @@ export class RoomStore {
       t,
       progress,
       lateral: Math.max(-LATERAL_LIMIT, Math.min(LATERAL_LIMIT, input.lateral)),
-      speed: Math.max(0, Math.min(MAX_PLAUSIBLE_SPEED_MS * 3.6, input.speed)),
+      speed: Math.max(0, Math.min(teto * 3.6, input.speed)),
       state: input.state === 'finished' ? 'finished' : 'racing',
     }
     player.telemetry = accepted
@@ -516,7 +518,7 @@ export class RoomStore {
 
     // O piso vem da dificuldade da própria sala: no profissional o carro é
     // mais rápido, e um tempo legítimo lá seria recusado pelo piso do normal.
-    const minimo = minRaceSeconds(room.difficulty)
+    const minimo = minRaceSeconds(room.difficulty, turboDoPiloto(player.name, player.car))
     const elapsed = (this.now() - room.startAt) / 1000
     if (elapsed < minimo) return null
 

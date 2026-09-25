@@ -6,6 +6,8 @@ import {
   rulesFor,
   toDifficulty,
   TOP_SPEED_OF_ALL,
+  TURBO_IDEAU,
+  turboDoPiloto,
   type Difficulty,
 } from './rules'
 import { createRaceState, speedForState, stepRace, type RaceInput, type RaceState } from './simulation'
@@ -251,5 +253,38 @@ describe('o profissional continua jogável', () => {
       expect(speedForState(false, 1, false, regras)).toBe(regras.penaltySpeed)
       expect(speedForState(true, 0, true, regras)).toBe(regras.offRoadSpeed)
     }
+  })
+})
+
+describe('easter egg do Hamilton na Mercedes', () => {
+  it('só liga com o Hamilton da Mercedes e o nome Ideau', () => {
+    expect(turboDoPiloto('Ideau', 'hamilton-mercedes')).toBe(TURBO_IDEAU)
+    expect(turboDoPiloto('  IDEAU ', 'hamilton-mercedes')).toBe(TURBO_IDEAU)
+    expect(turboDoPiloto('Ideau', 'hamilton-ferrari')).toBe(1)
+    expect(turboDoPiloto('Ideau', 'raikkonen-mercedes')).toBe(1)
+    expect(turboDoPiloto('Ana', 'hamilton-mercedes')).toBe(1)
+    expect(turboDoPiloto('Ideau2', 'hamilton-mercedes')).toBe(1)
+  })
+
+  it('deixa o carro 50% mais rápido em todos os estados', () => {
+    for (const nivel of DIFFICULTIES) {
+      const base = rulesFor(nivel)
+      const turbo = rulesFor(nivel, TURBO_IDEAU)
+      expect(TURBO_IDEAU).toBe(1.5)
+      expect(speedForState(false, 0, false, turbo)).toBeCloseTo(speedForState(false, 0, false, base) * 1.5)
+      expect(speedForState(false, 0, true, turbo, 1)).toBeCloseTo(speedForState(false, 0, true, base, 1) * 1.5)
+      expect(turbo.obstacles).toBe(base.obstacles)
+      expect(rulesFor(nivel, 1)).toBe(base)
+    }
+  })
+
+  it('chega na frente numa reta livre', () => {
+    const normal = createRaceState('normal')
+    const turbo = createRaceState('normal', TURBO_IDEAU)
+    for (let i = 0; i < 60 * 20; i += 1) {
+      stepRace(normal, PARADO, dt)
+      stepRace(turbo, PARADO, dt)
+    }
+    expect(turbo.speed).toBeGreaterThan(normal.speed * 1.4)
   })
 })

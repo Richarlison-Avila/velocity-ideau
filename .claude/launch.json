@@ -11,6 +11,14 @@
       "port": 5175
     },
     {
+      "name": "teste-isolado",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Users/estef/AppData/Local/Temp/claude/D--velocity-ideau/7ff17a0c-7ef7-4310-b21f-93ab2f1fb05b/scratchpad/lancar.mjs"
+      ],
+      "port": 5176
+    },
+    {
       "name": "bancada",
       "runtimeExecutable": "npx",
       "runtimeArgs": [
