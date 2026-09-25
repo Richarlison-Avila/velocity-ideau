@@ -3,7 +3,7 @@ import type { GravacaoDeVolta } from '../../src/game/gravador.js'
 import { estadoInicial, type EstadoRanqueado } from '../ranqueada/rating.js'
 import { RepositorioEmMemoria } from './memoria.js'
 import { RepositorioPostgres } from './postgres.js'
-import type { CorridaRanqueada, NovoTempo, Repositorio } from './tipos.js'
+import type { CorridaRanqueada, NovoTempo, Participacao, Repositorio } from './tipos.js'
 
 /**
  * O contrato do repositório.
@@ -24,7 +24,28 @@ function tempo(perfilId: string, segundos: number, extra: Partial<NovoTempo> = {
     tempo: segundos,
     dispositivo: 'teclado',
     estado: 'valido',
+    medalha: null,
     gravacao: VOLTA,
+    ...extra,
+  }
+}
+
+function corrida(perfilId: string, extra: Partial<Participacao> = {}): Participacao {
+  return {
+    perfilId,
+    sala: 'ABCDE',
+    largada: INSTANTE,
+    modo: 'casual',
+    seed: 42,
+    dificuldade: 'normal',
+    pilotos: 4,
+    posicao: 1,
+    desfecho: 'chegou',
+    tempo: 70,
+    velocidadeMaxima: 300,
+    batidas: 1,
+    carro: 'senna',
+    deltaPl: null,
     ...extra,
   }
 }
@@ -64,19 +85,33 @@ function contrato(nome: string, criar: () => Promise<Repositorio>) {
       await repo.fechar()
     })
 
-    it('guarda o perfil e só o devolve com o segredo certo', async () => {
-      const perfil = await repo.criarPerfil('Ana', 'hash-da-ana')
-      expect(perfil.apelido).toBe('Ana')
-      expect(await repo.perfilPorCredencial(perfil.id, 'hash-da-ana')).toEqual(perfil)
-      expect(await repo.perfilPorCredencial(perfil.id, 'hash-errado')).toBeNull()
-      expect(await repo.perfilPorCredencial('nao-e-uuid', 'hash-da-ana')).toBeNull()
-      await repo.renomearPerfil(perfil.id, 'Ana Paula')
-      expect((await repo.perfil(perfil.id))?.apelido).toBe('Ana Paula')
+    it('o perfil da conta nasce na primeira entrada, com o apelido do cadastro', async () => {
+      const conta = crypto.randomUUID()
+      expect(await repo.apelidoLivre('Ana')).toBe(true)
+      const perfil = await repo.perfilDaConta(conta, 'Ana')
+      expect(perfil).toMatchObject({ id: conta, apelido: 'Ana' })
+      // A segunda entrada acha o mesmo perfil, mesmo com outro apelido no token.
+      expect(await repo.perfilDaConta(conta, 'Outro Nome')).toEqual(perfil)
+      expect(await repo.perfil(conta)).toEqual(perfil)
+      expect(await repo.perfil('nao-e-uuid')).toBeNull()
+    })
+
+    it('o apelido é único sem diferenciar maiúsculas, e quem chega depois ganha um número', async () => {
+      await repo.perfilDaConta(crypto.randomUUID(), 'Rafa')
+      expect(await repo.apelidoLivre('rafa')).toBe(false)
+      expect(await repo.apelidoLivre('  RAFA ')).toBe(false)
+      expect(await repo.apelidoLivre('Rafael')).toBe(true)
+      const outro = await repo.perfilDaConta(crypto.randomUUID(), 'RAFA')
+      expect(outro.apelido).toBe('RAFA2')
+      const longo = await repo.perfilDaConta(crypto.randomUUID(), 'Dezesseis Letras')
+      const mesmoLongo = await repo.perfilDaConta(crypto.randomUUID(), 'dezesseis letras')
+      expect(longo.apelido).toBe('Dezesseis Letras')
+      expect(mesmoLongo.apelido).toBe('dezesseis letra2')
     })
 
     it('o quadro traz o melhor tempo válido de cada piloto, do mais rápido', async () => {
-      const ana = await repo.criarPerfil('Ana', 'a')
-      const beto = await repo.criarPerfil('Beto', 'b')
+      const ana = await repo.perfilDaConta(crypto.randomUUID(), 'Ana')
+      const beto = await repo.perfilDaConta(crypto.randomUUID(), 'Beto')
       await repo.registrarTempo(tempo(ana.id, 64))
       await repo.registrarTempo(tempo(ana.id, 62.5))
       await repo.registrarTempo(tempo(beto.id, 63))
@@ -97,7 +132,7 @@ function contrato(nome: string, criar: () => Promise<Repositorio>) {
     })
 
     it('guarda a volta de cada tempo, para virar fantasma', async () => {
-      const ana = await repo.criarPerfil('Ana', 'a')
+      const ana = await repo.perfilDaConta(crypto.randomUUID(), 'Ana')
       const registrado = await repo.registrarTempo(tempo(ana.id, 61))
       expect(registrado.estado).toBe('valido')
       expect(await repo.gravacao(registrado.id)).toEqual(VOLTA)
@@ -105,8 +140,8 @@ function contrato(nome: string, criar: () => Promise<Repositorio>) {
     })
 
     it('a corrida ranqueada guarda o estado novo de cada piloto, uma vez só', async () => {
-      const ana = await repo.criarPerfil('Ana', 'a')
-      const beto = await repo.criarPerfil('Beto', 'b')
+      const ana = await repo.perfilDaConta(crypto.randomUUID(), 'Ana')
+      const beto = await repo.perfilDaConta(crypto.randomUUID(), 'Beto')
       const corrida = ranqueada([ana.id, beto.id], [estado(820, 0), estado(610, 0)])
       await repo.registrarCorridaRanqueada(corrida)
       await repo.registrarCorridaRanqueada({ ...corrida, resultados: corrida.resultados.map((r) => ({ ...r, depois: estado(5, 0) })) })
@@ -118,9 +153,9 @@ function contrato(nome: string, criar: () => Promise<Repositorio>) {
     })
 
     it('a escada só tem quem terminou a colocação, dos PL mais altos para os mais baixos', async () => {
-      const ana = await repo.criarPerfil('Ana', 'a')
-      const beto = await repo.criarPerfil('Beto', 'b')
-      const caio = await repo.criarPerfil('Caio', 'c')
+      const ana = await repo.perfilDaConta(crypto.randomUUID(), 'Ana')
+      const beto = await repo.perfilDaConta(crypto.randomUUID(), 'Beto')
+      const caio = await repo.perfilDaConta(crypto.randomUUID(), 'Caio')
       await repo.registrarCorridaRanqueada(
         ranqueada([ana.id, beto.id, caio.id], [estado(610, 0), estado(820, 0), estado(0, 2)]),
       )
@@ -134,8 +169,8 @@ function contrato(nome: string, criar: () => Promise<Repositorio>) {
     })
 
     it('a temporada anterior mais recente é a base do reset suave', async () => {
-      const ana = await repo.criarPerfil('Ana', 'a')
-      const beto = await repo.criarPerfil('Beto', 'b')
+      const ana = await repo.perfilDaConta(crypto.randomUUID(), 'Ana')
+      const beto = await repo.perfilDaConta(crypto.randomUUID(), 'Beto')
       await repo.registrarCorridaRanqueada({ ...ranqueada([ana.id, beto.id], [estado(300, 0), estado(0, 0)]), temporada: '2025.2' })
       await repo.registrarCorridaRanqueada({ ...ranqueada([ana.id, beto.id], [estado(900, 0), estado(0, 0)]), temporada: '2026.1' })
       expect((await repo.estadoAnterior(ana.id, '2026.2'))?.pl).toBe(900)
@@ -144,7 +179,7 @@ function contrato(nome: string, criar: () => Promise<Repositorio>) {
     })
 
     it('conta as corridas em que o mesmo grupo correu junto', async () => {
-      const [ana, beto, caio, duda] = await Promise.all(['Ana', 'Beto', 'Caio', 'Duda'].map((nome) => repo.criarPerfil(nome, nome)))
+      const [ana, beto, caio, duda] = await Promise.all(['Ana', 'Beto', 'Caio', 'Duda'].map((nome) => repo.perfilDaConta(crypto.randomUUID(), nome)))
       const tres = [ana.id, beto.id, caio.id]
       await repo.registrarCorridaRanqueada(ranqueada(tres, tres.map(() => estado(700, 0))))
       await repo.registrarCorridaRanqueada(ranqueada(tres, tres.map(() => estado(700, 0))))
@@ -155,7 +190,7 @@ function contrato(nome: string, criar: () => Promise<Repositorio>) {
     })
 
     it('guarda voltas ranqueadas e devolve a mais nova de cada piloto em cada pista, sem as de quem procura', async () => {
-      const [ana, beto, caio] = await Promise.all(['Ana', 'Beto', 'Caio'].map((nome) => repo.criarPerfil(nome, nome)))
+      const [ana, beto, caio] = await Promise.all(['Ana', 'Beto', 'Caio'].map((nome) => repo.perfilDaConta(crypto.randomUUID(), nome)))
       const volta = (perfilId: string, seed: number, tempo: number) => ({
         perfilId,
         seed,
@@ -178,7 +213,7 @@ function contrato(nome: string, criar: () => Promise<Repositorio>) {
     })
 
     it('guarda os troféus da copa, do dia mais recente, e só os do piloto', async () => {
-      const [ana, beto] = await Promise.all(['Ana', 'Beto'].map((nome) => repo.criarPerfil(nome, nome)))
+      const [ana, beto] = await Promise.all(['Ana', 'Beto'].map((nome) => repo.perfilDaConta(crypto.randomUUID(), nome)))
       await repo.registrarTrofeu({ perfilId: ana.id, dia: '2026-09-22', divisao: 2, posicao: 3, participantes: 5 })
       await repo.registrarTrofeu({ perfilId: ana.id, dia: '2026-09-23', divisao: 1, posicao: 1, participantes: 6 })
       await repo.registrarTrofeu({ perfilId: beto.id, dia: '2026-09-23', divisao: 1, posicao: 2, participantes: 6 })
@@ -189,11 +224,65 @@ function contrato(nome: string, criar: () => Promise<Repositorio>) {
       expect(await repo.trofeusDe('nao-e-um-perfil')).toEqual([])
     })
 
-    it('o apelido novo aparece no quadro', async () => {
-      const ana = await repo.criarPerfil('Ana', 'a')
-      await repo.registrarTempo(tempo(ana.id, 61))
-      await repo.renomearPerfil(ana.id, 'Aninha')
-      expect((await repo.quadro(123, 'dificil', 10))[0].apelido).toBe('Aninha')
+    it('guarda cada corrida uma vez só, e soma as estatísticas por modo', async () => {
+      const [ana, beto] = await Promise.all(['Ana', 'Beto'].map((nome) => repo.perfilDaConta(crypto.randomUUID(), nome)))
+      await repo.registrarParticipacoes([
+        corrida(ana.id),
+        corrida(beto.id, { posicao: 2, tempo: 71 }),
+      ])
+      // A mesma corrida chega de novo: não conta duas vezes.
+      await repo.registrarParticipacoes([corrida(ana.id)])
+      await repo.registrarParticipacoes([
+        corrida(ana.id, { sala: 'FGHIJ', largada: INSTANTE + 60_000, posicao: 3, carro: 'hamilton-mercedes', velocidadeMaxima: 331 }),
+        corrida(ana.id, { sala: 'KLMNO', largada: INSTANTE + 120_000, modo: 'ranqueada', posicao: 5, pilotos: 6, deltaPl: -20, carro: 'hamilton-mercedes' }),
+        corrida(ana.id, { sala: 'PQRST', largada: INSTANTE + 180_000, modo: 'copa', desfecho: 'abandonou', posicao: 6, pilotos: 6, tempo: null, batidas: 4 }),
+        // Sozinha na sala não é vitória: não havia rival.
+        corrida(ana.id, { sala: 'UVWXY', largada: INSTANTE + 240_000, pilotos: 1 }),
+      ])
+      const estatisticas = await repo.estatisticasDe(ana.id, 3)
+      expect(estatisticas.porModo.casual).toEqual({ corridas: 3, vitorias: 1, podios: 2, chegadas: 3, abandonos: 0, somaDasPosicoes: 5 })
+      expect(estatisticas.porModo.ranqueada).toMatchObject({ corridas: 1, vitorias: 0, podios: 0, chegadas: 1 })
+      expect(estatisticas.porModo.copa).toMatchObject({ corridas: 1, abandonos: 1, chegadas: 0 })
+      expect(estatisticas.velocidadeMaxima).toBe(331)
+      expect(estatisticas.batidas).toBe(1 + 1 + 1 + 4 + 1)
+      // O carro favorito é o de mais corridas: três de Senna contra duas de Hamilton.
+      expect(estatisticas.carroFavorito).toEqual({ carro: 'senna', corridas: 3 })
+      expect(estatisticas.recentes.map((r) => r.sala)).toEqual(['UVWXY', 'PQRST', 'KLMNO'])
+      expect(estatisticas.recentes[2]).toMatchObject({ modo: 'ranqueada', deltaPl: -20, pilotos: 6, largada: INSTANTE + 120_000 })
+      expect(estatisticas.recentes[1].tempo).toBeNull()
+      expect((await repo.estatisticasDe(beto.id, 10)).porModo.casual.corridas).toBe(1)
+    })
+
+    it('conta as voltas, as pistas, a melhor medalha de cada uma e as pistas que o piloto lidera', async () => {
+      const [ana, beto] = await Promise.all(['Ana', 'Beto'].map((nome) => repo.perfilDaConta(crypto.randomUUID(), nome)))
+      await repo.registrarTempo(tempo(ana.id, 64, { medalha: 'prata' }))
+      await repo.registrarTempo(tempo(ana.id, 62, { medalha: 'ouro' }))
+      await repo.registrarTempo(tempo(ana.id, 70, { seed: 7, medalha: 'bronze' }))
+      await repo.registrarTempo(tempo(ana.id, 50, { seed: 8, estado: 'pendente', medalha: 'autor' }))
+      await repo.registrarTempo(tempo(ana.id, 99, { seed: 9, estado: 'recusado' }))
+      await repo.registrarTempo(tempo(beto.id, 60, { medalha: 'ouro' }))
+      await repo.registrarTempo(tempo(beto.id, 75, { seed: 7 }))
+      const { contrarrelogio } = await repo.estatisticasDe(ana.id, 10)
+      expect(contrarrelogio.voltas).toBe(4)
+      expect(contrarrelogio.pistas).toBe(2)
+      expect(contrarrelogio.medalhas).toEqual({ autor: 0, ouro: 1, prata: 0, bronze: 1 })
+      // Na semente 123 o Beto é mais rápido; na 7, a Ana.
+      expect(contrarrelogio.lideradas).toBe(1)
+    })
+
+    it('as estatísticas trazem cada temporada ranqueada, da mais nova', async () => {
+      const [ana, beto] = await Promise.all(['Ana', 'Beto'].map((nome) => repo.perfilDaConta(crypto.randomUUID(), nome)))
+      await repo.registrarCorridaRanqueada({ ...ranqueada([ana.id, beto.id], [estado(300, 0), estado(0, 0)]), temporada: '2026.1' })
+      await repo.registrarCorridaRanqueada(ranqueada([ana.id, beto.id], [estado(900, 0), estado(0, 0)]))
+      const { temporadas } = await repo.estatisticasDe(ana.id, 10)
+      expect(temporadas.map((t) => [t.temporada, t.estado.pl])).toEqual([
+        ['2026.2', 900],
+        ['2026.1', 300],
+      ])
+      const vazias = await repo.estatisticasDe(crypto.randomUUID(), 10)
+      expect(vazias.temporadas).toEqual([])
+      expect(vazias.carroFavorito).toBeNull()
+      expect(vazias.porModo.casual.corridas).toBe(0)
     })
   })
 }

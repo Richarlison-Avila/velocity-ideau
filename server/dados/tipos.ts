@@ -1,3 +1,4 @@
+import type { Medalha } from '../../src/game/contrarrelogio.js'
 import type { GravacaoDeVolta } from '../../src/game/gravador.js'
 import type { Difficulty } from '../../src/game/rules.js'
 import type { Desfecho, EstadoRanqueado } from '../ranqueada/rating.js'
@@ -6,14 +7,17 @@ import type { Desfecho, EstadoRanqueado } from '../ranqueada/rating.js'
  * O que o servidor guarda entre uma partida e outra.
  *
  * As salas continuam na memória, como sempre: vivem o tempo de uma corrida e
- * morrem com ela. O que precisa sobreviver — o perfil do piloto, os tempos da
- * Pista do Dia, a ranqueada — passa por esta interface, que tem duas
- * implementações: o Postgres, em produção, e a memória, nos testes, no
- * desenvolvimento sem banco e no workshop offline. Sem `DATABASE_URL` o jogo
- * casual funciona exatamente como antes.
+ * morrem com ela. O que precisa sobreviver — o perfil do piloto, os tempos do
+ * contrarrelógio, a ranqueada, as estatísticas — passa por esta interface, que
+ * tem duas implementações: o Postgres (o do Supabase, em produção) e a
+ * memória, nos testes, no desenvolvimento sem banco e no workshop offline. Sem
+ * `DATABASE_URL` o jogo casual funciona exatamente como antes.
  */
 
-/** Um perfil leve: apelido e um segredo que só o aparelho do piloto conhece. */
+/**
+ * O perfil de uma conta: o id é o do usuário no Supabase Auth, e o apelido é o
+ * que ele escolheu no cadastro — único, sem diferenciar maiúsculas.
+ */
 export type Perfil = {
   id: string
   apelido: string
@@ -40,6 +44,8 @@ export type NovoTempo = {
   tempo: number
   dispositivo: Dispositivo
   estado: EstadoDoTempo
+  /** A medalha que o tempo alcança na pista dele, calculada quando é julgado. */
+  medalha: Medalha | null
   gravacao: GravacaoDeVolta
 }
 
@@ -60,11 +66,15 @@ export type TempoRegistrado = {
 export type LinhaDoQuadro = TempoRegistrado & { posicao: number }
 
 export interface RepositorioDePerfis {
-  criarPerfil(apelido: string, tokenHash: string): Promise<Perfil>
-  /** O perfil, se o segredo bater. */
-  perfilPorCredencial(id: string, tokenHash: string): Promise<Perfil | null>
+  /**
+   * O perfil de uma conta, criado na primeira entrada com o apelido do
+   * cadastro. Se outra conta chegou antes ao mesmo apelido, ele ganha um
+   * número no fim — é o que resolve dois cadastros simultâneos.
+   */
+  perfilDaConta(contaId: string, apelido: string): Promise<Perfil>
   perfil(id: string): Promise<Perfil | null>
-  renomearPerfil(id: string, apelido: string): Promise<void>
+  /** Se nenhuma conta usa o apelido, sem diferenciar maiúsculas. */
+  apelidoLivre(apelido: string): Promise<boolean>
 }
 
 export interface RepositorioDeTempos {
@@ -148,7 +158,73 @@ export interface RepositorioRanqueado {
   trofeusDe(perfilId: string): Promise<Trofeu[]>
 }
 
-export interface Repositorio extends RepositorioDePerfis, RepositorioDeTempos, RepositorioRanqueado {
+/** Onde a corrida online aconteceu: é por modo que o perfil separa as contas. */
+export type ModoDaCorrida = 'casual' | 'ranqueada' | 'copa'
+
+export const MODOS_DA_CORRIDA: readonly ModoDaCorrida[] = ['casual', 'ranqueada', 'copa']
+
+/** Uma corrida online de quem entrou com conta, como o perfil a lembra. */
+export type Participacao = {
+  perfilId: string
+  sala: string
+  /** A largada oficial: com a sala, identifica a corrida. */
+  largada: number
+  modo: ModoDaCorrida
+  seed: number
+  dificuldade: Difficulty
+  /** Quantos largaram, fantasmas incluídos. */
+  pilotos: number
+  posicao: number
+  desfecho: Desfecho
+  tempo: number | null
+  velocidadeMaxima: number
+  batidas: number
+  carro: string
+  /** Os PL que a corrida rendeu, na ranqueada. */
+  deltaPl: number | null
+}
+
+/** A soma das corridas de um modo. */
+export type ResumoDoModo = {
+  corridas: number
+  /** Primeiro lugar numa corrida com rival. */
+  vitorias: number
+  podios: number
+  chegadas: number
+  abandonos: number
+  /** Para a posição média. */
+  somaDasPosicoes: number
+}
+
+/** O que o perfil mostra, já somado pelo banco. */
+export type EstatisticasDoPerfil = {
+  porModo: Record<ModoDaCorrida, ResumoDoModo>
+  velocidadeMaxima: number
+  batidas: number
+  carroFavorito: { carro: string; corridas: number } | null
+  /** As corridas mais recentes, da última para trás. */
+  recentes: Participacao[]
+  contrarrelogio: {
+    /** Voltas aceitas ou em conferência, em todas as pistas. */
+    voltas: number
+    /** Pistas com tempo válido. */
+    pistas: number
+    /** A melhor medalha de cada pista, contada por tipo. */
+    medalhas: Record<Medalha, number>
+    /** Pistas em que o melhor tempo do quadro é deste piloto. */
+    lideradas: number
+  }
+  /** O estado de cada temporada ranqueada que o piloto correu, da mais nova. */
+  temporadas: Array<{ temporada: string; estado: EstadoRanqueado }>
+}
+
+export interface RepositorioDeEstatisticas {
+  /** Guarda as corridas online de quem tinha conta. A mesma corrida não entra duas vezes. */
+  registrarParticipacoes(participacoes: readonly Participacao[]): Promise<void>
+  estatisticasDe(perfilId: string, recentes: number): Promise<EstatisticasDoPerfil>
+}
+
+export interface Repositorio extends RepositorioDePerfis, RepositorioDeTempos, RepositorioRanqueado, RepositorioDeEstatisticas {
   /** Onde os dados moram, para o registro da subida do servidor. */
   readonly descricao: string
   fechar(): Promise<void>

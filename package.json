@@ -18,8 +18,10 @@
     "carros": "tsx scripts/preparar-carros.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
     "@vitejs/plugin-react": "latest",
     "express": "latest",
+    "jose": "^6.2.12",
     "openskill": "^5.0.1",
     "pg": "^8.23.0",
     "qrcode.react": "latest",

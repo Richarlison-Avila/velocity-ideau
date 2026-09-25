@@ -1,23 +1,31 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
+import { apelidoComNumero } from '../../src/conta/apelido.js'
+import { MEDALHAS, type Medalha } from '../../src/game/contrarrelogio.js'
 import { gravacaoValida } from '../../src/game/gravador.js'
 import { toDifficulty, type Difficulty } from '../../src/game/rules.js'
-import type { EstadoRanqueado } from '../ranqueada/rating.js'
-import type {
-  CorridaRanqueada,
-  Dispositivo,
-  EstadoDoTempo,
-  LinhaDaEscada,
-  LinhaDoQuadro,
-  NovoTempo,
-  Perfil,
-  Repositorio,
-  TempoRegistrado,
-  Trofeu,
-  VoltaRanqueada,
+import type { Desfecho, EstadoRanqueado } from '../ranqueada/rating.js'
+import {
+  MODOS_DA_CORRIDA,
+  type CorridaRanqueada,
+  type Dispositivo,
+  type EstadoDoTempo,
+  type EstatisticasDoPerfil,
+  type LinhaDaEscada,
+  type LinhaDoQuadro,
+  type ModoDaCorrida,
+  type NovoTempo,
+  type Participacao,
+  type Perfil,
+  type Repositorio,
+  type ResumoDoModo,
+  type TempoRegistrado,
+  type Trofeu,
+  type VoltaRanqueada,
 } from './tipos.js'
 
 const { Pool } = pg
@@ -128,6 +136,23 @@ function paraEstado(linha: LinhaDeRating): EstadoRanqueado {
   }
 }
 
+/**
+ * A conexão, com o certificado do Supabase quando o banco é dele.
+ *
+ * O Supabase assina o certificado do banco com uma autoridade própria, que não
+ * está na lista do Node: sem ela, ou a conexão falha, ou a verificação é
+ * desligada — e aí qualquer um no caminho poderia se passar pelo banco. Com o
+ * certificado raiz dele no projeto, a conexão é cifrada e conferida, sem
+ * depender do `sslmode` que vier no endereço.
+ */
+export function configuracaoDaConexao(url: string): pg.PoolConfig {
+  const endereco = new URL(url)
+  if (!/\.supabase\.(com|co)$/i.test(endereco.hostname)) return { connectionString: url }
+  endereco.searchParams.delete('sslmode')
+  const ca = readFileSync(new URL('./supabase-ca-2021.crt', import.meta.url), 'utf8')
+  return { connectionString: endereco.toString(), ssl: { ca } }
+}
+
 export class RepositorioPostgres implements Repositorio {
   readonly descricao: string
 
@@ -137,7 +162,7 @@ export class RepositorioPostgres implements Repositorio {
 
   /** Conecta, aplica as migrações e devolve o repositório pronto. */
   static async conectar(url: string) {
-    const pool = new Pool({ connectionString: url, max: 8 })
+    const pool = new Pool({ ...configuracaoDaConexao(url), max: 8 })
     // Um erro num cliente ocioso — o banco reiniciou — não pode derrubar o servidor da corrida.
     pool.on('error', (erro) => console.error('Postgres:', erro.message))
     await migrar(pool)
@@ -145,22 +170,28 @@ export class RepositorioPostgres implements Repositorio {
     return new RepositorioPostgres(pool, `Postgres em ${endereco.hostname}${endereco.pathname}`)
   }
 
-  async criarPerfil(apelido: string, tokenHash: string): Promise<Perfil> {
-    const id = randomUUID()
-    const { rows } = await this.pool.query<{ criado_em: Date }>(
-      'INSERT INTO perfis (id, apelido, token_hash) VALUES ($1, $2, $3) RETURNING criado_em',
-      [id, apelido, tokenHash],
-    )
-    return { id, apelido, criadoEm: rows[0].criado_em.getTime() }
-  }
-
-  async perfilPorCredencial(id: string, tokenHash: string) {
-    if (!pareceUuid(id)) return null
-    const { rows } = await this.pool.query<{ id: string; apelido: string; criado_em: Date }>(
-      'SELECT id, apelido, criado_em FROM perfis WHERE id = $1 AND token_hash = $2',
-      [id, tokenHash],
-    )
-    return rows[0] ? { id: rows[0].id, apelido: rows[0].apelido, criadoEm: rows[0].criado_em.getTime() } : null
+  async perfilDaConta(contaId: string, apelido: string): Promise<Perfil> {
+    if (!pareceUuid(contaId)) throw new Error('conta inválida')
+    const existente = await this.perfil(contaId)
+    if (existente) return existente
+    // Dois cadastros com o mesmo apelido ao mesmo tempo: o segundo ganha um
+    // número. Quem decide é o índice único, e não uma leitura antes.
+    for (let tentativa = 1; tentativa <= 50; tentativa += 1) {
+      const nome = tentativa === 1 ? apelido : apelidoComNumero(apelido, tentativa)
+      try {
+        const { rows } = await this.pool.query<{ criado_em: Date }>(
+          'INSERT INTO perfis (id, apelido) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING RETURNING criado_em',
+          [contaId, nome],
+        )
+        if (rows[0]) return { id: contaId, apelido: nome, criadoEm: rows[0].criado_em.getTime() }
+        // A mesma conta entrou por outra conexão no mesmo instante.
+        const criado = await this.perfil(contaId)
+        if (criado) return criado
+      } catch (erro) {
+        if ((erro as { code?: string }).code !== VIOLACAO_DE_UNICIDADE) throw erro
+      }
+    }
+    throw new Error('sem apelido livre para a conta')
   }
 
   async perfil(id: string) {
@@ -172,17 +203,30 @@ export class RepositorioPostgres implements Repositorio {
     return rows[0] ? { id: rows[0].id, apelido: rows[0].apelido, criadoEm: rows[0].criado_em.getTime() } : null
   }
 
-  async renomearPerfil(id: string, apelido: string) {
-    if (!pareceUuid(id)) return
-    await this.pool.query('UPDATE perfis SET apelido = $2 WHERE id = $1', [id, apelido])
+  async apelidoLivre(apelido: string) {
+    const { rows } = await this.pool.query('SELECT 1 FROM perfis WHERE lower(apelido) = lower($1) AND token_hash IS NULL LIMIT 1', [
+      apelido.replace(/\s+/g, ' ').trim(),
+    ])
+    return rows.length === 0
   }
 
   async registrarTempo(novo: NovoTempo): Promise<TempoRegistrado> {
     const id = randomUUID()
     await this.pool.query(
-      `INSERT INTO tempos (id, perfil_id, dia, seed, dificuldade, tempo, dispositivo, estado, gravacao)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [id, novo.perfilId, novo.dia, novo.seed, novo.dificuldade, novo.tempo, novo.dispositivo, novo.estado, JSON.stringify(novo.gravacao)],
+      `INSERT INTO tempos (id, perfil_id, dia, seed, dificuldade, tempo, dispositivo, estado, medalha, gravacao)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        id,
+        novo.perfilId,
+        novo.dia,
+        novo.seed,
+        novo.dificuldade,
+        novo.tempo,
+        novo.dispositivo,
+        novo.estado,
+        novo.medalha,
+        JSON.stringify(novo.gravacao),
+      ],
     )
     const { rows } = await this.pool.query<LinhaDeTempo>(
       `SELECT ${COLUNAS_DO_TEMPO} FROM tempos t JOIN perfis p ON p.id = t.perfil_id WHERE t.id = $1`,
@@ -415,9 +459,198 @@ export class RepositorioPostgres implements Repositorio {
     }))
   }
 
+  async registrarParticipacoes(participacoes: readonly Participacao[]) {
+    const validas = participacoes.filter((participacao) => pareceUuid(participacao.perfilId))
+    if (validas.length === 0) return
+    const COLUNAS = 14
+    const valores: unknown[] = []
+    const linhas = validas.map((participacao, i) => {
+      valores.push(
+        participacao.perfilId,
+        participacao.sala,
+        participacao.largada,
+        participacao.modo,
+        participacao.seed,
+        participacao.dificuldade,
+        participacao.pilotos,
+        participacao.posicao,
+        participacao.desfecho,
+        participacao.tempo,
+        participacao.velocidadeMaxima,
+        participacao.batidas,
+        participacao.carro,
+        participacao.deltaPl,
+      )
+      const n = (k: number) => `$${i * COLUNAS + k}`
+      return `(${n(1)}, ${n(2)}, to_timestamp(${n(3)} / 1000.0), ${n(4)}, ${n(5)}, ${n(6)}, ${n(7)}, ${n(8)}, ${n(9)}, ${n(10)}, ${n(11)}, ${n(12)}, ${n(13)}, ${n(14)})`
+    })
+    await this.pool.query(
+      `INSERT INTO participacoes
+         (perfil_id, sala, largada, modo, seed, dificuldade, pilotos, posicao, desfecho, tempo, velocidade_maxima, batidas, carro, delta_pl)
+       VALUES ${linhas.join(', ')}
+       ON CONFLICT (perfil_id, sala, largada) DO NOTHING`,
+      valores,
+    )
+  }
+
+  async estatisticasDe(perfilId: string, recentes: number): Promise<EstatisticasDoPerfil> {
+    const porModo = Object.fromEntries(MODOS_DA_CORRIDA.map((modo) => [modo, resumoVazio()])) as Record<ModoDaCorrida, ResumoDoModo>
+    const medalhas = medalhasVazias()
+    if (!pareceUuid(perfilId)) {
+      return {
+        porModo,
+        velocidadeMaxima: 0,
+        batidas: 0,
+        carroFavorito: null,
+        recentes: [],
+        contrarrelogio: { voltas: 0, pistas: 0, medalhas, lideradas: 0 },
+        temporadas: [],
+      }
+    }
+    const [somas, favorito, ultimas, voltas, porMedalha, lideradas, temporadas] = await Promise.all([
+      this.pool.query<{
+        modo: ModoDaCorrida
+        corridas: string
+        vitorias: string
+        podios: string
+        chegadas: string
+        abandonos: string
+        soma_das_posicoes: string
+        velocidade_maxima: number
+        batidas: string
+      }>(
+        `SELECT modo, count(*) AS corridas,
+           count(*) FILTER (WHERE desfecho = 'chegou' AND pilotos > 1 AND posicao = 1) AS vitorias,
+           count(*) FILTER (WHERE desfecho = 'chegou' AND pilotos > 1 AND posicao <= 3) AS podios,
+           count(*) FILTER (WHERE desfecho = 'chegou') AS chegadas,
+           count(*) FILTER (WHERE desfecho = 'abandonou') AS abandonos,
+           coalesce(sum(posicao), 0) AS soma_das_posicoes,
+           coalesce(max(velocidade_maxima), 0) AS velocidade_maxima,
+           coalesce(sum(batidas), 0) AS batidas
+         FROM participacoes WHERE perfil_id = $1 GROUP BY modo`,
+        [perfilId],
+      ),
+      this.pool.query<{ carro: string; corridas: string }>(
+        `SELECT carro, count(*) AS corridas FROM participacoes WHERE perfil_id = $1
+         GROUP BY carro ORDER BY count(*) DESC, max(largada) DESC LIMIT 1`,
+        [perfilId],
+      ),
+      this.pool.query<LinhaDeParticipacao>(
+        `SELECT perfil_id, sala, largada, modo, seed, dificuldade, pilotos, posicao, desfecho, tempo, velocidade_maxima, batidas, carro, delta_pl
+         FROM participacoes WHERE perfil_id = $1 ORDER BY largada DESC LIMIT $2`,
+        [perfilId, Math.max(0, Math.floor(recentes))],
+      ),
+      this.pool.query<{ voltas: string; pistas: string }>(
+        `SELECT count(*) FILTER (WHERE estado <> 'recusado') AS voltas,
+           count(DISTINCT (seed, dificuldade)) FILTER (WHERE estado = 'valido') AS pistas
+         FROM tempos WHERE perfil_id = $1`,
+        [perfilId],
+      ),
+      // A melhor volta de cada pista diz a melhor medalha dela.
+      this.pool.query<{ medalha: Medalha; quantas: string }>(
+        `SELECT medalha, count(*) AS quantas FROM (
+           SELECT DISTINCT ON (seed, dificuldade) medalha FROM tempos
+           WHERE perfil_id = $1 AND estado = 'valido' ORDER BY seed, dificuldade, tempo
+         ) melhores WHERE medalha IS NOT NULL GROUP BY medalha`,
+        [perfilId],
+      ),
+      // As pistas em que o primeiro do quadro é este piloto.
+      this.pool.query<{ quantas: string }>(
+        `SELECT count(*) AS quantas FROM (
+           SELECT DISTINCT ON (t.seed, t.dificuldade) t.perfil_id FROM tempos t
+           WHERE t.estado = 'valido' AND (t.seed, t.dificuldade) IN (
+             SELECT seed, dificuldade FROM tempos WHERE perfil_id = $1 AND estado = 'valido'
+           )
+           ORDER BY t.seed, t.dificuldade, t.tempo, t.criado_em
+         ) lideres WHERE perfil_id = $1`,
+        [perfilId],
+      ),
+      this.pool.query<LinhaDeRating & { temporada: string }>(
+        `SELECT r.temporada, ${COLUNAS_DO_RATING} FROM ratings r WHERE r.perfil_id = $1 ORDER BY r.temporada DESC`,
+        [perfilId],
+      ),
+    ])
+    let velocidadeMaxima = 0
+    let batidas = 0
+    for (const linha of somas.rows) {
+      porModo[linha.modo] = {
+        corridas: Number(linha.corridas),
+        vitorias: Number(linha.vitorias),
+        podios: Number(linha.podios),
+        chegadas: Number(linha.chegadas),
+        abandonos: Number(linha.abandonos),
+        somaDasPosicoes: Number(linha.soma_das_posicoes),
+      }
+      velocidadeMaxima = Math.max(velocidadeMaxima, Number(linha.velocidade_maxima))
+      batidas += Number(linha.batidas)
+    }
+    for (const linha of porMedalha.rows) medalhas[linha.medalha] = Number(linha.quantas)
+    return {
+      porModo,
+      velocidadeMaxima,
+      batidas,
+      carroFavorito: favorito.rows[0] ? { carro: favorito.rows[0].carro, corridas: Number(favorito.rows[0].corridas) } : null,
+      recentes: ultimas.rows.map(paraParticipacao),
+      contrarrelogio: {
+        voltas: Number(voltas.rows[0]?.voltas ?? 0),
+        pistas: Number(voltas.rows[0]?.pistas ?? 0),
+        medalhas,
+        lideradas: Number(lideradas.rows[0]?.quantas ?? 0),
+      },
+      temporadas: temporadas.rows.map((linha) => ({ temporada: linha.temporada, estado: paraEstado(linha) })),
+    }
+  }
+
   async fechar() {
     await this.pool.end()
   }
+}
+
+/** O código do Postgres para a violação de um índice único. */
+const VIOLACAO_DE_UNICIDADE = '23505'
+
+type LinhaDeParticipacao = {
+  perfil_id: string
+  sala: string
+  largada: Date
+  modo: ModoDaCorrida
+  seed: string
+  dificuldade: string
+  pilotos: number
+  posicao: number
+  desfecho: Desfecho
+  tempo: number | null
+  velocidade_maxima: number
+  batidas: number
+  carro: string
+  delta_pl: number | null
+}
+
+function paraParticipacao(linha: LinhaDeParticipacao): Participacao {
+  return {
+    perfilId: linha.perfil_id,
+    sala: linha.sala,
+    largada: linha.largada.getTime(),
+    modo: linha.modo,
+    seed: Number(linha.seed),
+    dificuldade: toDifficulty(linha.dificuldade),
+    pilotos: linha.pilotos,
+    posicao: linha.posicao,
+    desfecho: linha.desfecho,
+    tempo: linha.tempo === null ? null : Number(linha.tempo),
+    velocidadeMaxima: Number(linha.velocidade_maxima),
+    batidas: linha.batidas,
+    carro: linha.carro,
+    deltaPl: linha.delta_pl,
+  }
+}
+
+function resumoVazio(): ResumoDoModo {
+  return { corridas: 0, vitorias: 0, podios: 0, chegadas: 0, abandonos: 0, somaDasPosicoes: 0 }
+}
+
+function medalhasVazias() {
+  return Object.fromEntries(MEDALHAS.map((medalha) => [medalha, 0])) as Record<Medalha, number>
 }
 
 /** Um identificador que não é UUID nem chega ao banco: o Postgres recusaria com erro. */

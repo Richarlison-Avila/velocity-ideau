@@ -54,7 +54,8 @@ export async function buscarCopa(socket: Socket): Promise<SituacaoDaCopa | null>
   return resposta.ok ? (resposta.copa as SituacaoDaCopa) : null
 }
 
-export async function inscreverNaCopa(socket: Socket, piloto: { playerId: string; nome: string; carro: string }) {
+/** Inscreve na copa com o carro escolhido. O nome é o da conta: o servidor já sabe. */
+export async function inscreverNaCopa(socket: Socket, piloto: { playerId: string; carro: string }) {
   const resposta = await perguntar(socket, 'copa:inscrever', piloto)
   return resposta.ok ? { ok: true as const } : { ok: false as const, motivo: resposta.error ?? 'Não foi possível se inscrever.' }
 }

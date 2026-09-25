@@ -1,75 +1,58 @@
 import type { Socket } from 'socket.io-client'
+import type { Medalha } from '../game/contrarrelogio'
+import type { PainelRanqueado, Tier } from './ranqueada'
 
 /**
- * O perfil do piloto, guardado no aparelho.
+ * O perfil do piloto no servidor do jogo.
  *
- * Não há cadastro: na primeira conexão o servidor cria o perfil com o nome do
- * piloto e devolve um segredo, que fica aqui. Nas visitas seguintes o aparelho
- * entra com ele. O `playerId` da sala continua por aba, como sempre — é o que
- * deixa testar vários pilotos em várias abas —; o perfil é um só por aparelho,
- * e é ele que tem tempo no quadro e ponto na ranqueada.
+ * Quem entra numa conta manda o token da sessão pelo socket, e o servidor liga
+ * a conexão ao perfil — o mesmo em qualquer aparelho. Convidado não tem
+ * perfil: corre online e treina, mas não aparece nos quadros nem na
+ * ranqueada. O `playerId` da sala continua por aba, como sempre: é o que
+ * deixa testar vários pilotos em várias abas.
  */
 
-export type PerfilGuardado = { id: string; segredo: string }
 export type PerfilPublico = { id: string; apelido: string }
 
-const CHAVE = 'corrida-perfil'
+export type ModoDaCorrida = 'casual' | 'ranqueada' | 'copa'
 
-/** Quanto esperar o servidor responder antes de seguir sem perfil. */
+/** O perfil com as estatísticas, como o servidor o monta. */
+export type PerfilDoPiloto = {
+  id: string
+  apelido: string
+  desde: number
+  online: {
+    corridas: number
+    vitorias: number
+    podios: number
+    abandonos: number
+    aproveitamento: number | null
+    posicaoMedia: number | null
+    velocidadeMaxima: number
+    batidas: number
+  }
+  porModo: Record<ModoDaCorrida, { corridas: number; vitorias: number; podios: number }>
+  kmRodados: number
+  ranqueada: PainelRanqueado
+  temporadas: Array<{ temporada: string; pl: number; divisao: string; tier: Tier; pico: number; corridas: number; podios: number }>
+  mundial: { tempo: number; posicao: number; dispositivo: 'teclado' | 'toque' | 'desconhecido' } | null
+  contrarrelogio: { voltas: number; pistas: number; medalhas: Record<Medalha, number>; lideradas: number }
+  copa: { ouro: number; prata: number; bronze: number }
+  carroFavorito: { carro: string; corridas: number } | null
+  recentes: Array<{
+    modo: ModoDaCorrida
+    instante: number
+    posicao: number
+    pilotos: number
+    desfecho: 'chegou' | 'naoTerminou' | 'abandonou'
+    tempo: number | null
+    carro: string
+    deltaPl: number | null
+  }>
+}
+
+/** Quanto esperar o servidor responder antes de seguir sem ele. */
 const ESPERA_MS = 4_000
-
-type Armazenamento = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
-
-function armazenamento(): Armazenamento | null {
-  try {
-    return localStorage
-  } catch {
-    return null
-  }
-}
-
-export function lerPerfilGuardado(guardado: Armazenamento | null = armazenamento()): PerfilGuardado | null {
-  try {
-    const bruto = guardado?.getItem(CHAVE)
-    if (!bruto) return null
-    const dados = JSON.parse(bruto) as Partial<PerfilGuardado>
-    return typeof dados.id === 'string' && typeof dados.segredo === 'string' ? { id: dados.id, segredo: dados.segredo } : null
-  } catch {
-    return null
-  }
-}
-
-export function guardarPerfil(perfil: PerfilGuardado, guardado: Armazenamento | null = armazenamento()) {
-  try {
-    guardado?.setItem(CHAVE, JSON.stringify(perfil))
-  } catch {
-    // Sem armazenamento o perfil vale só até fechar a página.
-  }
-}
-
-export function esquecerPerfil(guardado: Armazenamento | null = armazenamento()) {
-  try {
-    guardado?.removeItem(CHAVE)
-  } catch {
-    // Nada a fazer.
-  }
-}
-
-/**
- * Código de recuperação: o par inteiro, para levar o perfil a outro aparelho.
- *
- * Quem tem o código tem o perfil — a tela avisa isso ao mostrá-lo.
- */
-export function codigoDeRecuperacao(perfil: PerfilGuardado) {
-  return `${perfil.id}.${perfil.segredo}`
-}
-
-export function perfilDoCodigo(codigo: string): PerfilGuardado | null {
-  const limpo = codigo.trim()
-  const ponto = limpo.indexOf('.')
-  if (ponto <= 0 || ponto === limpo.length - 1) return null
-  return { id: limpo.slice(0, ponto), segredo: limpo.slice(ponto + 1) }
-}
 
 type Resposta = { ok: boolean; error?: string } & Record<string, unknown>
 
@@ -85,21 +68,32 @@ export function perguntar(socket: Socket, evento: string, dados?: unknown, esper
 }
 
 /**
- * Entra no perfil guardado ou cria um novo, com o apelido dado.
- *
- * Um perfil guardado que o servidor não conhece mais — o banco foi zerado, ou
- * era um servidor sem banco que reiniciou — é trocado por um novo.
+ * Liga a conexão à conta: o servidor confere o token e devolve o perfil.
+ * `recusada` separa a sessão que não vale mais do servidor que não respondeu.
  */
-export async function entrarNoPerfil(socket: Socket, apelido: string): Promise<PerfilPublico | null> {
-  const guardado = lerPerfilGuardado()
-  if (guardado) {
-    const entrada = await perguntar(socket, 'perfil:entrar', guardado)
-    if (entrada.ok && entrada.perfil) return entrada.perfil as PerfilPublico
-    if (entrada.error === 'O servidor não respondeu.') return null
-  }
-  const criado = await perguntar(socket, 'perfil:criar', { apelido })
-  if (!criado.ok || !criado.perfil || typeof criado.segredo !== 'string') return null
-  const perfil = criado.perfil as PerfilPublico
-  guardarPerfil({ id: perfil.id, segredo: criado.segredo })
-  return perfil
+export async function entrarNaConta(
+  socket: Socket,
+  token: string,
+): Promise<{ perfil: PerfilPublico } | { erro: string; recusada: boolean }> {
+  const resposta = await perguntar(socket, 'conta:entrar', { token }, 8_000)
+  if (resposta.ok && resposta.perfil) return { perfil: resposta.perfil as PerfilPublico }
+  return { erro: resposta.error ?? 'Não foi possível entrar na conta.', recusada: resposta.codigo === 'sessao-invalida' }
+}
+
+/** A conexão volta a ser de convidado. */
+export async function sairDaConta(socket: Socket) {
+  await perguntar(socket, 'conta:sair')
+}
+
+/** Se o nome de piloto está livre, e por que não, quando não está. Null sem servidor. */
+export async function apelidoLivre(socket: Socket, apelido: string): Promise<{ livre: boolean; motivo?: string } | null> {
+  const resposta = await perguntar(socket, 'conta:apelido-livre', { apelido })
+  return resposta.ok ? { livre: Boolean(resposta.livre), motivo: resposta.motivo as string | undefined } : null
+}
+
+/** O perfil com as estatísticas: o próprio, sem id, ou o de outro piloto. */
+export async function verPerfil(socket: Socket, id?: string): Promise<{ perfil: PerfilDoPiloto } | { erro: string }> {
+  const resposta = await perguntar(socket, 'perfil:ver', id ? { id } : undefined, 8_000)
+  if (resposta.ok && resposta.perfil) return { perfil: resposta.perfil as PerfilDoPiloto }
+  return { erro: resposta.error ?? 'Não foi possível ler o perfil.' }
 }

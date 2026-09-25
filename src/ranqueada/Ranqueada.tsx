@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { codigoDeRecuperacao, lerPerfilGuardado, type PerfilPublico } from '../multiplayer/perfil'
+import type { PerfilPublico } from '../multiplayer/perfil'
 import { HORARIO_RANQUEADO, NOME_DO_TIER, type SituacaoDaRanqueada } from '../multiplayer/ranqueada'
 
 type Props = {
@@ -12,10 +12,15 @@ type Props = {
   /** Desde quando este piloto está na fila. */
   naFilaDesde: number | null
   aviso: string
+  /** A sessão da conta existe, mas o servidor ainda não a conferiu. */
+  entrandoNaConta: boolean
   onEntrar: () => void
   onSair: () => void
   onVoltar: () => void
-  onRestaurarPerfil: (codigo: string) => void
+  onVerPerfil: () => void
+  onVerRanking: () => void
+  /** Para o convidado: abre a tela de entrar na conta. */
+  onEntrarNaConta: () => void
 }
 
 /** PL da divisão atual, de 0 a 100, a partir do nome "Ouro II · 45 PL". */
@@ -40,14 +45,15 @@ export default function Ranqueada({
   tamanhoDaFila,
   naFilaDesde,
   aviso,
+  entrandoNaConta,
   onEntrar,
   onSair,
   onVoltar,
-  onRestaurarPerfil,
+  onVerPerfil,
+  onVerRanking,
+  onEntrarNaConta,
 }: Props) {
   const [agora, setAgora] = useState(Date.now)
-  const [mostrarCodigo, setMostrarCodigo] = useState(false)
-  const [codigoNovo, setCodigoNovo] = useState('')
 
   useEffect(() => {
     const relogio = window.setInterval(() => setAgora(Date.now()), 1_000)
@@ -58,7 +64,6 @@ export default function Ranqueada({
   const esperaAte = situacao?.esperaAte ?? null
   const bloqueado = esperaAte !== null && esperaAte > agora
   const emColocacao = painel !== null && painel.colocacao > 0
-  const guardado = lerPerfilGuardado()
 
   return (
     <main className="screen ranked-screen">
@@ -68,18 +73,29 @@ export default function Ranqueada({
           <div>
             <p className="eyebrow">FILA PÚBLICA · TEMPORADA {painel?.temporada ?? '—'}</p>
             <h1>RANQUEADA</h1>
-            <p className="ranked-pilot">{perfil?.apelido ?? 'SEM PERFIL'}</p>
+            <p className="ranked-pilot">{perfil?.apelido ?? (entrandoNaConta ? 'ENTRANDO NA CONTA…' : 'CONVIDADO')}</p>
           </div>
           {painel && (
             <div className={`tier-badge ${emColocacao ? 'colocacao' : painel.tier}`}>
               <span>{emColocacao ? 'EM COLOCAÇÃO' : NOME_DO_TIER[painel.tier]}</span>
-              <strong>{emColocacao ? `${5 - painel.colocacao}/5` : painel.divisao.replace(/ · .*/, '')}</strong>
+              <strong>{emColocacao ? `${painel.colocacaoTotal - painel.colocacao}/${painel.colocacaoTotal}` : painel.divisao.replace(/ · .*/, '')}</strong>
             </div>
           )}
         </header>
 
         {!conectado && <p className="form-notice">PROCURANDO O SERVIDOR DA PARTIDA…</p>}
-        {conectado && !perfil && <p className="form-notice">CRIANDO O SEU PERFIL…</p>}
+        {conectado && !perfil && entrandoNaConta && <p className="form-notice">ENTRANDO NA SUA CONTA…</p>}
+        {!perfil && !entrandoNaConta && (
+          <div className="ranked-convidado">
+            <p className="ranked-note">
+              A ranqueada é de quem tem conta: o nome é único, e os pontos de liga, o tier e o histórico ficam com você em qualquer
+              aparelho.
+            </p>
+            <button className="primary-button" onClick={onEntrarNaConta}>
+              ENTRAR OU CRIAR CONTA <span>↗</span>
+            </button>
+          </div>
+        )}
 
         {painel && (
           <>
@@ -118,14 +134,19 @@ export default function Ranqueada({
               <button className="text-button" onClick={onSair}>SAIR DA FILA</button>
             </>
           ) : (
-            <button className="primary-button" disabled={!perfil || !conectado || bloqueado} onClick={onEntrar}>
-              {bloqueado ? `VOLTA EM ${Math.ceil((esperaAte! - agora) / 1000)} S` : 'ENTRAR NA FILA'} <span>↗</span>
-            </button>
+            perfil && (
+              <button className="primary-button" disabled={!conectado || bloqueado} onClick={onEntrar}>
+                {bloqueado ? `VOLTA EM ${Math.ceil((esperaAte! - agora) / 1000)} S` : 'ENTRAR NA FILA'} <span>↗</span>
+              </button>
+            )
           )}
           {aviso && <p className="form-error">{aviso}</p>}
           <p className="ranked-note">
             HORÁRIO RANQUEADO: {HORARIO_RANQUEADO}. A fila espera até 20 s para juntar até seis pilotos de nível parecido;
             a largada é automática, no nível difícil, numa das pistas da semana.
+            {situacao && situacao.online > 0 && (
+              <b className="ranked-online"> {situacao.online} {situacao.online === 1 ? 'APARELHO CONECTADO' : 'APARELHOS CONECTADOS'} AGORA.</b>
+            )}
           </p>
         </div>
 
@@ -144,22 +165,16 @@ export default function Ranqueada({
           </section>
         )}
 
-        <section className="ranked-profile">
-          <h2>SEU PERFIL</h2>
-          <p className="ranked-note">
-            O perfil mora neste aparelho. Para levá-lo a outro, use o código de recuperação — quem tem o código tem o perfil.
-          </p>
-          {guardado && (
-            <button className="text-button" onClick={() => setMostrarCodigo((atual) => !atual)}>
-              {mostrarCodigo ? 'ESCONDER O CÓDIGO' : 'MOSTRAR O CÓDIGO DE RECUPERAÇÃO'}
+        <div className="ranked-links">
+          {perfil && (
+            <button className="text-button" onClick={onVerPerfil}>
+              SEU PERFIL E ESTATÍSTICAS
             </button>
           )}
-          {mostrarCodigo && guardado && <code className="ranked-code">{codigoDeRecuperacao(guardado)}</code>}
-          <div className="join-control ranked-restore">
-            <input value={codigoNovo} onChange={(event) => setCodigoNovo(event.target.value)} placeholder="Código de outro aparelho" aria-label="Código de recuperação" />
-            <button onClick={() => codigoNovo.trim() && onRestaurarPerfil(codigoNovo)} disabled={!codigoNovo.trim()}>USAR <span>↗</span></button>
-          </div>
-        </section>
+          <button className="text-button" onClick={onVerRanking}>
+            ESCADA COMPLETA NO RANKING MUNDIAL
+          </button>
+        </div>
 
         <button className="text-button" onClick={onVoltar}>VOLTAR AO PADDOCK</button>
       </section>

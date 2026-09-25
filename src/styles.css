@@ -977,3 +977,144 @@ button { cursor: pointer; }
   .radio-no-ar { animation: radio-some 4.5s steps(1, end) forwards; }
   @keyframes radio-some { 0%, 99% { opacity: 1; } 100% { opacity: 0; } }
 }
+
+/* Conta no cabeçalho do menu: o nome leva ao perfil; o convidado vê onde entrar. */
+.conta-chip { display: flex; align-items: center; gap: 9px; min-height: 42px; padding: 6px 12px; border: 1px solid #303944; background: rgba(7,11,17,.7); color: #cfd6dd; text-align: left; font: 800 12px 'Barlow Condensed', sans-serif; letter-spacing: .1em; text-transform: uppercase; }
+.conta-chip span { display: grid; gap: 1px; max-width: 170px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.conta-chip small { color: #6f7882; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.conta-chip i { width: 8px; height: 8px; flex: none; border-radius: 50%; background: #45e7ad; box-shadow: 0 0 9px #45e7ad; }
+.conta-chip.on { border-color: rgba(69,231,173,.35); color: #fff; }
+button.conta-chip:hover { border-color: var(--orange); color: #fff; }
+.identity-conta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin: 0; color: #7c8690; font: 700 10px 'Barlow Condensed', sans-serif; letter-spacing: .18em; }
+.identity-conta b { color: #fff; font-size: 18px; letter-spacing: .06em; }
+.identity-conta .text-button { margin: 0 0 0 auto; color: #ffc630; }
+.daily-note { margin: 8px 0 0; color: #6f7882; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .14em; }
+.daily-mode .daily-note { grid-column: 1; }
+.text-button.inline { display: inline; margin: 0; padding: 0; color: #ffc630; }
+
+/* Ranking mundial no menu: verde-água, a cor da medalha de piloto — o topo. */
+.world-mode { grid-column: 1 / -1; border-color: rgba(69,231,173,.28); background: linear-gradient(145deg, rgba(69,231,173,.07), rgba(7,11,17,.72) 55%); }
+.world-mode .mode-heading > span { border-color: rgba(69,231,173,.5); color: #45e7ad; }
+.world-mode .mode-copy { min-height: 0; margin: 10px 0 0; }
+.world-board li.me, .ranking-quadro li.me { border-color: rgba(69,231,173,.45); background: rgba(69,231,173,.07); }
+.world-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.world-actions .solo-button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* A porta de entrada: entrar, criar a conta ou correr como convidado. */
+.entrada-screen, .perfil-screen, .ranking-screen { display: grid; place-items: center; padding: 24px 16px; }
+.entrada-card { position: relative; z-index: 2; display: grid; gap: 14px; width: min(460px, 100%); padding: clamp(22px, 5vw, 38px); border: 1px solid rgba(255,255,255,.12); border-top: 3px solid var(--orange); background: rgba(10,15,22,.92); box-shadow: 0 30px 100px rgba(0,0,0,.45); backdrop-filter: blur(16px); }
+.entrada-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.entrada-header .text-button { margin: 0; }
+.entrada-abas { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #2a323c; }
+.entrada-abas button { min-height: 44px; border: 0; background: rgba(7,11,17,.84); color: #7c8690; font: 800 12px 'Barlow Condensed', sans-serif; letter-spacing: .14em; }
+.entrada-abas button + button { border-left: 1px solid #2a323c; }
+.entrada-abas button.on { background: rgba(255,75,43,.14); color: #fff; box-shadow: inset 0 -2px 0 var(--orange); }
+.entrada-form { display: grid; gap: 13px; }
+.entrada-form .eyebrow { margin: 4px 0 0; }
+.entrada-form .primary-button { width: 100%; margin-top: 4px; }
+.entrada-form .text-button { margin: 2px auto 0; }
+.entrada-checagem { display: block; min-height: 14px; margin-top: 6px; color: #6f7882; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .12em; text-transform: uppercase; }
+.entrada-checagem.livre { color: #45e7ad; }
+.entrada-checagem.ocupado { color: #ff826c; }
+.entrada-recado { letter-spacing: .06em; line-height: 1.4; }
+.entrada-convidado { display: grid; gap: 8px; }
+.entrada-convidado .join-divider { margin: 2px 0 0; }
+.entrada-convidado .solo-button { margin-top: 0; padding-block: 14px; }
+.entrada-nota { margin: 0; color: #7c8690; font: 600 12px/1.5 'Barlow Condensed', sans-serif; letter-spacing: .04em; }
+.entrada-nota b { color: #fff; }
+.entrada-confirmar { display: grid; gap: 12px; }
+.entrada-confirmar h1 { margin: 0; font: 900 italic 38px/.95 'Barlow Condensed', sans-serif; }
+.entrada-confirmar .eyebrow { margin: 0; }
+
+/* Perfil do piloto: números grandes, em blocos, com a conta no fim. */
+.perfil-card, .ranking-card { position: relative; z-index: 2; display: grid; gap: 16px; width: min(760px, 100%); padding: clamp(22px, 5vw, 44px); border: 1px solid rgba(255,255,255,.12); background: rgba(12,17,24,.9); box-shadow: 0 30px 100px rgba(0,0,0,.45); }
+.perfil-header, .ranking-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.perfil-header h1, .ranking-header h1 { margin: 0; overflow-wrap: anywhere; font: 900 italic clamp(40px, 8vw, 66px)/.92 'Barlow Condensed', sans-serif; text-transform: uppercase; }
+.perfil-header .eyebrow, .ranking-header .eyebrow { margin-bottom: 8px; }
+.ranking-header .text-button { margin: 4px 0 0; }
+.perfil-desde { margin: 8px 0 0; color: #7c8690; font: 700 10px 'Barlow Condensed', sans-serif; letter-spacing: .18em; }
+.perfil-bloco { display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.08); }
+.perfil-bloco h2 { margin: 0; color: #747e88; font: 700 10px 'Barlow Condensed', sans-serif; letter-spacing: .18em; }
+.perfil-numeros { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.08); }
+.perfil-numeros div { padding: 11px 12px; background: rgba(9,13,19,.96); }
+.perfil-numeros dt { color: #6f7882; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.perfil-numeros dd { margin: 4px 0 0; overflow: hidden; color: #fff; font: 800 22px 'Barlow Condensed', sans-serif; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.perfil-numeros dd small { color: #7c8690; font-size: 10px; letter-spacing: .1em; }
+.tier-texto { color: var(--tier) !important; font-size: 16px !important; }
+.perfil-modos { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; color: #7c8690; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.perfil-modos b { margin-left: 3px; color: #dce1e4; font-size: 12px; }
+.perfil-modos em { color: #45e7ad; font-style: normal; }
+.perfil-temporadas { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.perfil-temporadas li { display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 10px; border-left: 3px solid var(--tier, #5d666f); background: rgba(7,11,17,.6); font: 600 12px 'Barlow Condensed', sans-serif; }
+.perfil-temporadas b { color: var(--tier, #cfd6dd); }
+.perfil-temporadas i { color: #7c8690; font-style: normal; font-size: 10px; letter-spacing: .08em; }
+.perfil-mundial { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 12px 14px; border: 1px solid rgba(69,231,173,.3); background: linear-gradient(120deg, rgba(69,231,173,.08), rgba(7,11,17,.7)); }
+.perfil-mundial span { display: block; color: #45e7ad; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.perfil-mundial strong { display: block; margin-top: 3px; font: 900 italic 28px/1 'Barlow Condensed', sans-serif; font-variant-numeric: tabular-nums; }
+.perfil-mundial strong em { margin-left: 8px; color: #cfd6dd; font: 800 12px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .12em; }
+.perfil-mundial .sem-tempo { color: #7c8690; font-size: 18px; }
+.perfil-mundial .solo-button { width: auto; margin: 0; }
+.perfil-medalhas li { opacity: .55; }
+.perfil-medalhas li.on { opacity: 1; }
+.perfil-favorito { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 14px; align-items: center; }
+.perfil-favorito img { width: 74px; height: 74px; object-fit: contain; filter: drop-shadow(0 8px 10px rgba(0,0,0,.5)); }
+.perfil-favorito span { display: block; color: #6f7882; font: 700 8px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.perfil-favorito strong { display: block; font: 800 20px/1 'Barlow Condensed', sans-serif; text-transform: uppercase; }
+.perfil-favorito em { display: block; margin-top: 3px; color: #8d959d; font: 700 10px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .12em; text-transform: uppercase; }
+.perfil-trofeus { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0; color: #7c8690; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.perfil-trofeus b { font: 800 14px 'Barlow Condensed', sans-serif; }
+.perfil-trofeus em { color: #5d666f; font-style: normal; }
+.perfil-recentes { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.perfil-recentes li { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 7px 10px; border: 1px solid rgba(255,255,255,.06); background: rgba(7,11,17,.6); font: 600 12px 'Barlow Condensed', sans-serif; }
+.perfil-recentes li.vitoria { border-color: rgba(255,198,48,.4); }
+.perfil-recentes b { color: #ffc630; font: 900 italic 18px 'Barlow Condensed', sans-serif; }
+.perfil-recentes b small { color: #6f7882; font-size: 11px; font-style: normal; }
+.perfil-recentes span { overflow: hidden; letter-spacing: .08em; text-overflow: ellipsis; white-space: nowrap; }
+.perfil-recentes span small { display: block; color: #6f7882; font-size: 10px; letter-spacing: .06em; }
+.perfil-recentes i { display: grid; justify-items: end; font-style: normal; font-variant-numeric: tabular-nums; letter-spacing: .06em; }
+.perfil-recentes em { font-size: 10px; font-style: normal; letter-spacing: .1em; }
+.perfil-recentes em.ganho { color: #45e7ad; }
+.perfil-recentes em.perda { color: #ff8f7c; }
+.perfil-conta { gap: 8px; }
+.perfil-email { margin: 0; color: #cfd6dd; font: 600 14px 'Barlow Condensed', sans-serif; letter-spacing: .06em; overflow-wrap: anywhere; }
+.perfil-senha { display: grid; gap: 10px; }
+.perfil-conta .text-button { margin: 0; text-align: left; }
+.perfil-sair { color: #ff826c !important; }
+
+/* Ranking mundial: abas, medalhas do circuito e o quadro de cada um. */
+.ranking-abas { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ranking-sobre { margin: 0; color: #7c8690; font: 700 9px 'Barlow Condensed', sans-serif; letter-spacing: .16em; }
+.ranking-quadro { margin: 0; }
+.ranking-quadro li { min-height: 34px; }
+.ranking-nome { min-width: 0; overflow: hidden; padding: 0; border: 0; background: none; color: #f3f4ee; font: 600 13px 'Barlow Condensed', sans-serif; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.ranking-nome:hover, .ranking-nome:focus-visible { color: #ffc630; text-decoration: underline; outline: none; }
+.ranking-escada { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.ranking-escada li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 10px; border-left: 3px solid var(--tier); background: rgba(7,11,17,.6); font: 600 13px 'Barlow Condensed', sans-serif; }
+.ranking-escada li.me { background: color-mix(in srgb, var(--tier) 12%, rgba(7,11,17,.6)); }
+.ranking-escada b { color: var(--tier); font-weight: 900; }
+.ranking-escada em { margin-left: 8px; padding: 1px 6px; background: var(--tier-mestre); color: #16091f; font: 800 9px 'Barlow Condensed', sans-serif; font-style: normal; letter-spacing: .12em; }
+.ranking-escada i { color: #cfd6dd; font-style: normal; font-variant-numeric: tabular-nums; }
+.ranking-vazio { padding: 14px; border: 1px dashed #2a323c; text-align: center; }
+.ranking-card .primary-button { width: 100%; }
+
+/* Ranqueada: o convidado vê o que ganha com a conta; o piloto, os atalhos. */
+.ranked-convidado { display: grid; gap: 12px; padding: 14px; border: 1px solid rgba(200,107,255,.35); background: rgba(200,107,255,.06); }
+.ranked-convidado .primary-button { width: 100%; }
+.ranked-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 22px; }
+.ranked-links .text-button { margin: 0; color: #ffc630; }
+.ranked-online { color: #45e7ad; font-weight: 800; }
+
+@media (max-width: 600px) {
+  .conta-chip { min-height: 38px; padding: 5px 9px; font-size: 11px; }
+  .conta-chip span { max-width: 118px; }
+  .world-actions { grid-template-columns: 1fr; }
+  .perfil-header, .ranking-header { flex-direction: column; }
+  .ranking-header .text-button { position: absolute; top: 18px; right: 16px; }
+  .ranking-header .eyebrow { padding-right: 64px; }
+  .perfil-numeros { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .perfil-numeros dd { font-size: 19px; }
+  .perfil-temporadas li { grid-template-columns: 50px minmax(0, 1fr); }
+  .perfil-temporadas i { grid-column: 2; }
+  .perfil-mundial .solo-button { width: 100%; }
+  .ranking-abas button { font-size: 10px; letter-spacing: .08em; }
+}

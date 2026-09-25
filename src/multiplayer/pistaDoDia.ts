@@ -32,8 +32,16 @@ export type VereditoDaVolta = {
   copa?: { posicao: number }
 }
 
-export async function buscarQuadro(socket: Socket): Promise<QuadroDoDia | null> {
-  const resposta = await perguntar(socket, 'tt:quadro')
+/**
+ * Qual prova do contrarrelógio: sem nada, a Pista do Dia; com `desafio`, um
+ * desafio da semana; com `circuito: 'oficial'`, o Circuito Oficial do ranking
+ * mundial.
+ */
+export type PedidoDeProva = { desafio?: string; circuito?: 'oficial' }
+
+/** O quadro de uma prova — o de hoje, sem pedido —, com até `limite` linhas. */
+export async function buscarQuadro(socket: Socket, pedido: PedidoDeProva = {}, limite = 10): Promise<QuadroDoDia | null> {
+  const resposta = await perguntar(socket, 'tt:quadro', { ...pedido, limite })
   return resposta.ok ? (resposta.quadro as QuadroDoDia) : null
 }
 
@@ -42,9 +50,9 @@ export async function buscarQuadro(socket: Socket): Promise<QuadroDoDia | null> 
  * resposta rápida, a tentativa segue só no aparelho: o recorde pessoal vale,
  * o quadro não.
  */
-export async function abrirTentativa(socket: Socket, desafio?: string): Promise<{ tentativa: string; seed: number } | null> {
+export async function abrirTentativa(socket: Socket, pedido: PedidoDeProva = {}): Promise<{ tentativa: string; seed: number } | null> {
   if (!socket.connected) return null
-  const resposta = await perguntar(socket, 'tt:iniciar', desafio ? { desafio } : undefined, 1_500)
+  const resposta = await perguntar(socket, 'tt:iniciar', pedido, 1_500)
   if (!resposta.ok || typeof resposta.tentativa !== 'string' || typeof resposta.seed !== 'number') return null
   return { tentativa: resposta.tentativa, seed: resposta.seed }
 }

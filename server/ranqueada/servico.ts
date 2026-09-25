@@ -47,6 +47,8 @@ export type PainelRanqueado = {
   tier: Tier
   divisao: string
   colocacao: number
+  /** Quantas corridas a colocação tem nesta temporada: 5 na primeira, 3 depois de um reset. */
+  colocacaoTotal: number
   corridas: number
   pico: number
   podios: number
@@ -68,6 +70,7 @@ export type ResultadoRanqueado = {
   plDepois: number
   divisao: string
   colocacao: number
+  colocacaoTotal: number
   mudouDeTier: 'subiu' | 'caiu' | null
   subindo: boolean
   /** Os PL foram reduzidos porque o mesmo grupo correu junto vezes demais. */
@@ -135,6 +138,8 @@ export class Ranqueada {
       tier: divisaoDe(estado.pl).tier,
       divisao: nomeDaDivisao(estado.pl),
       colocacao: estado.colocacao,
+      // Na colocação, toda corrida da temporada foi de colocação.
+      colocacaoTotal: estado.corridas + estado.colocacao,
       corridas: estado.corridas,
       pico: estado.pico,
       podios: estado.podios,
@@ -357,6 +362,7 @@ export class Ranqueada {
       plDepois: atualizacao.depois.pl,
       divisao: nomeDaDivisao(atualizacao.depois.pl),
       colocacao: atualizacao.depois.colocacao,
+      colocacaoTotal: atualizacao.antes.corridas + atualizacao.antes.colocacao,
       mudouDeTier: atualizacao.mudouDeTier,
       subindo: atualizacao.depois.colocacao === 0 && atualizacao.multiplicador > INDICADOR_DE_SUBIDA,
       reduzido,

@@ -3,14 +3,17 @@ import { createServer, type Server as HttpServer } from 'node:http'
 import { resolve } from 'node:path'
 import express from 'express'
 import { Server, type Socket } from 'socket.io'
-import { DIFICULDADE_OFICIAL } from '../src/game/contrarrelogio.js'
+import { limparApelido, problemaNoApelido } from '../src/conta/apelido.js'
+import { CIRCUITO_OFICIAL, DIFICULDADE_OFICIAL } from '../src/game/contrarrelogio.js'
 import { toCarId } from '../src/game/cars.js'
 import { duracaoDaGravacao, gravacaoValida, ReproducaoDeVolta, type GravacaoDeVolta } from '../src/game/gravador.js'
 import { TRACK_LENGTH } from '../src/game/track.js'
 import { PistaDoDia } from './contrarrelogio.js'
 import { Copa, INTERVALO_ENTRE_RODADAS_MS, type OpcoesDaCopa, type ResultadoDaRodada } from './copa/copa.js'
+import type { VerificadorDeContas } from './contas.js'
 import { RepositorioEmMemoria, type Repositorio } from './dados/index.js'
-import { apelidoLimpo, hashDoSegredo, LimiteDePerfis, novoSegredo } from './perfis.js'
+import type { ModoDaCorrida, Participacao } from './dados/tipos.js'
+import { CORRIDAS_RECENTES, montarPerfil } from './estatisticas.js'
 import { PoolDeSementes } from './ranqueada/pool.js'
 import { Ranqueada } from './ranqueada/servico.js'
 import { servirSite } from './estaticos.js'
@@ -46,6 +49,11 @@ export type GameServerOptions = {
   esperaComFantasmas?: number
   /** Horário e ritmo da Copa do Dia. Os testes a abrem agora, com rodadas curtas. */
   copa?: OpcoesDaCopa & { intervaloMs?: number }
+  /**
+   * Quem confere o token das contas: o do Supabase Auth em produção, o de
+   * teste nos testes. Sem ele, ninguém entra em conta — todos são convidados.
+   */
+  contas?: VerificadorDeContas
 }
 
 export type GameServer = {
@@ -66,8 +74,22 @@ type Ack = (response: { ok: boolean; room?: PublicRoom | null; error?: string })
 /** Resposta genérica dos eventos de perfil e da Pista do Dia. */
 type Resposta = (response: { ok: boolean; error?: string } & Record<string, unknown>) => void
 
-/** O que o servidor sabe de cada conexão: quem ela é na sala e qual perfil a abriu. */
-type DadosDoSocket = { playerId?: string; perfilId?: string; espectadorDe?: string }
+/**
+ * O que o servidor sabe de cada conexão: quem ela é na sala e, se entrou numa
+ * conta, o perfil e o apelido dela. O apelido vale no lugar do nome que o
+ * aparelho mandar: na conta, o nome é o do cadastro.
+ */
+type DadosDoSocket = { playerId?: string; perfilId?: string; apelido?: string; espectadorDe?: string }
+
+/** Quantas linhas um quadro ou a escada entrega de uma vez. */
+const LINHAS_DO_RANKING = 50
+
+/** O limite pedido para um quadro, entre 1 e o máximo; 10 se não vier. */
+function limiteDoQuadro(bruto: unknown) {
+  return typeof bruto === 'number' && Number.isFinite(bruto) ? Math.max(1, Math.min(LINHAS_DO_RANKING, Math.floor(bruto))) : 10
+}
+
+const DESFECHO_DA_CHEGADA = { finished: 'chegou', abandoned: 'abandonou', unfinished: 'naoTerminou' } as const
 
 /**
  * O piloto de uma mensagem precisa ser o da conexão que a enviou.
@@ -93,7 +115,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
   const rooms = new RoomStore({ countdownMs, openRooms: options.openRooms })
   const repositorio = options.repositorio ?? new RepositorioEmMemoria()
   const pistaDoDia = new PistaDoDia(repositorio, options.now)
-  const limiteDePerfis = new LimiteDePerfis()
+  const verificarConta = options.contas ?? (async () => null)
   const ranqueada = new Ranqueada(repositorio, {
     agora: options.now,
     esperaDaFila: options.esperaDaFila,
@@ -158,21 +180,71 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       clearTimeout(limite)
       limiteTimers.delete(code)
     }
+    // Quem correu com conta, lido agora: a sala pode fechar antes de a
+    // ranqueada terminar de calcular os PL.
+    const comConta = rooms.pilotosComConta(code)
     if (copa.eDaCopa(code)) {
+      guardarParticipacoes(comConta, code, outcome, 'copa')
       void copa
         .resolverRodada(code, outcome)
         .then((rodada) => rodada && anunciarRodada(rodada))
         .catch((erro: unknown) => console.error('Copa:', erro instanceof Error ? erro.message : erro))
       return
     }
-    if (!ranqueada.eRanqueada(code)) return
+    if (!ranqueada.eRanqueada(code)) {
+      guardarParticipacoes(comConta, code, outcome, 'casual')
+      return
+    }
     const seed = rooms.get(code)?.trackSeed ?? 0
     void ranqueada
       .resolver(code, outcome, seed)
       .then((resultados) => {
+        guardarParticipacoes(comConta, code, outcome, 'ranqueada', new Map(resultados.map((r) => [r.playerId, r.deltaPl])))
         if (resultados.length > 0) io.to(code).emit('ranqueada:resultados', { code, resultados })
       })
-      .catch((erro: unknown) => console.error('Ranqueada:', erro instanceof Error ? erro.message : erro))
+      .catch((erro: unknown) => {
+        guardarParticipacoes(comConta, code, outcome, 'ranqueada')
+        console.error('Ranqueada:', erro instanceof Error ? erro.message : erro)
+      })
+  }
+
+  /**
+   * Guarda a corrida nas estatísticas de quem correu com conta. Convidados e
+   * fantasmas ficam de fora; na ranqueada, cada um leva os PL que ganhou.
+   */
+  const guardarParticipacoes = (
+    comConta: ReturnType<RoomStore['pilotosComConta']>,
+    code: string,
+    outcome: RaceOutcome,
+    modo: ModoDaCorrida,
+    deltas?: ReadonlyMap<string, number>,
+  ) => {
+    if (!comConta || comConta.largada === null || comConta.pilotos.length === 0) return
+    const largada = comConta.largada
+    const participacoes: Participacao[] = []
+    outcome.entries.forEach((entrada, indice) => {
+      const piloto = comConta.pilotos.find((candidato) => candidato.playerId === entrada.playerId)
+      if (!piloto) return
+      participacoes.push({
+        perfilId: piloto.perfilId,
+        sala: code,
+        largada,
+        modo,
+        seed: comConta.seed,
+        dificuldade: comConta.dificuldade,
+        pilotos: outcome.entries.length,
+        posicao: indice + 1,
+        desfecho: DESFECHO_DA_CHEGADA[entrada.outcome],
+        tempo: entrada.outcome === 'finished' ? entrada.time : null,
+        velocidadeMaxima: Number.isFinite(entrada.topSpeed) ? Math.max(0, entrada.topSpeed) : 0,
+        batidas: Number.isFinite(entrada.collisions) ? Math.max(0, Math.round(entrada.collisions)) : 0,
+        carro: piloto.car,
+        deltaPl: deltas?.get(entrada.playerId) ?? null,
+      })
+    })
+    void repositorio
+      .registrarParticipacoes(participacoes)
+      .catch((erro: unknown) => console.error('Estatísticas:', erro instanceof Error ? erro.message : erro))
   }
 
   /**
@@ -313,7 +385,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
     ranqueada.sair(sozinho.perfilId)
     const fantasmas = escolha.voltas.map((volta, i) => ({ id: `fantasma-${i + 1}-${volta.id.slice(0, 8)}`, volta }))
     const room = rooms.criarRanqueada(
-      [{ socketId: sozinho.socketId, playerId: sozinho.playerId, nome: sozinho.nome, carro: sozinho.carro }],
+      [{ socketId: sozinho.socketId, playerId: sozinho.playerId, nome: sozinho.nome, carro: sozinho.carro, perfilId: sozinho.perfilId }],
       DIFICULDADE_OFICIAL,
       () => escolha.seed,
       fantasmas.map(({ id, volta }) => ({ id, nome: volta.apelido, carro: volta.carro })),
@@ -373,7 +445,13 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       const presentes = pilotos.filter((piloto) => io.sockets.sockets.has(piloto.socketId))
       if (presentes.length < 2) continue
       const room = rooms.criarRanqueada(
-        presentes.map((piloto) => ({ socketId: piloto.socketId, playerId: piloto.playerId, nome: piloto.nome, carro: piloto.carro })),
+        presentes.map((piloto) => ({
+          socketId: piloto.socketId,
+          playerId: piloto.playerId,
+          nome: piloto.nome,
+          carro: piloto.carro,
+          perfilId: piloto.perfilId,
+        })),
         DIFICULDADE_OFICIAL,
         () => sementesRanqueadas.sortear(),
       )
@@ -456,8 +534,9 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
 
     socket.on('room:create', (payload: { name: string; playerId: string; car?: string }, ack: Ack) => {
       try {
-        const room = rooms.create(socket.id, payload.playerId, payload.name, payload.car)
-        ;(socket.data as DadosDoSocket).playerId = payload.playerId
+        const dados = socket.data as DadosDoSocket
+        const room = rooms.create(socket.id, payload.playerId, dados.apelido ?? payload.name, payload.car, dados.perfilId ?? null)
+        dados.playerId = payload.playerId
         socket.join(room.code)
         ack({ ok: true, room })
       } catch {
@@ -467,8 +546,9 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
 
     socket.on('room:join', (payload: { code: string; name: string; playerId: string; car?: string }, ack: Ack) => {
       try {
-        const room = rooms.join(payload.code, socket.id, payload.playerId, payload.name, payload.car)
-        ;(socket.data as DadosDoSocket).playerId = payload.playerId
+        const dados = socket.data as DadosDoSocket
+        const room = rooms.join(payload.code, socket.id, payload.playerId, dados.apelido ?? payload.name, payload.car, dados.perfilId ?? null)
+        dados.playerId = payload.playerId
         // Quem assistia e desceu para o grid deixa de ser espectador.
         ;(socket.data as DadosDoSocket).espectadorDe = undefined
         socket.join(room.code)
@@ -517,8 +597,8 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
     socket.on('room:spectate', (payload: { code: string; name: string; spectatorId: string }, ack: Ack) => {
       try {
         const eraPiloto = rooms.get(payload.code)?.players.some((player) => player.id === payload.spectatorId) ?? false
-        const room = rooms.spectate(payload.code, socket.id, payload.spectatorId, payload.name)
         const dados = socket.data as DadosDoSocket
+        const room = rooms.spectate(payload.code, socket.id, payload.spectatorId, dados.apelido ?? payload.name)
         // Quem estava no grid desta sala e subiu para assistir não fala mais pelo piloto.
         if (eraPiloto && dados.playerId === payload.spectatorId) dados.playerId = undefined
         dados.espectadorDe = room.code
@@ -653,53 +733,74 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       }
     })
 
-    // Perfil leve: o servidor gera o segredo e guarda só o hash dele.
-    socket.on('perfil:criar', async (payload: { apelido?: string } | undefined, ack?: Resposta) => {
+    // Conta: o token do Supabase Auth, conferido aqui, liga a conexão ao perfil.
+    // Na primeira entrada, o perfil nasce com o apelido do cadastro.
+    socket.on('conta:entrar', async (payload: { token?: unknown } | undefined, ack?: Resposta) => {
       try {
-        if (!limiteDePerfis.permitir(socket.handshake.address)) {
-          return ack?.({ ok: false, error: 'Perfis demais criados desta rede. Tente de novo mais tarde.' })
-        }
-        const segredo = novoSegredo()
-        const perfil = await repositorio.criarPerfil(apelidoLimpo(payload?.apelido), hashDoSegredo(segredo))
-        ;(socket.data as DadosDoSocket).perfilId = perfil.id
-        ack?.({ ok: true, perfil, segredo })
-      } catch {
-        ack?.({ ok: false, error: 'Não foi possível criar o perfil.' })
-      }
-    })
-
-    socket.on('perfil:entrar', async (payload: { id?: string; segredo?: string } | undefined, ack?: Resposta) => {
-      try {
-        const id = typeof payload?.id === 'string' ? payload.id : ''
-        const segredo = typeof payload?.segredo === 'string' ? payload.segredo : ''
-        const perfil = id && segredo ? await repositorio.perfilPorCredencial(id, hashDoSegredo(segredo)) : null
-        if (!perfil) return ack?.({ ok: false, error: 'Perfil não encontrado.' })
-        ;(socket.data as DadosDoSocket).perfilId = perfil.id
+        const conta = typeof payload?.token === 'string' ? await verificarConta(payload.token) : null
+        // O código diz ao aparelho que a sessão não vale mais — e não que o servidor falhou.
+        if (!conta) return ack?.({ ok: false, error: 'Sessão inválida ou vencida. Entre de novo.', codigo: 'sessao-invalida' })
+        const perfil = await repositorio.perfilDaConta(conta.id, conta.apelido)
+        const dados = socket.data as DadosDoSocket
+        // Outra conta nesta conexão: a fila da anterior não passa para esta.
+        if (dados.perfilId && dados.perfilId !== perfil.id) ranqueada.sair(dados.perfilId)
+        dados.perfilId = perfil.id
+        dados.apelido = perfil.apelido
         // Quem recarregou a página no meio da copa volta a ser chamado por esta conexão.
         copa.reconectar(perfil.id, socket.id)
         ack?.({ ok: true, perfil })
       } catch {
-        ack?.({ ok: false, error: 'Não foi possível entrar no perfil.' })
+        ack?.({ ok: false, error: 'Não foi possível entrar na conta.' })
       }
     })
 
-    socket.on('perfil:apelido', async (payload: { apelido?: string } | undefined, ack?: Resposta) => {
-      const perfilId = (socket.data as DadosDoSocket).perfilId
-      if (!perfilId) return ack?.({ ok: false, error: 'Entre num perfil primeiro.' })
+    // Sair da conta: a conexão volta a ser de convidado, e deixa a fila.
+    socket.on('conta:sair', (_payload: unknown, ack?: Resposta) => {
+      const dados = socket.data as DadosDoSocket
+      if (dados.perfilId) ranqueada.sair(dados.perfilId)
+      dados.perfilId = undefined
+      dados.apelido = undefined
+      ack?.({ ok: true })
+      anunciarFila()
+    })
+
+    // O cadastro pergunta antes de criar a conta: o nome de piloto é único.
+    socket.on('conta:apelido-livre', async (payload: { apelido?: unknown } | undefined, ack?: Resposta) => {
+      const problema = problemaNoApelido(payload?.apelido)
+      if (problema) return ack?.({ ok: true, livre: false, motivo: problema })
       try {
-        const apelido = apelidoLimpo(payload?.apelido)
-        await repositorio.renomearPerfil(perfilId, apelido)
-        ack?.({ ok: true, apelido })
+        const livre = await repositorio.apelidoLivre(limparApelido(payload?.apelido))
+        ack?.(livre ? { ok: true, livre } : { ok: true, livre, motivo: 'Esse nome de piloto já tem dono.' })
       } catch {
-        ack?.({ ok: false, error: 'Não foi possível trocar o apelido.' })
+        ack?.({ ok: false, error: 'Não foi possível conferir o nome.' })
+      }
+    })
+
+    // O perfil de um piloto, com as estatísticas: o próprio, sem id, ou o de
+    // outro — clicando no nome dele num ranking.
+    socket.on('perfil:ver', async (payload: { id?: unknown } | undefined, ack?: Resposta) => {
+      const id = typeof payload?.id === 'string' ? payload.id : (socket.data as DadosDoSocket).perfilId
+      if (!id) return ack?.({ ok: false, error: 'Entre na sua conta para ver o seu perfil.' })
+      try {
+        const perfil = await repositorio.perfil(id)
+        if (!perfil) return ack?.({ ok: false, error: 'Piloto não encontrado.' })
+        const [estatisticas, painel, mundial, trofeus] = await Promise.all([
+          repositorio.estatisticasDe(perfil.id, CORRIDAS_RECENTES),
+          ranqueada.painel(perfil.id),
+          repositorio.linhaDe(CIRCUITO_OFICIAL.seed, CIRCUITO_OFICIAL.dificuldade, perfil.id),
+          repositorio.trofeusDe(perfil.id),
+        ])
+        ack?.({ ok: true, perfil: montarPerfil({ perfil, estatisticas, ranqueada: painel, mundial, trofeus }) })
+      } catch {
+        ack?.({ ok: false, error: 'Não foi possível ler o perfil.' })
       }
     })
 
     // Pista do Dia: o servidor marca a largada de cada tentativa e julga a volta.
-    socket.on('tt:iniciar', (payload: { desafio?: string } | undefined, ack?: Resposta) => {
+    socket.on('tt:iniciar', (payload: { desafio?: unknown; circuito?: unknown } | undefined, ack?: Resposta) => {
       const perfilId = (socket.data as DadosDoSocket).perfilId
-      if (!perfilId) return ack?.({ ok: false, error: 'Entre num perfil primeiro.' })
-      const aberta = pistaDoDia.iniciar(perfilId, payload?.desafio)
+      if (!perfilId) return ack?.({ ok: false, error: 'Entre na sua conta primeiro.' })
+      const aberta = pistaDoDia.iniciar(perfilId, payload)
       if (!aberta) return ack?.({ ok: false, error: 'Esse desafio não é desta semana.' })
       ack?.({ ok: true, ...aberta })
     })
@@ -715,7 +816,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
 
     socket.on('tt:terminar', async (payload: Record<string, unknown> | undefined, ack?: Resposta) => {
       const perfilId = (socket.data as DadosDoSocket).perfilId
-      if (!perfilId) return ack?.({ ok: false, error: 'Entre num perfil primeiro.' })
+      if (!perfilId) return ack?.({ ok: false, error: 'Entre na sua conta primeiro.' })
       try {
         const { volta, ...veredito } = await pistaDoDia.terminar(perfilId, {
           tentativa: payload?.tentativa,
@@ -732,9 +833,11 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       }
     })
 
-    socket.on('tt:quadro', async (payload: { desafio?: string } | undefined, ack?: Resposta) => {
+    // O quadro de uma prova: a Pista do Dia, um desafio ou — com `circuito:
+    // 'oficial'` — o ranking mundial. Aberto a convidados, que só não aparecem nele.
+    socket.on('tt:quadro', async (payload: { desafio?: unknown; circuito?: unknown; limite?: unknown } | undefined, ack?: Resposta) => {
       try {
-        const quadro = await pistaDoDia.quadro((socket.data as DadosDoSocket).perfilId ?? null, 10, payload?.desafio)
+        const quadro = await pistaDoDia.quadro((socket.data as DadosDoSocket).perfilId ?? null, limiteDoQuadro(payload?.limite), payload)
         if (!quadro) return ack?.({ ok: false, error: 'Esse desafio não é desta semana.' })
         ack?.({ ok: true, quadro })
       } catch {
@@ -752,10 +855,19 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       }
     })
 
-    // Fila ranqueada: só com perfil, e só a fila pública conta.
+    // A escada da temporada, aberta a todos: é a aba da ranqueada no ranking mundial.
+    socket.on('ranqueada:escada', async (_payload: unknown, ack?: Resposta) => {
+      try {
+        ack?.({ ok: true, temporada: ranqueada.temporada(), escada: await ranqueada.escada(LINHAS_DO_RANKING) })
+      } catch {
+        ack?.({ ok: false, error: 'Não foi possível ler a escada.' })
+      }
+    })
+
+    // Fila ranqueada: só com conta, e só a fila pública conta.
     socket.on('ranqueada:painel', async (_payload: unknown, ack?: Resposta) => {
       const perfilId = (socket.data as DadosDoSocket).perfilId
-      if (!perfilId) return ack?.({ ok: false, error: 'Entre num perfil primeiro.' })
+      if (!perfilId) return ack?.({ ok: false, error: 'Entre na sua conta primeiro.' })
       try {
         ack?.({
           ok: true,
@@ -763,22 +875,24 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
           escada: await ranqueada.escada(),
           esperaAte: ranqueada.esperaAte(perfilId),
           naFila: ranqueada.naFila().some((entrada) => entrada.perfilId === perfilId),
+          // Com pouca gente, saber quantos estão no jogo agora diz se vale esperar na fila.
+          online: io.engine.clientsCount,
         })
       } catch {
         ack?.({ ok: false, error: 'Não foi possível ler a ranqueada.' })
       }
     })
 
-    socket.on('ranqueada:entrar', async (payload: { playerId?: string; nome?: string; carro?: string } | undefined, ack?: Resposta) => {
-      const perfilId = (socket.data as DadosDoSocket).perfilId
-      if (!perfilId) return ack?.({ ok: false, error: 'Entre num perfil primeiro.' })
+    socket.on('ranqueada:entrar', async (payload: { playerId?: string; carro?: string } | undefined, ack?: Resposta) => {
+      const { perfilId, apelido } = socket.data as DadosDoSocket
+      if (!perfilId || !apelido) return ack?.({ ok: false, error: 'Entre na sua conta primeiro.' })
       if (typeof payload?.playerId !== 'string' || !payload.playerId) return ack?.({ ok: false, error: 'Piloto inválido.' })
       try {
         const entrada = await ranqueada.entrar({
           perfilId,
           playerId: payload.playerId,
           socketId: socket.id,
-          nome: apelidoLimpo(payload.nome),
+          nome: apelido,
           carro: toCarId(payload.carro),
         })
         ack?.(entrada.ok ? { ok: true } : { ok: false, error: entrada.motivo, ate: entrada.ate })
@@ -804,15 +918,15 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
       }
     })
 
-    socket.on('copa:inscrever', (payload: { playerId?: string; nome?: string; carro?: string } | undefined, ack?: Resposta) => {
-      const perfilId = (socket.data as DadosDoSocket).perfilId
-      if (!perfilId) return ack?.({ ok: false, error: 'Entre num perfil primeiro.' })
+    socket.on('copa:inscrever', (payload: { playerId?: string; carro?: string } | undefined, ack?: Resposta) => {
+      const { perfilId, apelido } = socket.data as DadosDoSocket
+      if (!perfilId || !apelido) return ack?.({ ok: false, error: 'Entre na sua conta primeiro.' })
       if (typeof payload?.playerId !== 'string' || !payload.playerId) return ack?.({ ok: false, error: 'Piloto inválido.' })
       const inscricao = copa.inscrever({
         perfilId,
         playerId: payload.playerId,
         socketId: socket.id,
-        nome: apelidoLimpo(payload.nome),
+        nome: apelido,
         carro: toCarId(payload.carro),
       })
       ack?.(inscricao.ok ? { ok: true } : { ok: false, error: inscricao.motivo })

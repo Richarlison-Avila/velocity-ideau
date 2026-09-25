@@ -14,15 +14,17 @@
  *
  *   npm run piloto -- --ranqueada --nome Rival
  *
- * Com `--ranqueada`, não entra em sala nenhuma: cria um perfil, entra na fila
- * pública e corre as partidas que a fila formar, uma atrás da outra. Corre com
- * a física de verdade — o piloto de teste que usa tudo, largando perfeito —,
- * porque na ranqueada o servidor só aceita a chegada que a telemetria sustenta.
+ * Com `--ranqueada`, não entra em sala nenhuma: entra numa conta de teste, na
+ * fila pública, e corre as partidas que a fila formar, uma atrás da outra.
+ * Corre com a física de verdade — o piloto de teste que usa tudo, largando
+ * perfeito —, porque na ranqueada o servidor só aceita a chegada que a
+ * telemetria sustenta. A conta de teste só vale num servidor subido com
+ * `CONTAS_DE_TESTE=1`: nunca o de produção.
  *
  *   npm run piloto -- --copa --nome Rival
  *   npm run piloto -- --copa --nome Lento --novato --abandona
  *
- * Com `--copa`, cria um perfil, se inscreve na Copa do Dia e, quando a
+ * Com `--copa`, entra numa conta de teste, se inscreve na Copa do Dia e, quando a
  * classificação abre, manda uma volta da Pista do Dia: calculada na hora com a
  * física do jogo e enviada só depois do tempo dela passar no relógio, com os
  * comandos de cada quadro — a mesma volta que o servidor refaz para conferir.
@@ -30,7 +32,9 @@
  * os tempos não empatarem; `--abandona` desiste de cada rodada logo depois da
  * largada, para testar a eliminação sem esperar a prova inteira.
  */
+import { createHash } from 'node:crypto'
 import { io, type Socket } from 'socket.io-client'
+import { tokenDeTeste } from '../server/contas.js'
 // A pista e a curva de tração vêm do jogo: uma cópia aqui divergiria em
 // silêncio, e o fantasma arrancaria diferente do carro de verdade.
 import { CARS, carById, isCarId } from '../src/game/cars.js'
@@ -70,6 +74,12 @@ const STEP_MS = 16
 function readOption(name: string, fallback: string) {
   const index = process.argv.indexOf(`--${name}`)
   return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback
+}
+
+/** O id da conta de teste de um nome: um UUID tirado do hash, sempre o mesmo. */
+function contaDeTeste(nome: string) {
+  const hex = createHash('sha256').update(`piloto-virtual:${nome}`).digest('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }
 
 const ranqueada = process.argv.includes('--ranqueada')
@@ -335,11 +345,13 @@ socket.on('connect', async () => {
   await syncClock()
 
   if (comFisica) {
-    const criado = await new Promise<{ ok: boolean; error?: string; perfil?: { apelido: string } }>((resolve) =>
-      socket.emit('perfil:criar', { apelido: name }, resolve),
+    // Uma conta de teste por piloto, com o id tirado do nome: a mesma conta a
+    // cada vez que o piloto volta, com o PL que ele já tinha.
+    const entrou = await new Promise<{ ok: boolean; error?: string; perfil?: { apelido: string } }>((resolve) =>
+      socket.emit('conta:entrar', { token: tokenDeTeste(contaDeTeste(name), name) }, resolve),
     )
-    if (!criado.ok) {
-      console.error(`Não foi possível criar o perfil: ${criado.error}`)
+    if (!entrou.ok) {
+      console.error(`Não foi possível entrar na conta de teste: ${entrou.error} (o servidor precisa de CONTAS_DE_TESTE=1)`)
       process.exit(1)
     }
     if (naCopa) await entrarNaCopa()

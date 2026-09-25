@@ -1,21 +1,27 @@
 import { randomUUID } from 'node:crypto'
+import { apelidoComNumero, chaveDoApelido } from '../../src/conta/apelido.js'
+import { MEDALHAS, type Medalha } from '../../src/game/contrarrelogio.js'
 import type { GravacaoDeVolta } from '../../src/game/gravador.js'
 import type { Difficulty } from '../../src/game/rules.js'
 import type { EstadoRanqueado } from '../ranqueada/rating.js'
-import type {
-  CorridaRanqueada,
-  LinhaDaEscada,
-  LinhaDoQuadro,
-  NovoTempo,
-  Perfil,
-  Repositorio,
-  TempoRegistrado,
-  Trofeu,
-  VoltaRanqueada,
+import {
+  MODOS_DA_CORRIDA,
+  type CorridaRanqueada,
+  type EstatisticasDoPerfil,
+  type LinhaDaEscada,
+  type LinhaDoQuadro,
+  type ModoDaCorrida,
+  type NovoTempo,
+  type Participacao,
+  type Perfil,
+  type Repositorio,
+  type ResumoDoModo,
+  type TempoRegistrado,
+  type Trofeu,
+  type VoltaRanqueada,
 } from './tipos.js'
 
-type PerfilGuardado = Perfil & { tokenHash: string }
-type TempoGuardado = TempoRegistrado & { gravacao: GravacaoDeVolta }
+type TempoGuardado = TempoRegistrado & { gravacao: GravacaoDeVolta; medalha: Medalha | null }
 
 /**
  * O repositório em memória: tudo some quando o servidor para.
@@ -26,35 +32,37 @@ type TempoGuardado = TempoRegistrado & { gravacao: GravacaoDeVolta }
  */
 export class RepositorioEmMemoria implements Repositorio {
   readonly descricao = 'memória (os dados somem quando o servidor para)'
-  private readonly perfis = new Map<string, PerfilGuardado>()
+  private readonly perfis = new Map<string, Perfil>()
   private readonly tempos: TempoGuardado[] = []
   /** Estado ranqueado por temporada e piloto. */
   private readonly ratings = new Map<string, { perfilId: string; temporada: string; estado: EstadoRanqueado }>()
   private readonly corridas: Array<{ id: string; instante: number; perfis: string[] }> = []
   private readonly voltas: VoltaRanqueada[] = []
   private readonly trofeus: Trofeu[] = []
+  private readonly participacoes = new Map<string, Participacao>()
 
   constructor(private readonly agora: () => number = Date.now) {}
 
-  async criarPerfil(apelido: string, tokenHash: string): Promise<Perfil> {
-    const perfil: PerfilGuardado = { id: randomUUID(), apelido, criadoEm: this.agora(), tokenHash }
-    this.perfis.set(perfil.id, perfil)
-    return publico(perfil)
-  }
-
-  async perfilPorCredencial(id: string, tokenHash: string) {
-    const perfil = this.perfis.get(id)
-    return perfil && perfil.tokenHash === tokenHash ? publico(perfil) : null
+  async perfilDaConta(contaId: string, apelido: string): Promise<Perfil> {
+    const existente = this.perfis.get(contaId)
+    if (existente) return { ...existente }
+    for (let tentativa = 1; ; tentativa += 1) {
+      const nome = tentativa === 1 ? apelido : apelidoComNumero(apelido, tentativa)
+      if (!(await this.apelidoLivre(nome))) continue
+      const perfil: Perfil = { id: contaId, apelido: nome, criadoEm: this.agora() }
+      this.perfis.set(contaId, perfil)
+      return { ...perfil }
+    }
   }
 
   async perfil(id: string) {
     const perfil = this.perfis.get(id)
-    return perfil ? publico(perfil) : null
+    return perfil ? { ...perfil } : null
   }
 
-  async renomearPerfil(id: string, apelido: string) {
-    const perfil = this.perfis.get(id)
-    if (perfil) perfil.apelido = apelido
+  async apelidoLivre(apelido: string) {
+    const chave = chaveDoApelido(apelido)
+    return ![...this.perfis.values()].some((perfil) => chaveDoApelido(perfil.apelido) === chave)
   }
 
   async registrarTempo(novo: NovoTempo): Promise<TempoRegistrado> {
@@ -70,6 +78,7 @@ export class RepositorioEmMemoria implements Repositorio {
       dispositivo: novo.dispositivo,
       estado: novo.estado,
       criadoEm: this.agora(),
+      medalha: novo.medalha,
       gravacao: novo.gravacao,
     }
     this.tempos.push(guardado)
@@ -163,6 +172,65 @@ export class RepositorioEmMemoria implements Repositorio {
       .map((trofeu) => ({ ...trofeu }))
   }
 
+  async registrarParticipacoes(participacoes: readonly Participacao[]) {
+    for (const participacao of participacoes) {
+      const chave = `${participacao.perfilId}|${participacao.sala}|${participacao.largada}`
+      if (!this.participacoes.has(chave)) this.participacoes.set(chave, { ...participacao })
+    }
+  }
+
+  async estatisticasDe(perfilId: string, recentes: number): Promise<EstatisticasDoPerfil> {
+    const minhas = [...this.participacoes.values()].filter((participacao) => participacao.perfilId === perfilId)
+    const porModo = Object.fromEntries(MODOS_DA_CORRIDA.map((modo) => [modo, resumoVazio()])) as Record<ModoDaCorrida, ResumoDoModo>
+    const porCarro = new Map<string, { corridas: number; ultima: number }>()
+    for (const corrida of minhas) {
+      const resumo = porModo[corrida.modo]
+      const chegou = corrida.desfecho === 'chegou'
+      const comRival = corrida.pilotos > 1
+      resumo.corridas += 1
+      resumo.vitorias += chegou && comRival && corrida.posicao === 1 ? 1 : 0
+      resumo.podios += chegou && comRival && corrida.posicao <= 3 ? 1 : 0
+      resumo.chegadas += chegou ? 1 : 0
+      resumo.abandonos += corrida.desfecho === 'abandonou' ? 1 : 0
+      resumo.somaDasPosicoes += corrida.posicao
+      const carro = porCarro.get(corrida.carro) ?? { corridas: 0, ultima: 0 }
+      porCarro.set(corrida.carro, { corridas: carro.corridas + 1, ultima: Math.max(carro.ultima, corrida.largada) })
+    }
+    const favorito = [...porCarro.entries()].sort((a, b) => b[1].corridas - a[1].corridas || b[1].ultima - a[1].ultima)[0]
+
+    const meusTempos = this.tempos.filter((tempo) => tempo.perfilId === perfilId)
+    const validos = meusTempos.filter((tempo) => tempo.estado === 'valido')
+    const pistas = new Map<string, TempoGuardado>()
+    for (const tempo of validos) {
+      const chave = `${tempo.seed}|${tempo.dificuldade}`
+      const melhor = pistas.get(chave)
+      if (!melhor || tempo.tempo < melhor.tempo) pistas.set(chave, tempo)
+    }
+    const medalhas = Object.fromEntries(MEDALHAS.map((medalha) => [medalha, 0])) as Record<Medalha, number>
+    for (const melhor of pistas.values()) if (melhor.medalha) medalhas[melhor.medalha] += 1
+    const lideradas = [...pistas.values()].filter(
+      (melhor) => this.melhores(melhor.seed, melhor.dificuldade)[0]?.perfilId === perfilId,
+    ).length
+
+    return {
+      porModo,
+      velocidadeMaxima: minhas.reduce((maior, corrida) => Math.max(maior, corrida.velocidadeMaxima), 0),
+      batidas: minhas.reduce((soma, corrida) => soma + corrida.batidas, 0),
+      carroFavorito: favorito ? { carro: favorito[0], corridas: favorito[1].corridas } : null,
+      recentes: [...minhas].sort((a, b) => b.largada - a.largada).slice(0, Math.max(0, recentes)).map((corrida) => ({ ...corrida })),
+      contrarrelogio: {
+        voltas: meusTempos.filter((tempo) => tempo.estado !== 'recusado').length,
+        pistas: pistas.size,
+        medalhas,
+        lideradas,
+      },
+      temporadas: [...this.ratings.values()]
+        .filter((guardado) => guardado.perfilId === perfilId)
+        .sort((a, b) => (a.temporada < b.temporada ? 1 : -1))
+        .map((guardado) => ({ temporada: guardado.temporada, estado: copiar(guardado.estado) })),
+    }
+  }
+
   async fechar() {}
 
   /** Quem já terminou a colocação, dos PL mais altos para os mais baixos; no empate, o MMR decide. */
@@ -198,6 +266,10 @@ export class RepositorioEmMemoria implements Repositorio {
   }
 }
 
+function resumoVazio(): ResumoDoModo {
+  return { corridas: 0, vitorias: 0, podios: 0, chegadas: 0, abandonos: 0, somaDasPosicoes: 0 }
+}
+
 function chaveDoRating(perfilId: string, temporada: string) {
   return `${temporada}|${perfilId}`
 }
@@ -206,10 +278,6 @@ function copiar(estado: EstadoRanqueado): EstadoRanqueado {
   return { ...estado, mmr: { ...estado.mmr } }
 }
 
-function publico({ id, apelido, criadoEm }: PerfilGuardado): Perfil {
-  return { id, apelido, criadoEm }
-}
-
-function semGravacao({ gravacao: _gravacao, ...tempo }: TempoGuardado): TempoRegistrado {
+function semGravacao({ gravacao: _gravacao, medalha: _medalha, ...tempo }: TempoGuardado): TempoRegistrado {
   return tempo
 }

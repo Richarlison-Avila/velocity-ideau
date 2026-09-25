@@ -3,6 +3,7 @@ import { io as connectClient, type Socket } from 'socket.io-client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DIFICULDADE_OFICIAL } from '../../src/game/contrarrelogio.js'
 import { createGameServer, type GameServer } from '../app.js'
+import { tokenDeTeste, verificadorDeTeste } from '../contas.js'
 import type { PublicRoom } from '../rooms.js'
 import type { SituacaoDaCopa } from './copa.js'
 
@@ -54,7 +55,7 @@ async function ate(condicao: () => boolean, timeout = 5_000) {
 /** Um aparelho com perfil, inscrito na copa, anotando o que o servidor manda. */
 async function inscrito(nome: string) {
   const client = await connect()
-  const criado = await ask(client, 'perfil:criar', { apelido: nome })
+  const criado = await ask(client, 'conta:entrar', { token: tokenDeTeste(crypto.randomUUID(), nome) })
   expect(criado.ok).toBe(true)
   const playerId = `aba-${nome}`
   expect((await ask(client, 'copa:inscrever', { playerId, nome, carro: 'senna' })).ok).toBe(true)
@@ -83,6 +84,7 @@ beforeEach(async () => {
     limiteDaRanqueadaMs: 300,
     // A classificação abre agora e dura um segundo e meio; entre as rodadas, 150 ms.
     copa: { abertura: () => inicio, classificacaoMs: 1_500, folgaMs: 0, intervaloMs: 150 },
+    contas: verificadorDeTeste(),
   })
   await new Promise<void>((resolve) => server.http.listen(0, resolve))
   port = (server.http.address() as AddressInfo).port

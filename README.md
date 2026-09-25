@@ -201,7 +201,7 @@ regra, e o resultado do contrarrelógio diz qual desafio foi corrido.
 
 ## Ranqueada
 
-A fila pública (`server/ranqueada/`), no molde da Riot de 2025–2026 e do TFT. **Só ela conta**: salas por código ou QR continuam casuais, para amigos não combinarem resultado.
+A fila pública (`server/ranqueada/`), no molde da Riot de 2025–2026 e do TFT. **Só ela conta**: salas por código ou QR continuam casuais, para amigos não combinarem resultado. A ranqueada é de quem tem [conta](#contas): o nome é o do cadastro, e o PL, o tier e o histórico vão com o piloto para qualquer aparelho.
 
 - **Dois números por piloto, como no LoL.**
   - O **MMR**, oculto, é o OpenSkill com o modelo Bradley-Terry completo (`openskill`, licença MIT): cada corrida de seis vira quinze duelos. Foi o de menor erro em partidas de todos contra todos no artigo que o criou, e em salas de seis reduz a incerteza duas vezes mais depressa que o Plackett-Luce.
@@ -261,6 +261,48 @@ npm run piloto -- --copa --nome Rival
 npm run piloto -- --copa --nome Lento --novato --abandona --carro schumacher
 ```
 
+## Contas
+
+O login é do **Supabase Auth**, com **e-mail e senha** (`src/conta/`). Na primeira visita o jogo abre a porta de entrada, com três caminhos:
+
+- **Entrar** na conta que já existe.
+- **Criar conta**, escolhendo o **nome de piloto** — de 3 a 16 caracteres, único entre as contas sem diferenciar maiúsculas, conferido enquanto se digita. É o nome do grid, da ranqueada e do ranking mundial, e não muda depois.
+- **Jogar como convidado**, com o nome escolhido no menu, como sempre foi. O convidado corre online e treina; ranqueada, Copa do Dia, quadros e ranking mundial pedem conta, porque precisam de nome único — senão qualquer um correria como outro piloto. O contrarrelógio do convidado guarda o recorde só no aparelho.
+
+A escolha fica lembrada: quem entrou volta direto para a conta, e o convidado não vê mais a porta de entrada — o botão da conta fica no canto do menu.
+
+A senha vai do aparelho direto para o Supabase, por HTTPS, e nunca passa pelo servidor do jogo. O que o servidor recebe é o **token de acesso** da sessão, que ele confere com as chaves públicas do projeto (JWT com ES256, `server/contas.ts`) — sem consultar o Supabase a cada conexão. O id do usuário no Supabase é o id do perfil no jogo, e na conta o nome que vale no grid é o do cadastro, qualquer que seja o que o aparelho mandar. O cliente do Supabase é baixado só por quem usa conta: o convidado não baixa nada disso.
+
+**No painel do Supabase** (Authentication), antes de abrir o jogo ao público:
+
+1. **Confirmação de e-mail.** O envio de e-mail padrão do Supabase só entrega para membros do time do projeto, e com limite de poucos por hora. Ou se desliga *Confirm email* (em *Sign In / Providers → Email*), e a conta entra na hora, ou se configura um SMTP próprio (em *Emails → SMTP Settings*). Com a confirmação ligada e sem SMTP, o cadastro de quem não é do time falha.
+2. **Endereço do site.** Em *URL Configuration*, o *Site URL* e as *Redirect URLs* com o endereço público do jogo: é para lá que os links de confirmação e de troca de senha levam.
+3. **Senha vazada** (opcional, planos pagos): *Leaked password protection* recusa senhas que já apareceram em vazamentos.
+
+"Esqueci a senha" manda o link de troca pelo mesmo envio de e-mail, então só funciona com o SMTP configurado. Trocar a senha estando na conta funciona sempre, pelo perfil.
+
+## Ranking mundial
+
+Tempo só se compara na mesma pista, e cada corrida sorteia um traçado. O ranking mundial de melhor tempo é, por isso, o de uma pista que não muda nunca: o **Circuito Oficial** (`CIRCUITO_OFICIAL` em `src/game/contrarrelogio.ts`), como as pistas da campanha do Trackmania. A semente foi escolhida entre as que o pool da ranqueada aprovaria: o iniciante termina em 77 s, e o piloto que usa tudo tira 15 s disso. Trocar a semente zera o ranking.
+
+- Corre-se no contrarrelógio de sempre, no nível difícil, com medalhas, fantasma do recorde pessoal e recomeço instantâneo.
+- Cada volta passa pela mesma conferência da Pista do Dia — o relógio do servidor, a volta gravada e a re-simulação pelos comandos —, e vale o **melhor tempo de cada piloto, de todos os tempos**.
+- O ▶ ao lado dos dez primeiros baixa o fantasma daquele piloto e larga contra ele.
+
+A tela do ranking tem três abas: **melhor tempo** (o Circuito Oficial), a **Pista do Dia** e a escada da **ranqueada**. O nome de qualquer piloto abre o perfil dele.
+
+## Perfil do piloto
+
+O perfil (`src/perfil/Perfil.tsx`, montado em `server/estatisticas.ts`) mostra:
+
+- **corridas online** — salas, ranqueada e Copa —: corridas, vitórias, pódios, aproveitamento, posição média e abandonos. Vitória e pódio só contam com rival na sala e com a chegada cruzada;
+- a **ranqueada** da temporada, e onde o piloto terminou cada temporada anterior;
+- os **melhores tempos**: a posição no ranking mundial, as voltas de contrarrelógio, as pistas com tempo, a melhor medalha de cada pista e quantos quadros ele lidera;
+- **na pista**: o carro favorito, a velocidade máxima, os quilômetros rodados e as batidas;
+- os **troféus** da Copa do Dia e as **últimas corridas**, com os PL de cada uma.
+
+Cada corrida online de quem tem conta fica guardada (`participacoes`), com a sala e a largada como chave — a mesma corrida não entra duas vezes. O próprio perfil mostra também o e-mail, a troca de senha e a saída da conta.
+
 ## Executar
 
 ```bash
@@ -283,7 +325,7 @@ build `npm run build` e arquivo de entrada `server.js` na raiz do projeto.
 O comando `npm start` também usa essa entrada, que carrega o servidor TypeScript
 via `tsx` e assume a porta 3000 quando `PORT` não estiver definida.
 Mantenha o projeto completo disponível no servidor: `dist` contém apenas o site,
-e a inicialização também depende de `server`, `src/game` e das dependências npm.
+e a inicialização também depende de `server`, `src/game`, `src/conta` e das dependências npm.
 Use uma única instância e habilite WebSocket no proxy da hospedagem.
 Para conferir a publicação, acesse `/health` e teste uma sala em dois aparelhos.
 
@@ -295,19 +337,28 @@ O servidor escuta em `0.0.0.0` e imprime os endereços da máquina na rede local
 
 O estado das salas vive na memória, então precisa ser **uma instância só** — duas separariam os pilotos de uma mesma sala.
 
-O que precisa sobreviver entre uma partida e outra — o perfil do piloto, os tempos da Pista do Dia e a ranqueada — vai para o **Postgres** quando existe `DATABASE_URL` (`server/dados/`). Sem ela, fica na memória: o jogo casual funciona igual, e a Pista do Dia e a ranqueada esquecem tudo quando o servidor para, que é o modo do workshop sem internet. As migrações são arquivos SQL em `server/dados/migracoes/`, aplicados na subida, em ordem, cada um numa transação. `docker compose up -d banco` sobe um Postgres para o desenvolvimento (`docker-compose.yml`).
+O que precisa sobreviver entre uma partida e outra — os perfis, os tempos, a ranqueada, os troféus e as estatísticas — vai para o **Postgres** quando existe `DATABASE_URL` (`server/dados/`). Sem ela, fica na memória: o jogo casual funciona igual, e o resto esquece tudo quando o servidor para, que é o modo do workshop sem internet. As migrações são arquivos SQL em `server/dados/migracoes/`, aplicados na subida, em ordem, cada um numa transação. `docker compose up -d banco` sobe um Postgres para o desenvolvimento (`docker-compose.yml`).
+
+Em produção o banco é o do **Supabase**, no esquema `corrida`, com um papel só do servidor do jogo, `corrida_servidor`. O esquema não é exposto pela Data API, e os papéis `anon` e `authenticated` não têm acesso a ele: o navegador fala com o servidor do jogo, nunca com as tabelas. A `DATABASE_URL` usa o pooler em modo sessão (porta 5432), e a conexão é cifrada e conferida com o certificado raiz do Supabase, que está no projeto (`server/dados/supabase-ca-2021.crt`):
+
+```
+postgresql://corrida_servidor.<projeto>:<senha>@aws-0-sa-east-1.pooler.supabase.com:5432/postgres
+```
 
 | Variável | Para quê | Padrão |
 | --- | --- | --- |
 | `PORT` | Porta do servidor | `3000` com `npm start`; `3001` no desenvolvimento e Docker |
 | `DEMO_ROOMS` | Salas que existem sempre, separadas por vírgula | `DEMO1` |
-| `DATABASE_URL` | Postgres de perfis, Pista do Dia, ranqueada e troféus | memória |
+| `DATABASE_URL` | Postgres de perfis, tempos, ranqueada, troféus e estatísticas | memória |
+| `SUPABASE_URL` | Projeto do Supabase cujas contas o servidor aceita | o do jogo |
+| `CONTAS_DE_TESTE` | `1` aceita também as contas dos pilotos virtuais. **Nunca em produção** | desligado |
+| `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` | Projeto e chave publicável das contas, na build do site | os do jogo |
 | `COPA_HORARIO` | Horário de Brasília em que a Copa do Dia abre, `HH:MM` | `21:00` |
 | `COPA_CLASSIFICACAO_MIN` | Minutos de classificação da Copa do Dia | `10` |
 
-### Perfil e integridade
+### Conta e integridade
 
-Não há cadastro. Na primeira conexão o servidor cria um **perfil** com o nome do piloto e devolve um segredo, que o aparelho guarda; o servidor guarda só o hash dele (`server/perfis.ts`). São no máximo dez perfis novos por hora por rede.
+O perfil é o da [conta](#contas): o servidor liga cada conexão a ela depois de conferir o token, e ranqueada, Copa, quadros e estatísticas só aceitam conexão ligada a uma conta. O **easter egg** do Hamilton na Mercedes com o nome Ideau vale no treino e nas salas casuais, mas não onde há ponto, troféu ou quadro em jogo: na ranqueada, na Copa e no contrarrelógio o carro é só pintura, no aparelho e no servidor.
 
 O servidor não confia mais no que o cliente diz ser:
 
@@ -315,10 +366,10 @@ O servidor não confia mais no que o cliente diz ser:
 - **Teto da telemetria por nível.** É o teto da física daquele nível, boost e vácuo inteiros, mais 5%. Antes era 120 m/s para todos, um quarto acima do mais rápido.
 - **Chegada recusada avisa.** Antes ela sumia calada e o cliente esperava o resultado para sempre.
 - **Tempos da Pista do Dia** são julgados em camadas (`server/contrarrelogio.ts`):
-  - o relógio do servidor mede a tentativa inteira, e o tempo declarado precisa caber nela — o jogo em câmera lenta, que derrubou o topo do Trackmania, declara menos do que passou;
+  - o relógio do servidor mede a tentativa inteira, e o tempo declarado precisa caber nela — o jogo em câmera lenta, que derrubou o topo do Trackmania, declara menos do que passou. Vale para a Pista do Dia, os desafios e o Circuito Oficial;
   - a volta gravada precisa bater com o tempo, chegar à linha e nunca passar do teto do nível;
   - volante trocando de lado mais de oito vezes por segundo, ou tempo abaixo do piloto de referência, deixam o tempo **pendente**, fora do quadro até ser conferido.
-- **Re-simulação pelos comandos**, a camada do Trackmania (`src/game/registroDeEntradas.ts`). O jogo roda a física em passos arredondados ao microssegundo e guarda, de cada quadro, o passo e os três botões — esquerda, direita, boost —, compactados em sequências repetidas: uma volta inteira cabe em poucos KB. O servidor refaz a volta com o mesmo `stepRace` e confere com a gravada, com tolerância, porque `Math.exp` e `Math.pow` podem diferir entre motores de JavaScript: mediana do desvio até 5 m, no máximo 10% das amostras acima de 25 m, e a chegada no mesmo segundo. A volta que passa sai de **pendente** direto para o quadro — só o volante suspeito ainda espera conferência. Uma aba escondida que pulou quadros registra o salto, e a re-simulação o repete.
+- **Re-simulação pelos comandos**, a camada do Trackmania (`src/game/registroDeEntradas.ts`). O jogo roda a física em passos arredondados ao microssegundo e guarda, de cada quadro, o passo e os três botões — esquerda, direita, boost —, compactados em sequências repetidas: uma volta inteira cabe em poucos KB. O servidor refaz a volta com o mesmo `advanceRace` — o quadro longo do celular lento vira passos iguais, no aparelho e no servidor — e confere com a gravada, com tolerância, porque `Math.exp` e `Math.pow` podem diferir entre motores de JavaScript: mediana do desvio até 5 m, no máximo 10% das amostras acima de 25 m, e a chegada no mesmo segundo. A volta que passa sai de **pendente** direto para o quadro — só o volante suspeito ainda espera conferência. Uma aba escondida que pulou quadros registra o salto, e a re-simulação o repete.
 
 O passo a passo do evento, com conferência de véspera, rede de reserva e roteiro da apresentação, está em [WORKSHOP.md](WORKSHOP.md).
 
@@ -488,7 +539,7 @@ Ele entra na sala como mais um piloto, confirma presença, corre no ritmo pedido
 
 Com `--parado`, ele entra e nunca confirma: é o celular esquecido na mesa, para testar o anfitrião tirando alguém do grid. Tirado, o piloto virtual se despede e encerra.
 
-Com `--ranqueada` ou `--copa`, ele não entra em sala nenhuma: cria um perfil e entra na fila ranqueada, ou se inscreve na Copa do Dia. Nos dois casos corre com a física do jogo — o piloto de teste que usa tudo, ou um novato serpenteando com `--novato` —, porque ali o servidor só aceita a chegada que a telemetria sustenta. Na copa, `--abandona` desiste de cada rodada logo depois da largada, para testar a eliminação sem esperar a prova inteira.
+Com `--ranqueada` ou `--copa`, ele não entra em sala nenhuma: entra numa conta de teste e vai para a fila ranqueada, ou se inscreve na Copa do Dia. A conta de teste só vale num servidor subido com `CONTAS_DE_TESTE=1` — nunca o de produção. Nos dois casos corre com a física do jogo — o piloto de teste que usa tudo, ou um novato serpenteando com `--novato` —, porque ali o servidor só aceita a chegada que a telemetria sustenta. Na copa, `--abandona` desiste de cada rodada logo depois da largada, para testar a eliminação sem esperar a prova inteira.
 
 ## Controles
 
@@ -682,6 +733,10 @@ A revanche precisa do pedido de todos. Com eles, a sala limpa telemetria e resul
 - [x] Rádio Fantasma: cinco faixas originais, vinheta entre elas e troca de faixa por botão ou tecla
 - [x] Segunda faixa, synth de 16 bits no molde de Top Gear: toca no lobby e alterna com o rock nas corridas
 - [x] QR code definitivo e roteiro do workshop
+- [x] Contas com e-mail e senha no Supabase Auth, e o convidado correndo sem conta
+- [x] Ranking mundial de melhor tempo no Circuito Oficial, com a Pista do Dia e a escada da ranqueada ao lado
+- [x] Perfil do piloto com estatísticas, aberto pelo próprio piloto ou pelo nome num ranking
+- [x] Perfis, tempos, ranqueada e estatísticas no Postgres do Supabase
 
 ## Limitações conhecidas
 

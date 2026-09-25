@@ -178,7 +178,7 @@ describe('serviço da Pista do Dia', () => {
 
   it('abre a tentativa, julga a volta pelo relógio dele e põe no quadro', async () => {
     const { repo, pista, avancar } = servico()
-    const ana = await repo.criarPerfil('Ana', 'a')
+    const ana = await repo.perfilDaConta(crypto.randomUUID(), 'Ana')
     const aberta = pista.iniciar(ana.id)!
     expect(aberta.seed).toBe(SEMENTE)
     expect(aberta.dificuldade).toBe(DIFICULDADE_OFICIAL)
@@ -200,8 +200,8 @@ describe('serviço da Pista do Dia', () => {
 
   it('a tentativa é de quem a abriu, e vale uma vez só', async () => {
     const { repo, pista, avancar } = servico()
-    const ana = await repo.criarPerfil('Ana', 'a')
-    const beto = await repo.criarPerfil('Beto', 'b')
+    const ana = await repo.perfilDaConta(crypto.randomUUID(), 'Ana')
+    const beto = await repo.perfilDaConta(crypto.randomUUID(), 'Beto')
     const aberta = pista.iniciar(ana.id)!
     avancar(CONTAGEM_DO_CONTRARRELOGIO_MS / 1000 + VOLTA.tempo + 0.2)
     const entrada = { tentativa: aberta.tentativa, tempo: VOLTA.tempo, gravacao: VOLTA.gravacao, dispositivo: 'teclado' }
@@ -212,10 +212,10 @@ describe('serviço da Pista do Dia', () => {
 
   it('um desafio da semana tem tentativa, julgamento e quadro próprios, com o modificador dele', async () => {
     const { repo, pista, avancar } = servico()
-    const ana = await repo.criarPerfil('Ana', 'a')
+    const ana = await repo.perfilDaConta(crypto.randomUUID(), 'Ana')
     const desafio = desafiosDaSemana(semanaDe(AGORA))[1]
     expect(desafio.modificador).toBe('nitroLivre')
-    const aberta = pista.iniciar(ana.id, desafio.id)!
+    const aberta = pista.iniciar(ana.id, { desafio: desafio.id })!
     expect(aberta.seed).toBe(desafio.seed)
     expect(aberta.modificador).toBe('nitroLivre')
 
@@ -250,7 +250,7 @@ describe('serviço da Pista do Dia', () => {
     })
     expect(veredito.estado).toBe('valido')
 
-    const quadro = (await pista.quadro(ana.id, 10, desafio.id))!
+    const quadro = (await pista.quadro(ana.id, 10, { desafio: desafio.id }))!
     expect(quadro.linhas).toHaveLength(1)
     // O quadro da Pista do Dia não mistura com o do desafio.
     expect((await pista.quadro(ana.id))!.linhas).toHaveLength(0)
@@ -261,12 +261,12 @@ describe('serviço da Pista do Dia', () => {
     expect(desafios[0].lider).toBeNull()
 
     // Um desafio que não é desta semana não abre tentativa.
-    expect(pista.iniciar(ana.id, 'inventado')).toBeNull()
+    expect(pista.iniciar(ana.id, { desafio: 'inventado' })).toBeNull()
   })
 
   it('chegar antes do tempo que a volta leva é recusado, e nada entra no quadro', async () => {
     const { repo, pista, avancar } = servico()
-    const ana = await repo.criarPerfil('Ana', 'a')
+    const ana = await repo.perfilDaConta(crypto.randomUUID(), 'Ana')
     const aberta = pista.iniciar(ana.id)!
     avancar(20)
     const veredito = await pista.terminar(ana.id, { tentativa: aberta.tentativa, tempo: VOLTA.tempo, gravacao: VOLTA.gravacao, dispositivo: 'teclado' })

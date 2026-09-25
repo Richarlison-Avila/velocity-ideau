@@ -30,6 +30,22 @@ export const FUSO_DA_PISTA_DO_DIA = 'America/Sao_Paulo'
  */
 export const DIFICULDADE_OFICIAL: Difficulty = 'dificil'
 
+/**
+ * O Circuito Oficial: a pista fixa do ranking mundial de melhor tempo.
+ *
+ * Cada corrida sorteia um traçado, a Pista do Dia troca à meia-noite e os
+ * desafios na segunda: um recorde mundial precisa de uma pista que não mude
+ * nunca, como as da campanha do Trackmania. A semente foi escolhida entre as
+ * que o pool da ranqueada aprovaria — o iniciante termina em 77 s, e o piloto
+ * que usa tudo tira 15 s disso —, num fim de tarde no campo, com arquibancada.
+ * Trocar a semente zera o ranking.
+ */
+export const CIRCUITO_OFICIAL = {
+  seed: 3_729_030_975,
+  dificuldade: DIFICULDADE_OFICIAL,
+  nome: 'Circuito Oficial',
+} as const
+
 /** Contagem curta do contrarrelógio: recomeçar precisa ser quase instantâneo. */
 export const CONTAGEM_DO_CONTRARRELOGIO_MS = 2_400
 

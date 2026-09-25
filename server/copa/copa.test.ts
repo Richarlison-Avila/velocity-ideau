@@ -100,7 +100,7 @@ async function copaComInscritos(nomes: string[]) {
   const repositorio = new RepositorioEmMemoria()
   const tempo = relogio(ABERTURA - 3_600_000)
   const copa = new Copa(repositorio, { agora: tempo.agora })
-  const perfis = await Promise.all(nomes.map((nome) => repositorio.criarPerfil(nome, nome)))
+  const perfis = await Promise.all(nomes.map((nome) => repositorio.perfilDaConta(crypto.randomUUID(), nome)))
   for (const perfil of perfis) {
     expect(copa.inscrever({ perfilId: perfil.id, playerId: `aba-${perfil.apelido}`, socketId: `s-${perfil.apelido}`, nome: perfil.apelido, carro: 'senna' }).ok).toBe(true)
   }

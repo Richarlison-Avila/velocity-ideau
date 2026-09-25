@@ -11,6 +11,8 @@ export type PainelRanqueado = {
   tier: Tier
   divisao: string
   colocacao: number
+  /** Quantas corridas a colocação tem nesta temporada: 5 na primeira, 3 depois de um reset. */
+  colocacaoTotal: number
   corridas: number
   pico: number
   podios: number
@@ -41,6 +43,7 @@ export type ResultadoRanqueado = {
   plDepois: number
   divisao: string
   colocacao: number
+  colocacaoTotal: number
   mudouDeTier: 'subiu' | 'caiu' | null
   subindo: boolean
   reduzido: boolean
@@ -52,6 +55,8 @@ export type SituacaoDaRanqueada = {
   escada: LinhaDaEscada[]
   esperaAte: number | null
   naFila: boolean
+  /** Quantos aparelhos estão conectados ao jogo agora. */
+  online: number
 }
 
 /**
@@ -68,10 +73,18 @@ export async function buscarSituacao(socket: Socket): Promise<SituacaoDaRanquead
     escada: (resposta.escada as LinhaDaEscada[]) ?? [],
     esperaAte: (resposta.esperaAte as number | null) ?? null,
     naFila: Boolean(resposta.naFila),
+    online: Number(resposta.online) || 0,
   }
 }
 
-export async function entrarNaFila(socket: Socket, piloto: { playerId: string; nome: string; carro: string }) {
+/** A escada da temporada, aberta a todos: a aba da ranqueada no ranking mundial. */
+export async function buscarEscada(socket: Socket): Promise<{ temporada: string; escada: LinhaDaEscada[] } | null> {
+  const resposta = await perguntar(socket, 'ranqueada:escada')
+  return resposta.ok ? { temporada: String(resposta.temporada), escada: (resposta.escada as LinhaDaEscada[]) ?? [] } : null
+}
+
+/** Entra na fila com o carro escolhido. O nome é o da conta: o servidor já sabe. */
+export async function entrarNaFila(socket: Socket, piloto: { playerId: string; carro: string }) {
   const resposta = await perguntar(socket, 'ranqueada:entrar', piloto)
   return resposta.ok ? { ok: true as const } : { ok: false as const, motivo: resposta.error ?? 'Não foi possível entrar na fila.', ate: resposta.ate as number | undefined }
 }

@@ -1,7 +1,12 @@
+import type { AuthChangeEvent } from '@supabase/supabase-js'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { carById, DEFAULT_CAR, toCarId, type CarId } from './game/cars'
 import { carImageUrl, precarregarCarro } from './game/carSprites'
+import { aoMudarASessao, sair as sairDoSupabase, sessaoAtual, type SessaoDaConta } from './conta/conta'
+import Entrada, { type ModoDaEntrada } from './conta/Entrada'
+import { haSessaoGuardada, voltaDeLinkDaConta } from './conta/supabase'
 import {
+  CIRCUITO_OFICIAL,
   CONTAGEM_DO_CONTRARRELOGIO_MS,
   diaDe,
   DIFICULDADE_OFICIAL,
@@ -28,11 +33,20 @@ import type { GravacaoDeVolta } from './game/gravador'
 import { serverClock, type ClockState } from './multiplayer/clock'
 import { identificadorDoPiloto } from './multiplayer/identity'
 import Lobby from './multiplayer/Lobby'
-import { entrarNoPerfil, guardarPerfil, perfilDoCodigo, perguntar, type PerfilPublico } from './multiplayer/perfil'
 import {
+  apelidoLivre,
+  entrarNaConta,
+  sairDaConta,
+  verPerfil,
+  type PerfilDoPiloto,
+  type PerfilPublico,
+} from './multiplayer/perfil'
+import {
+  buscarEscada,
   buscarSituacao,
   entrarNaFila,
   sairDaFila,
+  type LinhaDaEscada,
   type ResultadoRanqueado,
   type SituacaoDaRanqueada,
 } from './multiplayer/ranqueada'
@@ -52,12 +66,15 @@ import {
   buscarQuadro,
   enviarVolta,
   type LinhaDoQuadro,
+  type PedidoDeProva,
   type QuadroDoDia,
   type ResumoDoDesafio,
   type VereditoDaVolta,
 } from './multiplayer/pistaDoDia'
 import { socket } from './multiplayer/socket'
+import Perfil from './perfil/Perfil'
 import PilotSelect from './PilotSelect'
+import Ranking, { type AbaDoRanking } from './ranking/Ranking'
 import ResumoDaProva from './ResumoDaProva'
 import type {
   LobbyRoom,
@@ -68,7 +85,7 @@ import type {
   ScheduledRace,
 } from './multiplayer/types'
 
-type Screen = 'menu' | 'garage' | 'lobby' | 'race' | 'result' | 'ranqueada'
+type Screen = 'menu' | 'garage' | 'lobby' | 'race' | 'result' | 'ranqueada' | 'entrada' | 'perfil' | 'ranking'
 type RaceSetup = {
   startAt: number
   countdownMs: number
@@ -95,6 +112,8 @@ type Contrarrelogio = {
   tentativa: string | null
   /** O desafio da semana, ou null para a Pista do Dia. */
   desafio: Desafio | null
+  /** A volta é no Circuito Oficial: vale no ranking mundial. */
+  oficial: boolean
 }
 
 /** O que o contrarrelógio rendeu: tempo, medalha e se virou recorde. */
@@ -194,8 +213,42 @@ function armazenamentoLocal(): Armazenamento | null {
 /** A cor do carro vira variável de CSS para bordas e destaques. */
 const destaque = (car: CarId) => ({ '--accent': carById(car).accent }) as CSSProperties
 
+/** Quem escolheu correr sem conta: a porta de entrada não abre mais sozinha para ele. */
+const CONVIDADO_KEY = 'corrida-convidado'
+
+function escolheuConvidado() {
+  try {
+    return localStorage.getItem(CONVIDADO_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function lembrarConvidado(convidado: boolean) {
+  try {
+    if (convidado) localStorage.setItem(CONVIDADO_KEY, '1')
+    else localStorage.removeItem(CONVIDADO_KEY)
+  } catch {
+    // Sem armazenamento, a porta de entrada só volta a aparecer na próxima visita.
+  }
+}
+
+/** O aparelho já tem uma conta aberta: ela entra sozinha, sem porta de entrada. */
+const comContaGuardada = haSessaoGuardada()
+/** A página abriu pelo link de um e-mail da conta — a confirmação, ou a troca de senha. */
+const voltaDoEmail = voltaDeLinkDaConta()
+/**
+ * A porta de entrada abre na primeira visita. Não abre para quem volta a uma
+ * sala depois de recarregar a página, nem no telão da arquibancada, que
+ * ninguém vai ficar clicando.
+ */
+const abrirNaEntrada = !storedRoom && !linkDeAssistir && !comContaGuardada && !voltaDoEmail && !escolheuConvidado()
+
+/** O cliente das contas só é acompanhado uma vez por página, e só por quem precisa dele. */
+let acompanhandoAConta = false
+
 function App() {
-  const [screen, setScreen] = useState<Screen>('menu')
+  const [screen, setScreen] = useState<Screen>(abrirNaEntrada ? 'entrada' : 'menu')
   const [pilotName, setPilotName] = useState(storedName)
   const [draftName, setDraftName] = useState('')
   const [joinCode, setJoinCode] = useState(() => new URLSearchParams(location.search).get('room')?.toUpperCase() ?? '')
@@ -219,10 +272,38 @@ function App() {
   const [versaoDosRecordes, setVersaoDosRecordes] = useState(0)
   const contrarrelogioRef = useRef(contrarrelogio)
   contrarrelogioRef.current = contrarrelogio
-  /** O perfil do aparelho no servidor: é ele que tem tempo no quadro. */
+  /**
+   * A conta: a sessão do Supabase, que mora no aparelho, e o perfil que o
+   * servidor do jogo ligou a esta conexão depois de conferi-la. Convidado não
+   * tem nenhum dos dois.
+   */
+  const [sessao, setSessao] = useState<SessaoDaConta | null>(null)
+  const sessaoRef = useRef(sessao)
+  sessaoRef.current = sessao
+  /** Há conta guardada, e o Supabase ainda não respondeu se ela vale. */
+  const [contaCarregando, setContaCarregando] = useState(comContaGuardada || voltaDoEmail)
+  /** A sessão vale, mas o servidor do jogo não respondeu ao ligá-la: o menu oferece tentar de novo. */
+  const [contaSemServidor, setContaSemServidor] = useState(false)
   const [perfil, setPerfil] = useState<PerfilPublico | null>(null)
   const perfilRef = useRef(perfil)
   perfilRef.current = perfil
+  /** A porta de entrada: em que formulário abre, para onde volta e o recado de quem a abriu. */
+  const [modoDaEntrada, setModoDaEntrada] = useState<ModoDaEntrada>('entrar')
+  const [entradaVoltaPara, setEntradaVoltaPara] = useState<Screen | null>(null)
+  const [avisoDaEntrada, setAvisoDaEntrada] = useState('')
+  /** O perfil aberto: o id do piloto (null é o próprio), o que o servidor mandou e para onde voltar. */
+  const [perfilAberto, setPerfilAberto] = useState<string | null>(null)
+  const [perfilVisto, setPerfilVisto] = useState<PerfilDoPiloto | null>(null)
+  const [perfilCarregando, setPerfilCarregando] = useState(false)
+  const [perfilErro, setPerfilErro] = useState('')
+  const [perfilVoltaPara, setPerfilVoltaPara] = useState<Screen>('menu')
+  /** O ranking mundial: a aba, os três quadros e para onde voltar. */
+  const [abaDoRanking, setAbaDoRanking] = useState<AbaDoRanking>('mundial')
+  const [rankingMundial, setRankingMundial] = useState<QuadroDoDia | null>(null)
+  const [rankingDoDia, setRankingDoDia] = useState<QuadroDoDia | null>(null)
+  const [escadaDoRanking, setEscadaDoRanking] = useState<{ temporada: string; escada: LinhaDaEscada[] } | null>(null)
+  const [rankingCarregando, setRankingCarregando] = useState(false)
+  const [rankingVoltaPara, setRankingVoltaPara] = useState<Screen>('menu')
   const [quadroDoDia, setQuadroDoDia] = useState<QuadroDoDia | null>(null)
   /** Os desafios da semana, com o líder de cada um, quando há servidor. */
   const [desafiosDoServidor, setDesafiosDoServidor] = useState<ResumoDoDesafio[] | null>(null)
@@ -254,6 +335,11 @@ function App() {
   const recordeDoDia = useMemo(
     () => (versaoDosRecordes >= 0 ? lerRecorde(armazenamentoLocal(), pistaDoDia.seed, DIFICULDADE_OFICIAL) : null),
     [pistaDoDia.seed, versaoDosRecordes],
+  )
+  /** O recorde pessoal no Circuito Oficial, guardado no aparelho como o da Pista do Dia. */
+  const recordeDoCircuito = useMemo(
+    () => (versaoDosRecordes >= 0 ? lerRecorde(armazenamentoLocal(), CIRCUITO_OFICIAL.seed, CIRCUITO_OFICIAL.dificuldade) : null),
+    [versaoDosRecordes],
   )
   /** Piloto no grid ou espectador na arquibancada da sala atual. */
   const [papel, setPapel] = useState<Papel>(storedRole)
@@ -295,6 +381,112 @@ function App() {
 
   useEffect(() => serverClock.subscribe(setClock), [])
 
+  /**
+   * O que depende de quem está conectado: o quadro de hoje, os desafios e a
+   * copa valem para todos — o convidado vê, só não aparece —, e a ranqueada é
+   * só da conta.
+   */
+  const lerOQueMudaComAConta = useCallback(() => {
+    void buscarQuadro(socket).then(setQuadroDoDia)
+    void buscarDesafios(socket).then(setDesafiosDoServidor)
+    void buscarCopa(socket).then(setCopa)
+    void buscarQuadro(socket, { circuito: 'oficial' }, 3).then(setRankingMundial)
+    if (perfilRef.current) void buscarSituacao(socket).then(setSituacaoRanqueada)
+    else setSituacaoRanqueada(null)
+  }, [])
+
+  /** O token que esta conexão já mandou ao servidor: o mesmo não vai duas vezes. */
+  const tokenLigadoRef = useRef<string | null>(null)
+  /**
+   * Liga esta conexão à conta: o servidor confere o token do Supabase e devolve
+   * o perfil. É o apelido do cadastro que passa a ser o nome do piloto.
+   */
+  const ligarAConta = useCallback(
+    async (token: string) => {
+      if (!socket.connected || tokenLigadoRef.current === token) return
+      tokenLigadoRef.current = token
+      setContaSemServidor(false)
+      const resposta = await entrarNaConta(socket, token)
+      if ('perfil' in resposta) {
+        perfilRef.current = resposta.perfil
+        setPerfil(resposta.perfil)
+        pilotNameRef.current = resposta.perfil.apelido
+        setPilotName(resposta.perfil.apelido)
+      } else {
+        tokenLigadoRef.current = null
+        perfilRef.current = null
+        setPerfil(null)
+        if (resposta.recusada) {
+          // A sessão do aparelho não vale mais no servidor: ela sai daqui também,
+          // e o piloto segue como convidado até entrar de novo.
+          sessaoRef.current = null
+          setSessao(null)
+          void sairDoSupabase()
+          setLobbyError('Sua sessão venceu. Entre de novo para voltar à conta.')
+        } else {
+          setContaSemServidor(true)
+        }
+      }
+      lerOQueMudaComAConta()
+    },
+    [lerOQueMudaComAConta],
+  )
+  const ligarAContaRef = useRef(ligarAConta)
+  ligarAContaRef.current = ligarAConta
+
+  /** A conta saiu — por escolha, ou porque a sessão acabou em outro aparelho. */
+  const esquecerAConta = useCallback(() => {
+    tokenLigadoRef.current = null
+    setContaSemServidor(false)
+    perfilRef.current = null
+    setPerfil(null)
+    const nome = lerGuardado(NAME_KEY) ?? 'Piloto'
+    pilotNameRef.current = nome
+    setPilotName(nome)
+    setSituacaoRanqueada(null)
+    setNaFila(false)
+    setNaFilaDesde(null)
+    if (socket.connected) void sairDaConta(socket)
+    lerOQueMudaComAConta()
+  }, [lerOQueMudaComAConta])
+
+  /**
+   * Acompanha a sessão do Supabase: a que já estava no aparelho, a que o
+   * formulário acabou de abrir, a renovação do token e a saída. Só começa
+   * para quem tem conta ou vai entrar numa — o convidado nem baixa o cliente.
+   */
+  const acompanharAConta = useCallback(() => {
+    if (acompanhandoAConta) return
+    acompanhandoAConta = true
+    void aoMudarASessao((nova, evento: AuthChangeEvent) => {
+      setContaCarregando(false)
+      if (evento === 'PASSWORD_RECOVERY') {
+        // O link de trocar a senha abre a conta e pede a senha nova.
+        setModoDaEntrada('nova-senha')
+        setEntradaVoltaPara('menu')
+        setScreen('entrada')
+      }
+      const tinha = sessaoRef.current
+      sessaoRef.current = nova
+      setSessao(nova)
+      if (nova) {
+        lembrarConvidado(false)
+        // Renovar o token não muda a conta: a conexão continua ligada a ela.
+        if (evento !== 'TOKEN_REFRESHED' || !perfilRef.current) void ligarAContaRef.current(nova.token)
+      } else if (tinha) {
+        esquecerAConta()
+      }
+    }).catch(() => {
+      acompanhandoAConta = false
+      setContaCarregando(false)
+    })
+  }, [esquecerAConta])
+
+  // Quem já tinha conta no aparelho, ou voltou por um link do e-mail, entra nela sozinho.
+  useEffect(() => {
+    if (comContaGuardada || voltaDoEmail) acompanharAConta()
+  }, [acompanharAConta])
+
   // A arte e a voz do carro da corrida começam a baixar antes dela — no menu,
   // na garagem, no lobby —, e não nas luzes da largada, quando a sala inteira
   // disputa o mesmo Wi-Fi. Na arquibancada, a voz é a do primeiro piloto.
@@ -315,15 +507,17 @@ function App() {
     const onConnect = () => {
       setConnection('connected')
       void serverClock.sync(socket)
-      // O perfil entra sozinho, com o nome do piloto: não há cadastro.
-      void entrarNoPerfil(socket, pilotNameRef.current).then((entrou) => {
-        setPerfil(entrou)
-        if (!entrou) return
-        void buscarQuadro(socket).then(setQuadroDoDia)
-        void buscarDesafios(socket).then(setDesafiosDoServidor)
-        void buscarSituacao(socket).then(setSituacaoRanqueada)
-        void buscarCopa(socket).then(setCopa)
-      })
+      // Com conta, a conexão nova — ou a que voltou de uma queda — liga-se a ela
+      // com um token fresco. Sem conta, o jogo segue como convidado.
+      tokenLigadoRef.current = null
+      if (sessaoRef.current) {
+        void sessaoAtual().then((atual) => {
+          if (atual) void ligarAContaRef.current(atual.token)
+          else lerOQueMudaComAConta()
+        })
+      } else {
+        lerOQueMudaComAConta()
+      }
       // Depois de uma queda, volta para a mesma sala com o mesmo identificador.
       const code = roomCodeRef.current
       if (!code) {
@@ -431,7 +625,7 @@ function App() {
       setRaceSetup(null)
       setScreen('ranqueada')
       setAvisoRanqueado(payload.motivo)
-      void entrarNaFila(socket, { playerId: storedPlayerId, nome: pilotNameRef.current, carro: carRef.current }).then((entrada) => {
+      void entrarNaFila(socket, { playerId: storedPlayerId, carro: carRef.current }).then((entrada) => {
         setNaFila(entrada.ok)
         if (entrada.ok) setNaFilaDesde(Date.now())
       })
@@ -542,19 +736,13 @@ function App() {
     )
   }, [room?.startAt, room?.status, room?.countdownMs])
 
+  /** O nome do piloto: na conta, o do cadastro; como convidado, o que ele digitou. */
   const selectedName = () => {
+    if (perfilRef.current) return perfilRef.current.apelido
     const name = draftName.trim().slice(0, 16) || pilotName
     setPilotName(name)
     pilotNameRef.current = name
     guardar(NAME_KEY, name)
-    // O apelido do perfil acompanha o nome: é ele que aparece no quadro.
-    if (perfilRef.current && perfilRef.current.apelido !== name && socket.connected) {
-      void perguntar(socket, 'perfil:apelido', { apelido: name }).then((resposta) => {
-        if (resposta.ok && typeof resposta.apelido === 'string') {
-          setPerfil((atual) => (atual ? { ...atual, apelido: resposta.apelido as string } : atual))
-        }
-      })
-    }
     return name
   }
 
@@ -662,24 +850,26 @@ function App() {
   }
 
   /**
-   * Larga o contrarrelógio da Pista do Dia. A contagem é curta e o recomeço é
-   * o mesmo caminho: tentar de novo não pode custar mais que desistir.
+   * Larga o contrarrelógio: a Pista do Dia, um desafio da semana ou o Circuito
+   * Oficial do ranking mundial. A contagem é curta e o recomeço é o mesmo
+   * caminho: tentar de novo não pode custar mais que desistir.
    */
-  const startTimeTrial = async (contra: FantasmaDeOutro | null = null, desafio: Desafio | null = null) => {
+  const startTimeTrial = async (contra: FantasmaDeOutro | null = null, desafio: Desafio | null = null, oficial = false) => {
     selectedName()
     const dia = diaDe(new Date())
     // Sem desafio é a Pista do Dia; com um, a semente, o nível e o modificador dele.
-    const seed = desafio?.seed ?? sementeDoDia(dia)
-    const dificuldade = desafio?.dificuldade ?? DIFICULDADE_OFICIAL
-    // Com perfil, o servidor abre a tentativa e passa a contar o tempo dela;
-    // sem resposta rápida, a volta vale só para o recorde pessoal.
-    const aberta = perfilRef.current ? await abrirTentativa(socket, desafio?.id) : null
+    const seed = oficial ? CIRCUITO_OFICIAL.seed : (desafio?.seed ?? sementeDoDia(dia))
+    const dificuldade = oficial ? CIRCUITO_OFICIAL.dificuldade : (desafio?.dificuldade ?? DIFICULDADE_OFICIAL)
+    const pedido: PedidoDeProva = oficial ? { circuito: 'oficial' } : desafio ? { desafio: desafio.id } : {}
+    // Com conta, o servidor abre a tentativa e passa a contar o tempo dela;
+    // sem resposta rápida — ou como convidado —, a volta vale só para o recorde pessoal.
+    const aberta = perfilRef.current ? await abrirTentativa(socket, pedido) : null
     const fantasma = contra
       ? { tempo: contra.tempo, gravacao: contra.gravacao, em: '', nome: contra.nome }
       : lerRecorde(armazenamentoLocal(), seed, dificuldade)
     setResult(null)
     setResultadoDoContrarrelogio(null)
-    setContrarrelogio({ dia, seed, recorde: fantasma, contra, tentativa: aberta?.tentativa ?? null, desafio })
+    setContrarrelogio({ dia, seed, recorde: fantasma, contra, tentativa: aberta?.tentativa ?? null, desafio, oficial })
     setRaceSetup({
       startAt: Date.now() + CONTAGEM_DO_CONTRARRELOGIO_MS,
       countdownMs: CONTAGEM_DO_CONTRARRELOGIO_MS,
@@ -702,7 +892,7 @@ function App() {
 
   const entrarNaFilaRanqueada = async () => {
     setAvisoRanqueado('')
-    const entrada = await entrarNaFila(socket, { playerId: storedPlayerId, nome: selectedName(), carro: car })
+    const entrada = await entrarNaFila(socket, { playerId: storedPlayerId, carro: carRef.current })
     if (entrada.ok) {
       setNaFila(true)
       setNaFilaDesde(Date.now())
@@ -741,7 +931,7 @@ function App() {
 
   const inscreverSeNaCopa = async () => {
     setAvisoDaCopa('')
-    const inscricao = await inscreverNaCopa(socket, { playerId: storedPlayerId, nome: selectedName(), carro: car })
+    const inscricao = await inscreverNaCopa(socket, { playerId: storedPlayerId, carro: car })
     if (!inscricao.ok) setAvisoDaCopa(inscricao.motivo)
     void buscarCopa(socket).then(setCopa)
   }
@@ -757,23 +947,75 @@ function App() {
     void buscarCopa(socket).then(setCopa)
   }
 
-  /** Traz o perfil de outro aparelho pelo código de recuperação. */
-  const restaurarPerfil = async (codigo: string) => {
-    const guardado = perfilDoCodigo(codigo)
-    if (!guardado) {
-      setAvisoRanqueado('Código de recuperação inválido.')
-      return
-    }
-    const entrada = await perguntar(socket, 'perfil:entrar', guardado)
-    if (!entrada.ok || !entrada.perfil) {
-      setAvisoRanqueado('Esse código não abre nenhum perfil neste servidor.')
-      return
-    }
-    guardarPerfil(guardado)
-    setPerfil(entrada.perfil as PerfilPublico)
-    setAvisoRanqueado('')
-    void buscarSituacao(socket).then(setSituacaoRanqueada)
-    void buscarQuadro(socket).then(setQuadroDoDia)
+  /** Abre a porta de entrada: para entrar, criar a conta ou trocar a senha. */
+  const abrirEntrada = (modo: ModoDaEntrada = 'entrar', voltaPara: Screen | null = screen) => {
+    acompanharAConta()
+    setModoDaEntrada(modo)
+    setEntradaVoltaPara(voltaPara)
+    setAvisoDaEntrada('')
+    setScreen('entrada')
+  }
+
+  /** A conta abriu: volta para onde o piloto estava, ou para o menu. */
+  const aoEntrarNaConta = () => {
+    lembrarConvidado(false)
+    setContaCarregando(true)
+    setScreen(entradaVoltaPara && entradaVoltaPara !== 'entrada' ? entradaVoltaPara : 'menu')
+    // O cliente pode ter aberto a sessão antes de a porta começar a acompanhá-la.
+    void sessaoAtual().then((atual) => {
+      setContaCarregando(false)
+      if (!atual) return
+      sessaoRef.current = atual
+      setSessao(atual)
+      void ligarAContaRef.current(atual.token)
+    })
+  }
+
+  const correrComoConvidado = () => {
+    lembrarConvidado(true)
+    setScreen(entradaVoltaPara && entradaVoltaPara !== 'entrada' ? entradaVoltaPara : 'menu')
+  }
+
+  const sairDaContaAgora = async () => {
+    if (naFila) await sairDaFila(socket)
+    // A conta sai daqui primeiro: o aviso de saída do Supabase chega depois e
+    // não repete nada, porque já não há sessão a esquecer.
+    sessaoRef.current = null
+    setSessao(null)
+    esquecerAConta()
+    await sairDoSupabase()
+    setModoDaEntrada('entrar')
+    setEntradaVoltaPara(null)
+    setAvisoDaEntrada('Você saiu da conta.')
+    setScreen('entrada')
+  }
+
+  /** Abre um perfil: o próprio (sem id) ou o de outro piloto, e lembra para onde voltar. */
+  const abrirPerfil = (id: string | null, voltaPara: Screen = screen) => {
+    setPerfilVoltaPara(voltaPara === 'perfil' ? perfilVoltaPara : voltaPara)
+    setPerfilAberto(id)
+    setPerfilVisto(null)
+    setPerfilErro('')
+    setPerfilCarregando(true)
+    setScreen('perfil')
+    void verPerfil(socket, id ?? undefined).then((resposta) => {
+      setPerfilCarregando(false)
+      if ('perfil' in resposta) setPerfilVisto(resposta.perfil)
+      else setPerfilErro(resposta.erro)
+    })
+  }
+
+  /** Abre o ranking mundial numa aba, com os três quadros frescos. */
+  const abrirRanking = (aba: AbaDoRanking = 'mundial', voltaPara: Screen = screen) => {
+    setRankingVoltaPara(voltaPara === 'ranking' ? rankingVoltaPara : voltaPara)
+    setAbaDoRanking(aba)
+    setScreen('ranking')
+    setRankingCarregando(true)
+    void Promise.all([
+      buscarQuadro(socket, { circuito: 'oficial' }, 50).then((quadro) => quadro && setRankingMundial(quadro)),
+      buscarQuadro(socket, {}, 50).then(setRankingDoDia),
+      buscarEscada(socket).then(setEscadaDoRanking),
+    ]).finally(() => setRankingCarregando(false))
   }
 
   /**
@@ -783,14 +1025,14 @@ function App() {
   const semanaAtual = semanaDe(Date.now())
   const desafios = useMemo(() => desafiosDaSemana(semanaAtual), [semanaAtual])
 
-  /** Baixa o fantasma de uma linha do quadro e larga a Pista do Dia contra ele. */
-  const correrContra = async (linha: LinhaDoQuadro) => {
+  /** Baixa o fantasma de uma linha do quadro e larga a pista dele — a do dia ou o Circuito Oficial. */
+  const correrContra = async (linha: LinhaDoQuadro, quadro: 'dia' | 'mundial' = 'dia') => {
     const gravacao = await baixarFantasma(socket, linha.id)
     if (!gravacao) {
       setLobbyError('Não foi possível baixar esse fantasma agora.')
       return
     }
-    await startTimeTrial({ nome: linha.apelido, tempo: linha.tempo, gravacao })
+    await startTimeTrial({ nome: linha.apelido, tempo: linha.tempo, gravacao }, null, quadro === 'mundial')
   }
 
   const leaveLobby = () => {
@@ -861,6 +1103,7 @@ function App() {
           if (veredito?.copa) void buscarCopa(socket).then(setCopa)
           void buscarQuadro(socket).then(setQuadroDoDia)
           void buscarDesafios(socket).then(setDesafiosDoServidor)
+          if (prova.oficial) void buscarQuadro(socket, { circuito: 'oficial' }, 3).then((quadro) => quadro && setRankingMundial(quadro))
         })
       }
       setScreen('result')
@@ -893,6 +1136,65 @@ function App() {
   const connectionNotice =
     connection === 'reconnecting' ? 'CONEXÃO INSTÁVEL — RECONECTANDO' : null
 
+  /** A conta existe no aparelho, mas o servidor ainda não a ligou a esta conexão. */
+  const entrandoNaConta = !perfil && !contaSemServidor && (contaCarregando || sessao !== null)
+  /** Tenta de novo ligar a conta, com um token fresco, depois de o servidor não responder. */
+  const religarAConta = () => {
+    void sessaoAtual().then((atual) => {
+      if (atual) void ligarAContaRef.current(atual.token)
+    })
+  }
+
+  if (screen === 'entrada') {
+    return (
+      <Entrada
+        modoInicial={modoDaEntrada}
+        aviso={avisoDaEntrada}
+        verificarApelido={(apelido) => apelidoLivre(socket, apelido)}
+        onEntrou={aoEntrarNaConta}
+        onConvidado={correrComoConvidado}
+        onVoltar={entradaVoltaPara && entradaVoltaPara !== 'entrada' ? () => setScreen(entradaVoltaPara) : undefined}
+      />
+    )
+  }
+
+  if (screen === 'perfil') {
+    const proprio = perfilAberto === null || perfilAberto === perfil?.id
+    return (
+      <Perfil
+        perfil={perfilVisto}
+        carregando={perfilCarregando}
+        erro={perfilErro}
+        proprio={proprio}
+        email={proprio ? sessao?.email : null}
+        onVoltar={() => setScreen(perfilVoltaPara)}
+        onSair={proprio ? () => void sairDaContaAgora() : undefined}
+        onCorrerCircuito={() => void startTimeTrial(null, null, true)}
+      />
+    )
+  }
+
+  if (screen === 'ranking') {
+    return (
+      <Ranking
+        aba={abaDoRanking}
+        onAba={setAbaDoRanking}
+        mundial={rankingMundial}
+        dia={rankingDoDia}
+        escada={escadaDoRanking}
+        carregando={rankingCarregando}
+        conectado={connection === 'connected'}
+        meuPerfil={perfil?.id ?? null}
+        onVerPiloto={(id) => abrirPerfil(id, 'ranking')}
+        onCorrerContra={(linha, quadro) => void correrContra(linha, quadro)}
+        onCorrerCircuito={() => void startTimeTrial(null, null, true)}
+        onCorrerPistaDoDia={() => void startTimeTrial()}
+        onEntrar={perfil || entrandoNaConta ? undefined : () => abrirEntrada('entrar', 'ranking')}
+        onVoltar={() => setScreen(rankingVoltaPara)}
+      />
+    )
+  }
+
   if (screen === 'garage') {
     const rivalCars = garageFrom === 'lobby'
       ? room?.players.filter((player) => player.id !== storedPlayerId).map((player) => player.car) ?? []
@@ -918,13 +1220,16 @@ function App() {
         tamanhoDaFila={tamanhoDaFila}
         naFilaDesde={naFilaDesde}
         aviso={avisoRanqueado}
+        entrandoNaConta={entrandoNaConta}
         onEntrar={() => void entrarNaFilaRanqueada()}
         onSair={() => void sairDaFilaRanqueada()}
         onVoltar={() => {
           if (naFila) void sairDaFilaRanqueada()
           setScreen('menu')
         }}
-        onRestaurarPerfil={(codigo) => void restaurarPerfil(codigo)}
+        onVerPerfil={() => abrirPerfil(null, 'ranqueada')}
+        onVerRanking={() => abrirRanking('ranqueada', 'ranqueada')}
+        onEntrarNaConta={() => abrirEntrada('entrar', 'ranqueada')}
       />
     )
   }
@@ -984,7 +1289,7 @@ function App() {
         recorde={raceSetup.mode === 'contrarrelogio' ? contrarrelogio?.recorde : null}
         onRestart={
           raceSetup.mode === 'contrarrelogio'
-            ? () => void startTimeTrial(contrarrelogio?.contra ?? null, contrarrelogio?.desafio ?? null)
+            ? () => void startTimeTrial(contrarrelogio?.contra ?? null, contrarrelogio?.desafio ?? null, contrarrelogio?.oficial ?? false)
             : undefined
         }
         modificador={raceSetup.modificador ?? null}
@@ -1043,6 +1348,8 @@ function App() {
           <p className="eyebrow">
             {daCopa
               ? `COPA DO DIA · DIVISÃO ${daCopa.divisao} · RODADA ${daCopa.rodada}`
+              : contra && contrarrelogio?.oficial
+              ? `RANKING MUNDIAL · ${CIRCUITO_OFICIAL.nome.toUpperCase()}`
               : contra && contrarrelogio?.desafio
               ? `DESAFIO DA SEMANA · ${MODIFICADORES[contrarrelogio.desafio.modificador].nome.toUpperCase()}`
               : contra
@@ -1139,7 +1446,7 @@ function App() {
                   <div className="ranked-delta">
                     <strong className={meuRanqueado.deltaPl >= 0 ? 'ganho' : 'perda'}>
                       {meuRanqueado.colocacao > 0
-                        ? `COLOCAÇÃO ${5 - meuRanqueado.colocacao}/5`
+                        ? `COLOCAÇÃO ${meuRanqueado.colocacaoTotal - meuRanqueado.colocacao}/${meuRanqueado.colocacaoTotal}`
                         : `${meuRanqueado.deltaPl >= 0 ? '+' : ''}${meuRanqueado.deltaPl} PL`}
                     </strong>
                     <span>{meuRanqueado.colocacao > 0 ? 'SEM PERDA DE PL ATÉ O FIM DA COLOCAÇÃO' : meuRanqueado.divisao}</span>
@@ -1204,12 +1511,15 @@ function App() {
             <p className={`result-note veredito-${contra.servidor.estado}`}>
               {contra.servidor.estado === 'valido'
                 ? contra.servidor.linha
-                  ? `SEU MELHOR TEMPO ESTÁ EM #${contra.servidor.linha.posicao} NO QUADRO DE HOJE`
-                  : 'TEMPO ACEITO NO QUADRO DE HOJE'
+                  ? `SEU MELHOR TEMPO ESTÁ EM #${contra.servidor.linha.posicao} ${contrarrelogio?.oficial ? 'NO RANKING MUNDIAL' : contrarrelogio?.desafio ? 'NO QUADRO DO DESAFIO' : 'NO QUADRO DE HOJE'}`
+                  : 'TEMPO ACEITO NO QUADRO'
                 : contra.servidor.estado === 'pendente'
                   ? 'TEMPO EM CONFERÊNCIA — ENTRA NO QUADRO DEPOIS DE CONFERIDO'
                   : `TEMPO FORA DO QUADRO: ${(contra.servidor.motivo ?? 'recusado').toUpperCase()}`}
             </p>
+          )}
+          {contra && !contrarrelogio?.tentativa && !perfil && (
+            <p className="result-note">COMO CONVIDADO, O TEMPO FICA SÓ NESTE APARELHO. ENTRE NUMA CONTA PARA ELE VALER NO QUADRO.</p>
           )}
           {contra && contra.recordeAnterior !== null && (
             <p className="result-note">
@@ -1262,7 +1572,7 @@ function App() {
           ) : online ? null : contra ? (
             <button
               className="primary-button"
-              onClick={() => void startTimeTrial(contrarrelogio?.contra ?? null, contrarrelogio?.desafio ?? null)}
+              onClick={() => void startTimeTrial(contrarrelogio?.contra ?? null, contrarrelogio?.desafio ?? null, contrarrelogio?.oficial ?? false)}
             >
               TENTAR DE NOVO <span>↗</span>
             </button>
@@ -1311,6 +1621,23 @@ function App() {
             <span>PROJETO<br />ACADÊMICO</span>
           </div>
           <span className="build-tag">PROTÓTIPO // 002</span>
+          {/* A conta: o nome leva ao perfil; o convidado vê onde entrar. */}
+          {perfil ? (
+            <button type="button" className="conta-chip on" onClick={() => abrirPerfil(null, 'menu')}>
+              <i aria-hidden="true" />
+              <span>{perfil.apelido}<small>SEU PERFIL</small></span>
+            </button>
+          ) : contaSemServidor && sessao ? (
+            <button type="button" className="conta-chip" onClick={religarAConta}>
+              <span>SUA CONTA<small>SEM RESPOSTA · TENTAR DE NOVO</small></span>
+            </button>
+          ) : entrandoNaConta ? (
+            <span className="conta-chip"><span>ENTRANDO…<small>NA SUA CONTA</small></span></span>
+          ) : (
+            <button type="button" className="conta-chip" onClick={() => abrirEntrada('entrar', 'menu')}>
+              <span>CONVIDADO<small>ENTRAR OU CRIAR CONTA</small></span>
+            </button>
+          )}
         </div>
       </header>
 
@@ -1352,10 +1679,17 @@ function App() {
             </span>
           </header>
 
-          <div className="identity-field">
-            <label htmlFor="pilot-name">NOME DO PILOTO</label>
-            <input id="pilot-name" value={draftName} maxLength={16} onChange={(event) => setDraftName(event.target.value)} placeholder={pilotName} autoComplete="nickname" />
-          </div>
+          {perfil ? (
+            <p className="identity-conta">
+              PILOTANDO COMO <b>{perfil.apelido}</b>
+              <button type="button" className="text-button" onClick={() => abrirRanking('mundial', 'menu')}>RANKING MUNDIAL ↗</button>
+            </p>
+          ) : (
+            <div className="identity-field">
+              <label htmlFor="pilot-name">NOME DO PILOTO</label>
+              <input id="pilot-name" value={draftName} maxLength={16} onChange={(event) => setDraftName(event.target.value)} placeholder={pilotName} autoComplete="nickname" />
+            </div>
+          )}
 
           {connection !== 'connected' && <p className="form-notice">PROCURANDO O SERVIDOR DA PARTIDA…</p>}
           {lobbyError && <p className="form-error">{lobbyError}</p>}
@@ -1426,13 +1760,21 @@ function App() {
               <p className="daily-record">
                 {situacaoRanqueada
                   ? situacaoRanqueada.painel.colocacao > 0
-                    ? <>EM COLOCAÇÃO <b>{5 - situacaoRanqueada.painel.colocacao}/5</b></>
+                    ? <>EM COLOCAÇÃO <b>{situacaoRanqueada.painel.colocacaoTotal - situacaoRanqueada.painel.colocacao}/{situacaoRanqueada.painel.colocacaoTotal}</b></>
                     : <>SEU TIER <b>{situacaoRanqueada.painel.divisao}</b></>
-                  : 'CONECTE-SE PARA VER O SEU TIER'}
+                  : perfil || entrandoNaConta
+                    ? 'CONECTE-SE PARA VER O SEU TIER'
+                    : 'A RANQUEADA É DE QUEM TEM CONTA: NOME ÚNICO, PL E TIER EM QUALQUER APARELHO'}
               </p>
-              <button className="solo-button" onClick={abrirRanqueada} disabled={connection !== 'connected'}>
-                ABRIR A RANQUEADA <span>↗</span>
-              </button>
+              {perfil || entrandoNaConta ? (
+                <button className="solo-button" onClick={abrirRanqueada} disabled={connection !== 'connected'}>
+                  ABRIR A RANQUEADA <span>↗</span>
+                </button>
+              ) : (
+                <button className="solo-button" onClick={() => abrirEntrada('entrar', 'menu')}>
+                  ENTRAR OU CRIAR CONTA <span>↗</span>
+                </button>
+              )}
             </section>
 
             {/* A mesma pista para todo mundo, o dia inteiro: é onde os tempos se
@@ -1514,7 +1856,53 @@ function App() {
                   ))}
                 </ol>
               )}
+              {!perfil && !entrandoNaConta && (
+                <p className="daily-note">COMO CONVIDADO, O RECORDE FICA NO APARELHO. COM CONTA, ELE ENTRA NO QUADRO.</p>
+              )}
               <button className="solo-button" onClick={() => void startTimeTrial()}>CORRER A PISTA DO DIA <span>↗</span></button>
+            </section>
+
+            {/* O ranking mundial: o melhor tempo de cada piloto numa pista que não
+                muda nunca — tempo só se compara na mesma pista. */}
+            <section className="mode-card world-mode">
+              <header className="mode-heading">
+                <span>07</span>
+                <div>
+                  <p>{CIRCUITO_OFICIAL.nome.toUpperCase()} · A MESMA PISTA PARA SEMPRE · TODOS OS TEMPOS</p>
+                  <h3>RANKING MUNDIAL</h3>
+                </div>
+              </header>
+              <p className="mode-copy">
+                O melhor tempo de cada piloto no Circuito Oficial, no nível {DIFFICULTY_LABELS[DIFICULDADE_OFICIAL].toLowerCase()}. Corra
+                contra o fantasma do recordista e suba no ranking.
+              </p>
+              {rankingMundial && rankingMundial.linhas.length > 0 ? (
+                <ol className="daily-board world-board" aria-label="Topo do ranking mundial">
+                  {rankingMundial.linhas.slice(0, 3).map((linha) => (
+                    <li key={linha.id} className={linha.perfilId === perfil?.id ? 'me' : ''}>
+                      <b>{linha.posicao}</b>
+                      <span>{linha.apelido}</span>
+                      {linha.dispositivo === 'toque' ? <em title="Feito no toque">TOQUE</em> : <em />}
+                      <i>{formatTime(linha.tempo)}</i>
+                      <button type="button" onClick={() => void correrContra(linha, 'mundial')} aria-label={`Correr contra o fantasma de ${linha.apelido}`}>▶</button>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="daily-record">{rankingMundial ? 'NINGUÉM MARCOU TEMPO AINDA: O PRIMEIRO RECORDE PODE SER SEU' : 'CONECTE-SE PARA VER O RANKING'}</p>
+              )}
+              <p className="daily-record">
+                SEU RECORDE <b>{recordeDoCircuito ? formatTime(recordeDoCircuito.tempo) : 'NENHUM AINDA'}</b>
+                {rankingMundial?.voce && <> · NO MUNDO <b>#{rankingMundial.voce.posicao}</b></>}
+              </p>
+              <div className="world-actions">
+                <button className="solo-button" onClick={() => void startTimeTrial(null, null, true)}>
+                  CORRER O CIRCUITO OFICIAL <span>↗</span>
+                </button>
+                <button className="solo-button" onClick={() => abrirRanking('mundial', 'menu')} disabled={connection !== 'connected'}>
+                  VER O RANKING MUNDIAL <span>↗</span>
+                </button>
+              </div>
             </section>
 
             {/* A Copa do Dia: hora marcada, classificação no contrarrelógio e
@@ -1568,9 +1956,15 @@ function App() {
               )}
               {avisoDaCopa && <p className="form-error">{avisoDaCopa}</p>}
               {copaVista && (copaVista.fase === 'inscricoes' || copaVista.fase === 'classificacao') && !copaVista.inscrito && (
-                <button className="solo-button" onClick={() => void inscreverSeNaCopa()} disabled={connection !== 'connected' || !perfil}>
-                  INSCREVER-SE NA COPA <span>↗</span>
-                </button>
+                perfil || entrandoNaConta ? (
+                  <button className="solo-button" onClick={() => void inscreverSeNaCopa()} disabled={connection !== 'connected' || !perfil}>
+                    INSCREVER-SE NA COPA <span>↗</span>
+                  </button>
+                ) : (
+                  <button className="solo-button" onClick={() => abrirEntrada('entrar', 'menu')}>
+                    ENTRAR PARA SE INSCREVER <span>↗</span>
+                  </button>
+                )
               )}
               {copaVista?.inscrito && copaVista.fase === 'classificacao' && (
                 <button className="solo-button" onClick={() => void startTimeTrial()}>CORRER A CLASSIFICAÇÃO <span>↗</span></button>

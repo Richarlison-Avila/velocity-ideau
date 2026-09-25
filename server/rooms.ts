@@ -108,6 +108,17 @@ type Player = {
   car: CarId
   /** Volta gravada: sem conexão, confirmada, com a chegada marcada pelo servidor. */
   fantasma: boolean
+  /** O perfil da conta com que o piloto entrou, para as estatísticas. Convidado não tem. */
+  perfilId: string | null
+}
+
+/** Um piloto que a fila da ranqueada ou a Copa põe direto numa sala. */
+export type PilotoDaSalaAutomatica = {
+  socketId: string
+  playerId: string
+  nome: string
+  carro: string
+  perfilId?: string | null
 }
 
 type Spectator = {
@@ -208,6 +219,7 @@ export function tetoDaTelemetria(difficulty: Difficulty, turbo = 1) {
 function turboNaSala(room: Room, player: Player) {
   return room.exigeTelemetria ? 1 : turboDoPiloto(player.name, player.car)
 }
+
 /** Folga em metros para não punir variação normal de rede. */
 export const PROGRESS_TOLERANCE_M = 8
 // O limite lateral é geometria da pista: vem do mesmo lugar que o jogo desenha,
@@ -311,7 +323,7 @@ export class RoomStore {
     return [...this.openRooms]
   }
 
-  create(socketId: string, playerId: string, rawName: string, car?: unknown) {
+  create(socketId: string, playerId: string, rawName: string, car?: unknown, perfilId: string | null = null) {
     const code = this.createCode()
     this.rooms.set(code, {
       code,
@@ -326,13 +338,13 @@ export class RoomStore {
       ranqueada: false,
       copa: null,
       sorteioDeSemente: null,
-      players: [this.createPlayer(playerId, socketId, rawName, car)],
+      players: [{ ...this.createPlayer(playerId, socketId, rawName, car), perfilId }],
       spectators: [],
     })
     return this.get(code)!
   }
 
-  join(codeInput: string, socketId: string, playerId: string, rawName: string, car?: unknown) {
+  join(codeInput: string, socketId: string, playerId: string, rawName: string, car?: unknown, perfilId: string | null = null) {
     const room = this.ensureOpenRoom(codeInput) ?? this.requireRoom(codeInput)
 
     const returning = room.players.find((player) => player.id === playerId)
@@ -340,6 +352,8 @@ export class RoomStore {
       returning.socketId = socketId
       returning.disconnectedAt = null
       returning.name = this.cleanName(rawName)
+      // Quem entrou na conta durante a queda passa a contar para ela.
+      if (perfilId) returning.perfilId = perfilId
       // Quem volta sem dizer o carro — um cliente antigo — mantém o que tinha.
       if (car !== undefined && this.canChangeCar(room)) returning.car = toCarId(car)
       return this.toPublic(room)
@@ -352,7 +366,7 @@ export class RoomStore {
     // Quem assistia e desceu para o grid deixa a arquibancada — só depois de a
     // vaga estar garantida, para uma recusa não o deixar sem lugar nenhum.
     room.spectators = room.spectators.filter((spectator) => spectator.id !== playerId)
-    room.players.push(this.createPlayer(playerId, socketId, rawName, car))
+    room.players.push({ ...this.createPlayer(playerId, socketId, rawName, car), perfilId })
     this.ensureHost(room)
     return this.toPublic(room)
   }
@@ -508,7 +522,7 @@ export class RoomStore {
    * confirmados: a largada sai sozinha, no nível oficial, com a pista do pool.
    */
   criarRanqueada(
-    pilotos: ReadonlyArray<{ socketId: string; playerId: string; nome: string; carro: string }>,
+    pilotos: ReadonlyArray<PilotoDaSalaAutomatica>,
     difficulty: Difficulty,
     sorteioDeSemente: () => number,
     fantasmas: ReadonlyArray<{ id: string; nome: string; carro: string }> = [],
@@ -521,7 +535,7 @@ export class RoomStore {
    * confirmados, largada sozinha, telemetria estrita —, na pista do dia.
    */
   criarDaCopa(
-    pilotos: ReadonlyArray<{ socketId: string; playerId: string; nome: string; carro: string }>,
+    pilotos: ReadonlyArray<PilotoDaSalaAutomatica>,
     difficulty: Difficulty,
     seed: number,
     copa: RodadaDaCopa,
@@ -530,7 +544,7 @@ export class RoomStore {
   }
 
   private criarAutomatica(
-    pilotos: ReadonlyArray<{ socketId: string; playerId: string; nome: string; carro: string }>,
+    pilotos: ReadonlyArray<PilotoDaSalaAutomatica>,
     difficulty: Difficulty,
     sorteioDeSemente: () => number,
     fantasmas: ReadonlyArray<{ id: string; nome: string; carro: string }>,
@@ -555,6 +569,7 @@ export class RoomStore {
         ...pilotos.map((piloto) => ({
           ...this.createPlayer(piloto.playerId, piloto.socketId, piloto.nome, piloto.carro),
           ready: true,
+          perfilId: piloto.perfilId ?? null,
         })),
         // Fantasmas não têm conexão: nenhuma queda ou saída os alcança.
         ...fantasmas.map((fantasma) => ({
@@ -608,6 +623,23 @@ export class RoomStore {
     if (!room || room.state !== 'countdown') return null
     this.resetRace(room, options.clearReady ?? true)
     return this.toPublic(room)
+  }
+
+  /**
+   * Quem correu a prova com conta: o perfil, o carro e a largada, para o
+   * servidor guardar a corrida nas estatísticas de cada um.
+   */
+  pilotosComConta(codeInput: string) {
+    const room = this.rooms.get(this.normalize(codeInput))
+    if (!room) return null
+    return {
+      largada: room.startAt,
+      seed: room.trackSeed,
+      dificuldade: room.difficulty,
+      pilotos: room.players
+        .filter((player) => player.perfilId !== null && !player.fantasma)
+        .map((player) => ({ playerId: player.id, perfilId: player.perfilId!, car: player.car })),
+    }
   }
 
   /** Transição executada pelo servidor no instante agendado. */
@@ -1039,6 +1071,7 @@ export class RoomStore {
       rematch: false,
       car: toCarId(car),
       fantasma: false,
+      perfilId: null,
     }
   }
 

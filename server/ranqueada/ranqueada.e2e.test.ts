@@ -3,6 +3,8 @@ import { io as connectClient, type Socket } from 'socket.io-client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DIFICULDADE_OFICIAL } from '../../src/game/contrarrelogio.js'
 import { createGameServer, type GameServer } from '../app.js'
+import { tokenDeTeste, verificadorDeTeste } from '../contas.js'
+import type { PerfilDoPiloto } from '../estatisticas.js'
 import type { PublicRoom } from '../rooms.js'
 import type { ResultadoRanqueado } from './servico.js'
 
@@ -41,11 +43,11 @@ function waitFor<T>(client: Socket, event: string, timeout = 5_000) {
   })
 }
 
-/** Um aparelho com perfil, pronto para a fila. */
+/** Um aparelho com conta, pronto para a fila. */
 async function piloto(nome: string) {
   const client = await connect()
-  const criado = await ask(client, 'perfil:criar', { apelido: nome })
-  expect(criado.ok).toBe(true)
+  const entrou = await ask(client, 'conta:entrar', { token: tokenDeTeste(crypto.randomUUID(), nome) })
+  expect(entrou.ok).toBe(true)
   return { client, nome, playerId: `aba-${nome}` }
 }
 
@@ -58,6 +60,7 @@ beforeEach(async () => {
     esperaComFantasmas: 200,
     limiteDaRanqueadaMs: 300,
     sementesRanqueadas: { sortear: () => 42 },
+    contas: verificadorDeTeste(),
   })
   await new Promise<void>((resolve) => server.http.listen(0, resolve))
   port = (server.http.address() as AddressInfo).port
@@ -69,7 +72,7 @@ afterEach(async () => {
 })
 
 describe('ranqueada pelo socket', () => {
-  it('sem perfil não há fila', async () => {
+  it('sem conta não há fila', async () => {
     const client = await connect()
     expect((await ask(client, 'ranqueada:entrar', { playerId: 'x', nome: 'X' })).ok).toBe(false)
     expect((await ask(client, 'ranqueada:painel')).ok).toBe(false)
@@ -122,6 +125,15 @@ describe('ranqueada pelo socket', () => {
 
     const painel = await ask(pilotos[0].client, 'ranqueada:painel')
     expect((painel.painel as { corridas: number }).corridas).toBe(1)
+    expect(painel.painel).toMatchObject({ colocacao: 4, colocacaoTotal: 5 })
+
+    // A corrida entra no perfil de cada um, com os PL que rendeu.
+    const perfil = (await ask(pilotos[2].client, 'perfil:ver')).perfil as PerfilDoPiloto
+    expect(perfil.porModo.ranqueada.corridas).toBe(1)
+    expect(perfil.recentes[0]).toMatchObject({ modo: 'ranqueada', posicao: 3, pilotos: 3, desfecho: 'abandonou', deltaPl: doCaio.deltaPl })
+    // A escada é pública: quem ainda está em colocação não aparece nela.
+    const escada = await ask(await connect(), 'ranqueada:escada')
+    expect(escada).toMatchObject({ ok: true, escada: [] })
   }, 15_000)
 
   it('sozinho na fila, corre contra fantasmas de voltas ranqueadas, e só ele é atualizado', async () => {
@@ -134,7 +146,7 @@ describe('ranqueada pelo socket', () => {
       velocidade: [0, 250, 250, 250, 250, 0],
     }
     for (const [nome, mu] of [['Beto', 24], ['Caio', 30]] as const) {
-      const perfil = await server.repositorio.criarPerfil(nome, nome)
+      const perfil = await server.repositorio.perfilDaConta(crypto.randomUUID(), nome)
       await server.repositorio.registrarVoltaRanqueada({
         perfilId: perfil.id,
         seed: 42,

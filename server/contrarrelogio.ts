@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import {
+  CIRCUITO_OFICIAL,
   CONTAGEM_DO_CONTRARRELOGIO_MS,
   diaDe,
   DIFICULDADE_OFICIAL,
   limitesDasMedalhas,
+  medalhaPara,
   sementeDoDia,
   tempoDoPiloto,
 } from '../src/game/contrarrelogio.js'
@@ -11,7 +13,7 @@ import { desafioDaSemana, desafiosDaSemana, inicioDaSemana, MODIFICADORES, regra
 import { duracaoDaGravacao, gravacaoValida, type GravacaoDeVolta } from '../src/game/gravador.js'
 import { progressoEm, refazerVolta, registroValido, type RegistroDeEntradas } from '../src/game/registroDeEntradas.js'
 import type { Difficulty } from '../src/game/rules.js'
-import { MAX_STEP_SECONDS } from '../src/game/simulation.js'
+import { MAX_FRAME_SECONDS } from '../src/game/simulation.js'
 import { TRACK_LENGTH } from '../src/game/track.js'
 import type { Dispositivo, EstadoDoTempo, LinhaDoQuadro, Repositorio } from './dados/tipos.js'
 import { minRaceSeconds, tetoDaTelemetria } from './rooms.js'
@@ -147,11 +149,11 @@ export function julgarVolta(entrada: {
   // Nenhum trecho da volta anda mais que o teto do nível permite. As amostras
   // saem dos quadros desenhados, e não de um relógio exato: a de cada 100 ms é
   // a do primeiro quadro depois dele, então entre duas cabem um intervalo e até
-  // um quadro a mais de física — que nunca passa de MAX_STEP_SECONDS. Sem essa
-  // folga, a volta legítima de quem corre no boost num celular a 30 quadros por
-  // segundo era recusada, e a 60 ficava no fio.
+  // um quadro a mais de física — que nunca passa de MAX_FRAME_SECONDS, o quadro
+  // mais longo que o jogo recupera de uma vez. Sem essa folga, a volta legítima
+  // de quem corre no boost num celular lento, ou que engasgou, era recusada.
   const teto = tetoDaTelemetria(dificuldade)
-  const maiorPasso = teto * (gravacao.intervaloMs / 1000 + MAX_STEP_SECONDS) + 1
+  const maiorPasso = teto * (gravacao.intervaloMs / 1000 + MAX_FRAME_SECONDS) + 1
   for (let i = 1; i < gravacao.progresso.length; i += 1) {
     if ((gravacao.progresso[i] - gravacao.progresso[i - 1]) / 10 > maiorPasso) {
       return { estado: 'recusado', motivo: 'um trecho mais rápido que o teto do nível' }
@@ -176,12 +178,25 @@ export function julgarVolta(entrada: {
   return { estado: 'valido' }
 }
 
-type Tentativa = {
-  perfilId: string
+/**
+ * Qual prova do contrarrelógio: sem nada, a Pista do Dia; com `desafio`, um
+ * desafio desta semana; com `circuito: 'oficial'`, o Circuito Oficial do
+ * ranking mundial.
+ */
+export type PedidoDeProva = { desafio?: unknown; circuito?: unknown }
+
+/** A pista de uma prova: onde o tempo é guardado e com que regras ele é julgado. */
+type Prova = {
+  tipo: 'dia' | 'desafio' | 'oficial'
+  /** O dia que o tempo leva: o da pista, o da semana do desafio ou o da volta, no circuito. */
   dia: string
   seed: number
   dificuldade: Difficulty
   modificador: Modificador | null
+}
+
+type Tentativa = Prova & {
+  perfilId: string
   largada: number
 }
 
@@ -231,16 +246,39 @@ export class PistaDoDia {
     return { dia, seed: sementeDoDia(dia) }
   }
 
+  /** A pista de um pedido, ou null para o desafio que não é desta semana. */
+  private prova(pedido: PedidoDeProva | undefined): Prova | null {
+    if (pedido?.circuito === 'oficial') {
+      return {
+        tipo: 'oficial',
+        dia: this.hoje().dia,
+        seed: CIRCUITO_OFICIAL.seed,
+        dificuldade: CIRCUITO_OFICIAL.dificuldade,
+        modificador: null,
+      }
+    }
+    if (pedido?.desafio !== undefined && pedido.desafio !== null) {
+      const desafio = desafioDaSemana(pedido.desafio, this.agora())
+      if (!desafio) return null
+      return {
+        tipo: 'desafio',
+        dia: inicioDaSemana(desafio.semana),
+        seed: desafio.seed,
+        dificuldade: desafio.dificuldade,
+        modificador: desafio.modificador,
+      }
+    }
+    return { tipo: 'dia', ...this.hoje(), dificuldade: DIFICULDADE_OFICIAL, modificador: null }
+  }
+
   /**
    * Abre uma tentativa: o relógio do servidor passa a contar a partir do apagar
-   * das luzes. Sem desafio é a Pista do Dia; com um, o desafio desta semana.
+   * das luzes. Sem pedido é a Pista do Dia.
    */
-  iniciar(perfilId: string, desafioId?: unknown) {
-    const desafio = desafioId === undefined || desafioId === null ? null : desafioDaSemana(desafioId, this.agora())
-    if (desafioId !== undefined && desafioId !== null && !desafio) return null
-    const { dia, seed } = desafio ? { dia: inicioDaSemana(desafio.semana), seed: desafio.seed } : this.hoje()
-    const dificuldade = desafio?.dificuldade ?? DIFICULDADE_OFICIAL
-    const modificador = desafio?.modificador ?? null
+  iniciar(perfilId: string, pedido?: PedidoDeProva) {
+    const prova = this.prova(pedido)
+    if (!prova) return null
+    const { dia, seed, dificuldade, modificador } = prova
     // Recomeçar abre outra tentativa; as antigas do mesmo piloto saem.
     const doPiloto = [...this.tentativas.entries()].filter(([, tentativa]) => tentativa.perfilId === perfilId)
     for (const [id] of doPiloto.slice(0, Math.max(0, doPiloto.length - (TENTATIVAS_POR_PILOTO - 1)))) {
@@ -248,7 +286,7 @@ export class PistaDoDia {
     }
     const id = randomUUID()
     const largada = this.agora() + CONTAGEM_DO_CONTRARRELOGIO_MS
-    this.tentativas.set(id, { perfilId, dia, seed, dificuldade, modificador, largada })
+    this.tentativas.set(id, { ...prova, perfilId, largada })
     return { tentativa: id, dia, seed, dificuldade, modificador, contagemMs: CONTAGEM_DO_CONTRARRELOGIO_MS }
   }
 
@@ -274,14 +312,19 @@ export class PistaDoDia {
       entradas: entrada.entradas,
     })
     if (veredito.estado === 'recusado') return { ...veredito, linha: null, volta: null }
+    const tempo = entrada.tempo as number
+    // O dia do tempo no circuito é o da volta; na Pista do Dia e nos desafios,
+    // o da pista — mesmo que a volta tenha acabado depois da meia-noite.
+    const dia = tentativa.tipo === 'oficial' ? this.hoje().dia : tentativa.dia
     await this.repositorio.registrarTempo({
       perfilId,
-      dia: tentativa.dia,
+      dia,
       seed: tentativa.seed,
       dificuldade: tentativa.dificuldade,
-      tempo: entrada.tempo as number,
+      tempo,
       dispositivo: dispositivoDe(entrada.dispositivo),
       estado: veredito.estado,
+      medalha: medalhaPara(tempo, limitesDasMedalhas(tempoDoPiloto(tentativa.seed, tentativa.dificuldade, tentativa.modificador))),
       gravacao: gravacaoValida(entrada.gravacao)!,
     })
     const linha = await this.repositorio.linhaDe(tentativa.seed, tentativa.dificuldade, perfilId)
@@ -289,7 +332,7 @@ export class PistaDoDia {
     // Dia precisa para saber se ela vale na classificação.
     const volta = {
       largada: tentativa.largada,
-      tempo: entrada.tempo as number,
+      tempo,
       seed: tentativa.seed,
       dificuldade: tentativa.dificuldade,
       modificador: tentativa.modificador,
@@ -323,12 +366,15 @@ export class PistaDoDia {
     )
   }
 
-  /** O quadro de hoje: o top, as medalhas e a linha de quem pergunta. */
-  async quadro(perfilId: string | null, limite = 10, desafioId?: unknown): Promise<QuadroDoDia | null> {
-    const desafio = desafioId === undefined || desafioId === null ? null : desafioDaSemana(desafioId, this.agora())
-    if (desafioId !== undefined && desafioId !== null && !desafio) return null
-    const { dia, seed } = desafio ? { dia: inicioDaSemana(desafio.semana), seed: desafio.seed } : this.hoje()
-    const dificuldade = desafio?.dificuldade ?? DIFICULDADE_OFICIAL
+  /**
+   * O quadro de uma prova — o de hoje, sem pedido —: o top, as medalhas e a
+   * linha de quem pergunta. No Circuito Oficial é o ranking mundial, de todos
+   * os tempos.
+   */
+  async quadro(perfilId: string | null, limite = 10, pedido?: PedidoDeProva): Promise<QuadroDoDia | null> {
+    const prova = this.prova(pedido)
+    if (!prova) return null
+    const { dia, seed, dificuldade, modificador } = prova
     const [linhas, voce] = await Promise.all([
       this.repositorio.quadro(seed, dificuldade, limite),
       perfilId ? this.repositorio.linhaDe(seed, dificuldade, perfilId) : Promise.resolve(null),
@@ -337,20 +383,22 @@ export class PistaDoDia {
       dia,
       seed,
       dificuldade,
-      limites: limitesDasMedalhas(tempoDoPiloto(seed, dificuldade, desafio?.modificador ?? null)),
+      limites: limitesDasMedalhas(tempoDoPiloto(seed, dificuldade, modificador)),
       linhas,
       voce,
     }
   }
 
   /**
-   * A volta de um tempo do quadro de hoje ou de um desafio desta semana, para
-   * correr contra ela. Só o top 10 de cada quadro é público.
+   * A volta de um tempo do quadro de hoje, de um desafio desta semana ou do
+   * ranking mundial, para correr contra ela. Só o top 10 de cada quadro é
+   * público.
    */
   async fantasma(tempoId: string) {
     const { seed } = this.hoje()
     const quadros = [
       { seed, dificuldade: DIFICULDADE_OFICIAL },
+      { seed: CIRCUITO_OFICIAL.seed, dificuldade: CIRCUITO_OFICIAL.dificuldade },
       ...desafiosDaSemana(semanaDe(this.agora())).map((desafio) => ({ seed: desafio.seed, dificuldade: desafio.dificuldade })),
     ]
     for (const quadro of quadros) {
