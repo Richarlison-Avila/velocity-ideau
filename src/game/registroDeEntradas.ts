@@ -3,7 +3,7 @@
 import { aplicarLargada, type Largada } from './largada.js'
 import { createRaceContext, createTrackLayout } from './layout.js'
 import type { RaceRules } from './rules.js'
-import { createRaceState, stepRace, type RaceInput } from './simulation.js'
+import { advanceRace, createRaceState, type RaceInput } from './simulation.js'
 import type { Difficulty } from './rules.js'
 
 /**
@@ -150,7 +150,9 @@ export function refazerVolta(
       if (registro.largada && registro.largada.quadro === quadro) aplicarLargada(state, registro.largada)
       const passo = registro.quadrosUs[quadro] / 1e6
       tempo += passo + (saltos.get(quadro) ?? 0)
-      for (const evento of stepRace(state, input, passo, context)) {
+      // O mesmo avanço do jogo: o quadro longo vira passos iguais, e o
+      // servidor os refaz na mesma sequência.
+      for (const evento of advanceRace(state, input, passo, context)) {
         if (evento.type === 'finish') chegada = tempo
       }
       relogio[quadro] = tempo

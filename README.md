@@ -278,6 +278,15 @@ Para apontar o jogo a outro servidor da partida, use `GAME_SERVER_URL` no desenv
 
 Em produção é **um processo só**: o mesmo servidor entrega o site e aceita as conexões WebSocket.
 
+Na Hostinger, configure a aplicação como backend Express/Node.js, com Node 24,
+build `npm run build` e arquivo de entrada `server.js` na raiz do projeto.
+O comando `npm start` também usa essa entrada, que carrega o servidor TypeScript
+via `tsx` e assume a porta 3000 quando `PORT` não estiver definida.
+Mantenha o projeto completo disponível no servidor: `dist` contém apenas o site,
+e a inicialização também depende de `server`, `src/game` e das dependências npm.
+Use uma única instância e habilite WebSocket no proxy da hospedagem.
+Para conferir a publicação, acesse `/health` e teste uma sala em dois aparelhos.
+
 ```bash
 npm ci && npm run build && npm start
 ```
@@ -290,7 +299,7 @@ O que precisa sobreviver entre uma partida e outra — o perfil do piloto, os te
 
 | Variável | Para quê | Padrão |
 | --- | --- | --- |
-| `PORT` | Porta do servidor | `3001` |
+| `PORT` | Porta do servidor | `3000` com `npm start`; `3001` no desenvolvimento e Docker |
 | `DEMO_ROOMS` | Salas que existem sempre, separadas por vírgula | `DEMO1` |
 | `DATABASE_URL` | Postgres de perfis, Pista do Dia, ranqueada e troféus | memória |
 | `COPA_HORARIO` | Horário de Brasília em que a Copa do Dia abre, `HH:MM` | `21:00` |

@@ -350,9 +350,10 @@ export function slipstreamFrom(
   return (1 - atras / SLIPSTREAM_RANGE_M) * alinhamento
 }
 
-export function createRaceState(difficulty: Difficulty = 'normal'): RaceState {
+/** `turbo` multiplica as velocidades: só o easter egg de `turboDoPiloto` passa algo além de 1. */
+export function createRaceState(difficulty: Difficulty = 'normal', turbo = 1): RaceState {
   return {
-    rules: rulesFor(difficulty),
+    rules: rulesFor(difficulty, turbo),
     progress: 0,
     lateral: 0,
     speed: 0,
@@ -938,7 +939,7 @@ export function stepRace(
     if (alvo > state.speed) {
       // Tração: forte na saída, cedendo perto do teto.
       const fracao = state.speed / Math.max(1, alvo)
-      const tracao = ACCELERATION_PEAK * (motorForte(state) ? BOOST_TRACTION : 1)
+      const tracao = ACCELERATION_PEAK * (motorForte(state) ? BOOST_TRACTION : 1) * state.rules.turbo
       state.speed = Math.min(alvo, state.speed + tracao * (1 - Math.pow(fracao, ACCELERATION_SHAPE)) * h)
     } else {
       // A perda é exponencial, que é a forma certa para arrasto e frenagem —
@@ -967,6 +968,41 @@ export function stepRace(
     events.push({ type: 'finish' })
   }
 
+  return events
+}
+
+/**
+ * Maior intervalo entre dois quadros que a física recupera, em segundos.
+ *
+ * O mesmo quarto de segundo que a telemetria usa para dizer que o carro está
+ * parado: acima disso não é quadro lento, é a aba que parou.
+ */
+export const MAX_FRAME_SECONDS = 0.25
+
+/**
+ * Avança a simulação por um quadro inteiro, em passos de até
+ * `MAX_STEP_SECONDS`, e devolve os eventos de todos eles.
+ *
+ * O relógio da prova é o do servidor. Se o quadro de um celular lento durasse
+ * mais que um passo e só um passo fosse simulado, o carro andaria menos que o
+ * relógio: a 12 quadros por segundo, pouco mais da metade da distância. É a
+ * vantagem de hardware que o passo fixo existe para evitar. Até 20 quadros por
+ * segundo o quadro cabe num passo só, e nada muda.
+ */
+export function advanceRace(
+  state: RaceState,
+  input: RaceInput,
+  dt: number,
+  context: RaceContext = NO_CONTEXT,
+): RaceEvent[] {
+  const quadro = Math.min(Math.max(0, dt), MAX_FRAME_SECONDS)
+  if (quadro <= MAX_STEP_SECONDS) return stepRace(state, input, quadro, context)
+  // Pedaços iguais: um quadro de 0,1 s vira dois passos de 0,05 s exatos, a
+  // mesma sequência de um aparelho a 20 quadros por segundo.
+  const pedacos = Math.ceil(quadro / MAX_STEP_SECONDS - 1e-9)
+  const passo = quadro / pedacos
+  const events: RaceEvent[] = []
+  for (let i = 0; i < pedacos && !state.finished; i++) events.push(...stepRace(state, input, passo, context))
   return events
 }
 

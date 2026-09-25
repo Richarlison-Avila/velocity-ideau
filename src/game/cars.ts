@@ -4,7 +4,8 @@
  * A escolha é só de pintura. Todos andam com a mesma física — a que sai da
  * dificuldade da sala —, porque o duelo existe para medir quem dirige melhor:
  * um carro mais rápido decidiria a corrida antes da largada. Por isso nada
- * daqui entra em `simulation.ts` nem em `rules.ts`.
+ * daqui entra em `simulation.ts` nem em `rules.ts` — com uma exceção de
+ * brincadeira, o easter egg de `turboDoPiloto` em `rules.ts`.
  *
  * Ao contrário da dificuldade, é estado do piloto e não da sala: cada um
  * escolhe o seu, e o servidor guarda a escolha só para contar ao rival qual

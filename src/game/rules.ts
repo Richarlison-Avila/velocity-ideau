@@ -1,4 +1,5 @@
 // A extensão .js é exigida pelo Node, que roda este módulo no servidor.
+import type { CarId } from './cars.js'
 import { obstacles, type Obstacle } from './track.js'
 
 /**
@@ -31,6 +32,11 @@ export const DIFFICULTY_NOTES: Record<Difficulty, string> = {
 /** Tudo o que a dificuldade decide. Nada fora daqui muda entre os níveis. */
 export type RaceRules = {
   difficulty: Difficulty
+  /**
+   * Multiplicador secreto de velocidade e tração: 1 para todo mundo, exceto o
+   * easter egg de `turboDoPiloto`. A tela divide por ele o que mostra.
+   */
+  turbo: number
   /** Velocidade de cruzeiro em pista livre, em km/h. */
   cruiseSpeed: number
   /** Teto com o boost ativo. É ele que fixa o tempo mínimo plausível da prova. */
@@ -169,6 +175,7 @@ function ordenar(lista: Obstacle[]): readonly Obstacle[] {
 const REGRAS: Record<Difficulty, RaceRules> = {
   normal: {
     difficulty: 'normal',
+    turbo: 1,
     cruiseSpeed: 252,
     boostSpeed: 314,
     penaltySpeed: 172,
@@ -185,6 +192,7 @@ const REGRAS: Record<Difficulty, RaceRules> = {
   },
   dificil: {
     difficulty: 'dificil',
+    turbo: 1,
     cruiseSpeed: 274,
     boostSpeed: 338,
     penaltySpeed: 168,
@@ -201,6 +209,7 @@ const REGRAS: Record<Difficulty, RaceRules> = {
   },
   profissional: {
     difficulty: 'profissional',
+    turbo: 1,
     cruiseSpeed: 296,
     boostSpeed: 362,
     penaltySpeed: 162,
@@ -227,8 +236,33 @@ export function toDifficulty(value: unknown): Difficulty {
   return isDifficulty(value) ? value : 'normal'
 }
 
-export function rulesFor(difficulty: Difficulty): RaceRules {
-  return REGRAS[difficulty]
+export function rulesFor(difficulty: Difficulty, turbo = 1): RaceRules {
+  const regras = REGRAS[difficulty]
+  if (turbo === 1) return regras
+  return {
+    ...regras,
+    turbo,
+    cruiseSpeed: regras.cruiseSpeed * turbo,
+    boostSpeed: regras.boostSpeed * turbo,
+    penaltySpeed: regras.penaltySpeed * turbo,
+    offRoadSpeed: regras.offRoadSpeed * turbo,
+    slipstreamBonus: regras.slipstreamBonus * turbo,
+  }
+}
+
+/** Quanto o carro do easter egg anda a mais: 50%. */
+export const TURBO_IDEAU = 1.5
+
+/**
+ * Easter egg: Lewis Hamilton na Mercedes com o nome "Ideau" anda 50% mais.
+ *
+ * É a única exceção à regra de que o carro escolhido é só pintura. Mora aqui,
+ * e não na tela, porque o servidor precisa da mesma resposta para não recusar
+ * a chegada desse carro como impossível. O nome é comparado sem diferenciar
+ * maiúsculas nem espaços nas pontas, do mesmo jeito que o servidor o guarda.
+ */
+export function turboDoPiloto(nome: string, carro: CarId): number {
+  return carro === 'hamilton-mercedes' && nome.trim().toLowerCase() === 'ideau' ? TURBO_IDEAU : 1
 }
 
 /**

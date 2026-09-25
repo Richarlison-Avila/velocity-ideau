@@ -16,6 +16,7 @@
  * `trilhaUltimaVolta.ts` e `trilhaLargada.ts` —, tocando pelo mesmo contexto e
  * pelo mesmo volume geral: desligar o som desliga a música junto.
  */
+import { soltarAoAcabar } from './banda'
 import type { CarId } from './cars'
 import { MotorF1, vozDoCarro } from './motorF1'
 import { Radio, type FaixaDaRadio } from './radio'
@@ -165,9 +166,18 @@ export class RaceAudio {
   private readonly motorF1: MotorF1
   private readonly trilha: Radio
   private silenciado = false
+  /** A música como o jogador a deixou; mudo, ela também para de tocar notas. */
+  private musicaLigada = true
   private encerrado = false
   /** Marcha do quadro anterior, para marcar a troca. */
   private marcha = 0
+  /**
+   * Até quando os osciladores de reserva tocam, no relógio do áudio. Infinito
+   * enquanto o motor gravado não assume.
+   */
+  private sintetizadorAte = Infinity
+  /** Quando o som foi pedido, para saber se o contexto ficou travado. */
+  private readonly criadoEm = performance.now()
 
   /** `carro` escolhe a voz do motor: o V6 turbo, o V10, o V8 ou o híbrido da época dele. */
   constructor(private readonly ctx: AudioHost, faixa: Faixa = 'rock', carro?: CarId) {
@@ -246,25 +256,49 @@ export class RaceAudio {
     const trocou = tone.gear !== this.marcha
     this.marcha = tone.gear
 
-    this.osciladores[0].frequency.setTargetAtTime(tone.frequency, agora, RAMPA * 0.5)
-    this.osciladores[1].frequency.setTargetAtTime(tone.frequency, agora, RAMPA * 0.5)
-    this.osciladores[2].frequency.setTargetAtTime(tone.frequency * 2, agora, RAMPA * 0.5)
-    this.engineFilter.frequency.setTargetAtTime(mix.cutoff, agora, RAMPA)
-
     // Com o V10 gravado tocando, os osciladores se calam: os dois juntos
-    // soariam como um motor e uma sirene.
+    // soariam como um motor e uma sirene. E depois param de vez, porque um
+    // oscilador mudo com a frequência automatizada ainda custa, amostra por
+    // amostra, até o fim da corrida. O motor gravado, uma vez pronto, não
+    // volta atrás.
     const comAmostras = this.motorF1.update(levels)
-    const osciladores = comAmostras ? 0 : trocou ? mix.engine * 0.35 : mix.engine
-    this.engineGain.gain.setTargetAtTime(osciladores, agora, comAmostras ? 0.15 : trocou ? 0.01 : RAMPA)
+    if (comAmostras && this.sintetizadorAte === Infinity) {
+      // Dez constantes de tempo da queda: o que sobra está 87 dB abaixo.
+      this.sintetizadorAte = agora + 1.5
+      this.engineGain.gain.setTargetAtTime(0, agora, 0.15)
+      for (const osc of this.osciladores) osc.stop(this.sintetizadorAte)
+      soltarAoAcabar(this.osciladores[2], this.engineFilter, this.engineGain)
+    }
+    // Durante a queda, o tom ainda acompanha o carro.
+    if (agora < this.sintetizadorAte) {
+      this.osciladores[0].frequency.setTargetAtTime(tone.frequency, agora, RAMPA * 0.5)
+      this.osciladores[1].frequency.setTargetAtTime(tone.frequency, agora, RAMPA * 0.5)
+      this.osciladores[2].frequency.setTargetAtTime(tone.frequency * 2, agora, RAMPA * 0.5)
+      this.engineFilter.frequency.setTargetAtTime(mix.cutoff, agora, RAMPA)
+    }
+    if (!comAmostras) {
+      this.engineGain.gain.setTargetAtTime(trocou ? mix.engine * 0.35 : mix.engine, agora, trocou ? 0.01 : RAMPA)
+    }
     this.windGain.gain.setTargetAtTime(mix.wind, agora, RAMPA)
     this.rollGain.gain.setTargetAtTime(mix.roll, agora, RAMPA)
     this.gravelGain.gain.setTargetAtTime(mix.gravel, agora, RAMPA)
     this.boostGain.gain.setTargetAtTime(mix.boost, agora, RAMPA)
   }
 
+  /**
+   * O contexto travado — sem gesto que o destravasse — tem o relógio parado.
+   * Os bipes e os baques agendados nele se empilhariam no mesmo instante e
+   * sairiam todos juntos no primeiro toque, num estouro. Passado o tempo de a
+   * saída abrir, o que o contexto travado pede é descartado.
+   */
+  private get travado() {
+    return this.ctx.state !== 'running' && performance.now() - this.criadoEm > 1_500
+  }
+
   /** Baque do impacto: um estouro grave que decai rápido. */
   impact(intensidade = 1) {
-    if (this.encerrado) return
+    // Mudo, seria inaudível de todo jeito.
+    if (this.encerrado || this.silenciado || this.travado) return
     const agora = this.ctx.currentTime
     const forca = clamp(intensidade, 0, 1)
 
@@ -278,12 +312,17 @@ export class RaceAudio {
     osc.connect(ganho).connect(this.master)
     osc.start(agora)
     osc.stop(agora + 0.32)
+    soltarAoAcabar(osc, ganho)
   }
 
-  /** Bipe das luzes da largada. Passa pelo mesmo contexto de todo o resto. */
-  beep(frequencia: number, duracao = 0.12) {
-    if (this.encerrado) return
-    const agora = this.ctx.currentTime
+  /**
+   * Bipe das luzes da largada. Passa pelo mesmo contexto de todo o resto.
+   *
+   * `atraso` agenda o bipe no relógio do áudio, que não engasga com o quadro.
+   */
+  beep(frequencia: number, duracao = 0.12, atraso = 0) {
+    if (this.encerrado || this.silenciado || this.travado) return
+    const agora = this.ctx.currentTime + Math.max(0, atraso)
     const osc = this.ctx.createOscillator()
     osc.type = 'square'
     osc.frequency.setValueAtTime(frequencia, agora)
@@ -293,6 +332,7 @@ export class RaceAudio {
     osc.connect(ganho).connect(this.master)
     osc.start(agora)
     osc.stop(agora + duracao + 0.02)
+    soltarAoAcabar(osc, ganho)
   }
 
   /** Começa a trilha do primeiro compasso: é o "VAI!" da largada. */
@@ -307,7 +347,8 @@ export class RaceAudio {
 
   /** Liga ou desliga só a música, deixando motor e efeitos como estão. */
   setMusicEnabled(ligada: boolean) {
-    if (!this.encerrado) this.trilha.setEnabled(ligada)
+    this.musicaLigada = ligada
+    if (!this.encerrado) this.trilha.setEnabled(ligada && !this.silenciado)
   }
 
   /** Pula para a próxima faixa da rádio. */
@@ -329,15 +370,26 @@ export class RaceAudio {
     return this.silenciado
   }
 
+  /**
+   * Mudo, a trilha também para de montar notas: atrás do volume zero elas
+   * custariam o mesmo que tocando. Religado, ela volta no ponto em que estaria.
+   */
   setMuted(silenciado: boolean) {
     if (this.encerrado) return
     this.silenciado = silenciado
     this.master.gain.setTargetAtTime(silenciado ? 0 : MASTER_GAIN, this.ctx.currentTime, 0.05)
+    this.trilha.setEnabled(this.musicaLigada && !silenciado)
   }
 
-  /** O navegador começa suspenso até um gesto do usuário. */
+  /**
+   * O navegador começa suspenso até um gesto do usuário, e o iPhone
+   * interrompe o áudio numa ligação ou na troca de app (o estado
+   * `interrupted`, que o tipo do DOM ainda não conhece).
+   */
   resume() {
-    if (!this.encerrado && this.ctx.state === 'suspended') void this.ctx.resume()
+    if (this.encerrado) return
+    const estado = this.ctx.state as string
+    if (estado !== 'running' && estado !== 'closed') void this.ctx.resume().catch(() => {})
   }
 
   close() {

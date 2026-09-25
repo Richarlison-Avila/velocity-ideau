@@ -168,6 +168,34 @@ const ANTECEDENCIA = 0.14
 const INTERVALO_DO_AGENDADOR = 25
 
 /**
+ * Por quanto tempo a trilha desligada ainda monta notas, em segundos: é a
+ * queda do volume (constante de 0,08 s) até ficar 65 dB abaixo. Dali em
+ * diante as notas soariam atrás de um volume zero — e custariam o mesmo que
+ * tocando, na thread de áudio e no lixo de nós da thread principal.
+ */
+export const QUEDA_DA_TRILHA = 0.6
+
+/**
+ * Religando a trilha, os passos pulados que ainda estão no futuro — até dois,
+ * pela antecedência — voltam para a fila. Recua só sobre eles: um passo no
+ * passado atacaria no instante de religar, junto com os outros.
+ *
+ * Devolve quantos passos recuar.
+ */
+export function passosParaRecuperar(
+  proximo: number,
+  duracaoDoPasso: number,
+  agora: number,
+  desligadaEm: number | null,
+) {
+  const puladosDesde = desligadaEm === null ? -Infinity : desligadaEm + QUEDA_DA_TRILHA
+  const limite = Math.max(agora + 0.01, puladosDesde)
+  let passos = 0
+  while (proximo - (passos + 1) * duracaoDoPasso >= limite) passos += 1
+  return passos
+}
+
+/**
  * Curva de saturação da guitarra.
  *
  * Um `tanh` apertado: o sinal passa quase reto enquanto é baixo e achata perto
@@ -189,6 +217,26 @@ function curvaDeSaturacao(ganho: number) {
 /** Power chord: raiz, quinta e oitava. */
 const POWER_CHORD = [0, 7, 12] as const
 
+/**
+ * Tira do grafo o caminho de uma nota — filtro, envelope, mistura — quando a
+ * fonte dela acaba.
+ *
+ * Cada nota monta o próprio caminho e larga a referência a ele, e o caminho
+ * continuava pendurado no barramento depois do fim, processando silêncio a
+ * cada bloco até o coletor de lixo passar. Medido fora de tempo real, era
+ * quase metade do custo da trilha: a faixa de rock caía de 3,5% para 2% de um
+ * núcleo de computador de mesa só com isto. O som não muda — amostra por
+ * amostra, é o mesmo grafo, só que desmontado na hora certa.
+ *
+ * Com várias fontes na mesma nota, vale a última a parar: é depois dela que o
+ * caminho fica mudo.
+ */
+export function soltarAoAcabar(fonte: AudioScheduledSourceNode, ...nos: AudioNode[]) {
+  fonte.onended = () => {
+    for (const no of nos) no.disconnect()
+  }
+}
+
 export class Banda {
   private readonly saida: GainNode
   private readonly bateria: GainNode
@@ -209,6 +257,11 @@ export class Banda {
   private passo = 0
   private tocando = false
   private ligada = true
+  /**
+   * Quando a música foi desligada com a faixa tocando, no relógio do áudio.
+   * Nulo com a música ligada, ou desligada desde antes de a faixa começar.
+   */
+  private desligadaEm: number | null = null
   private readonly duracaoDoPasso: number
   private readonly volume: number
 
@@ -383,10 +436,26 @@ export class Banda {
     this.saida.gain.setTargetAtTime(0, this.ctx.currentTime, queda / 3)
   }
 
-  /** Liga ou desliga a trilha sem mexer no resto do som. */
+  /**
+   * Liga ou desliga a trilha sem mexer no resto do som.
+   *
+   * Desligada, ela segue contando os passos — religada, volta no mesmo ponto
+   * em que voltaria tocando em silêncio —, mas deixa de montar as notas.
+   */
   setEnabled(ligada: boolean) {
+    if (ligada === this.ligada) return
+    const agora = this.ctx.currentTime
+    if (ligada && this.tocando) {
+      const recuar = passosParaRecuperar(this.proximo, this.duracaoDoPasso, agora, this.desligadaEm)
+      this.proximo -= recuar * this.duracaoDoPasso
+      this.passo = (this.passo - recuar + this.partitura.passos) % this.partitura.passos
+    }
+    this.desligadaEm = !ligada && this.tocando ? agora : null
     this.ligada = ligada
-    if (this.tocando) this.saida.gain.setTargetAtTime(ligada ? this.volume : 0, this.ctx.currentTime, 0.08)
+    if (this.tocando) {
+      this.saida.gain.setTargetAtTime(ligada ? this.volume : 0, agora, 0.08)
+      if (ligada) this.agendar()
+    }
   }
 
   get playing() {
@@ -401,10 +470,15 @@ export class Banda {
     // música retoma do agora, como um rádio que ficou sem sinal.
     if (this.proximo < agora - 0.05) this.proximo = agora + 0.02
     while (this.proximo < agora + ANTECEDENCIA) {
-      this.tocarPasso(this.partitura.eventos(this.passo), this.proximo)
+      if (this.soa(this.proximo)) this.tocarPasso(this.partitura.eventos(this.passo), this.proximo)
       this.proximo += this.duracaoDoPasso
       this.passo = (this.passo + 1) % this.partitura.passos
     }
+  }
+
+  /** O passo do instante `t` ainda se ouve: a música está ligada, ou caindo. */
+  private soa(t: number) {
+    return this.ligada || (this.desligadaEm !== null && t < this.desligadaEm + QUEDA_DA_TRILHA)
   }
 
   private tocarPasso(e: EventosDaBanda, t: number) {
@@ -447,6 +521,7 @@ export class Banda {
     const folga = Math.max(0, this.ruido.duration - duracao - 0.05)
     fonte.start(t, Math.random() * folga)
     fonte.stop(t + duracao + 0.02)
+    soltarAoAcabar(fonte, filtro, ganho)
   }
 
   private bumbo(t: number, forca: number) {
@@ -461,6 +536,7 @@ export class Banda {
     osc.connect(ganho).connect(this.bateria)
     osc.start(t)
     osc.stop(t + 0.32)
+    soltarAoAcabar(osc, ganho)
     // E o estalo da pele, que é o que se ouve num alto-falante pequeno.
     this.ruidoFiltrado(t, 'highpass', 3_000, 0.12 * forca, 0.018)
   }
@@ -477,6 +553,7 @@ export class Banda {
     corpo.connect(ganho).connect(this.bateria)
     corpo.start(t)
     corpo.stop(t + 0.1)
+    soltarAoAcabar(corpo, ganho)
   }
 
   private chimbal(t: number, forca: number, aberto: boolean) {
@@ -503,6 +580,7 @@ export class Banda {
     osc.connect(filtro).connect(ganho).connect(destino)
     osc.start(t)
     osc.stop(t + duracao + 0.02)
+    soltarAoAcabar(osc, filtro, ganho)
   }
 
   /**
@@ -535,6 +613,7 @@ export class Banda {
     // inteira.
     const vozes = g.crunch && abafada ? [0] : [-7, 7]
     const fim = t + duracao + (abafada ? 0.08 : 0.15)
+    let ultima: OscillatorNode | null = null
     for (const [i, intervalo] of intervalos.entries()) {
       // Numa palhetada para baixo, as cordas soam uma depois da outra.
       const corda = t + (g.crunch && !abafada ? i * 0.006 : 0)
@@ -546,8 +625,10 @@ export class Banda {
         osc.connect(palma)
         osc.start(corda)
         osc.stop(fim)
+        ultima = osc
       }
     }
+    if (ultima) soltarAoAcabar(ultima, palma, ganho)
   }
 
   /** Voz da guitarra solo, com o vibrato entrando na nota longa. */
@@ -565,6 +646,7 @@ export class Banda {
     profundidade.gain.setValueAtTime(0, t)
     profundidade.gain.linearRampToValueAtTime(duracao > 0.35 ? 22 : 6, t + Math.min(0.25, duracao))
     vibrato.connect(profundidade)
+    const misturas: GainNode[] = []
     for (const [tipo, desafinacao] of [['sawtooth', 0], ['square', 1_200]] as const) {
       const osc = this.ctx.createOscillator()
       osc.type = tipo
@@ -576,9 +658,12 @@ export class Banda {
       osc.connect(mistura).connect(ganho)
       osc.start(t)
       osc.stop(t + duracao + 0.1)
+      misturas.push(mistura)
     }
     vibrato.start(t)
     vibrato.stop(t + duracao + 0.1)
+    // As vozes e o vibrato param juntos.
+    soltarAoAcabar(vibrato, profundidade, ...misturas, ganho)
   }
 
   /**
@@ -600,6 +685,8 @@ export class Banda {
     ganho.gain.linearRampToValueAtTime(0.5, t + 0.003)
     ganho.gain.exponentialRampToValueAtTime(0.001, t + soa)
     filtro.connect(ganho).connect(this.barramentoViolao())
+    const misturas: GainNode[] = []
+    let ultima: OscillatorNode | null = null
     for (const [tipo, desafinacao, volume] of [['triangle', 0, 1], ['sawtooth', 9, 0.28], ['triangle', 1_200 - 6, 0.3]] as const) {
       const osc = this.ctx.createOscillator()
       osc.type = tipo
@@ -610,7 +697,10 @@ export class Banda {
       osc.connect(mistura).connect(filtro)
       osc.start(t)
       osc.stop(t + soa + 0.05)
+      misturas.push(mistura)
+      ultima = osc
     }
+    if (ultima) soltarAoAcabar(ultima, ...misturas, filtro, ganho)
   }
 
   /** A flauta: seno com um pouco de triângulo, o ar do sopro e vibrato tardio. */
@@ -628,6 +718,7 @@ export class Banda {
     profundidade.gain.setValueAtTime(0, t)
     profundidade.gain.linearRampToValueAtTime(duracao > 0.5 ? 14 : 0, t + Math.min(0.5, duracao))
     vibrato.connect(profundidade)
+    const misturas: GainNode[] = []
     for (const [tipo, volume] of [['sine', 1], ['triangle', 0.25]] as const) {
       const osc = this.ctx.createOscillator()
       osc.type = tipo
@@ -638,9 +729,11 @@ export class Banda {
       osc.connect(mistura).connect(ganho)
       osc.start(t)
       osc.stop(t + duracao + 0.2)
+      misturas.push(mistura)
     }
     vibrato.start(t)
     vibrato.stop(t + duracao + 0.2)
+    soltarAoAcabar(vibrato, profundidade, ...misturas, ganho)
     // O ar: um chiado na altura da nota, bem baixo, só no começo do sopro.
     this.ruidoFiltrado(t, 'bandpass', frequenciaDaNota(nota) * 2, 0.05, Math.min(0.25, duracao), 2, destino)
   }
@@ -652,6 +745,7 @@ export class Banda {
     ganho.gain.linearRampToValueAtTime(0.3 / Math.max(1, notas.length / 3), t + Math.min(0.4, duracao / 2))
     ganho.gain.setTargetAtTime(0.0001, t + duracao * 0.95, 0.12)
     ganho.connect(this.barramentoTeclado())
+    let ultima: OscillatorNode | null = null
     for (const nota of notas) {
       for (const desafinacao of [-10, 10]) {
         const osc = this.ctx.createOscillator()
@@ -661,8 +755,10 @@ export class Banda {
         osc.connect(ganho)
         osc.start(t)
         osc.stop(t + duracao + 0.6)
+        ultima = osc
       }
     }
+    if (ultima) soltarAoAcabar(ultima, ganho)
   }
 
   close() {

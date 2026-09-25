@@ -13,6 +13,7 @@ import { RepositorioEmMemoria, type Repositorio } from './dados/index.js'
 import { apelidoLimpo, hashDoSegredo, LimiteDePerfis, novoSegredo } from './perfis.js'
 import { PoolDeSementes } from './ranqueada/pool.js'
 import { Ranqueada } from './ranqueada/servico.js'
+import { servirSite } from './estaticos.js'
 import {
   COUNTDOWN_MS,
   RECONNECT_GRACE_MS,
@@ -884,13 +885,7 @@ export function createGameServer(options: GameServerOptions = {}): GameServer {
   })
 
   const webRoot = resolve('dist')
-  if ((options.serveStatic ?? true) && existsSync(webRoot)) {
-    app.use(express.static(webRoot))
-    app.use((request, response, next) => {
-      if (request.method === 'GET') response.sendFile(resolve(webRoot, 'index.html'))
-      else next()
-    })
-  }
+  if ((options.serveStatic ?? true) && existsSync(webRoot)) servirSite(app, webRoot)
 
   const close = async () => {
     clearInterval(relogioDaFila)

@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_CAR } from '../src/game/cars.js'
-import { LATERAL_LIMIT, MAX_SPECTATORS, minRaceSeconds, RoomError, RoomStore, type Telemetry } from './rooms.js'
+import {
+  LATERAL_LIMIT,
+  MAX_SPECTATORS,
+  minRaceSeconds,
+  PROGRESS_TOLERANCE_M,
+  RoomError,
+  RoomStore,
+  tetoDaTelemetria,
+  type Telemetry,
+} from './rooms.js'
 
 /** Relógio controlado para testar agendamento e janela de reconexão. */
 function createClock(start = 1_000_000) {
@@ -1197,5 +1206,57 @@ describe('arquibancada', () => {
     rooms.spectate(code, 'socket-g', 'g', 'Gil')
     const encerrada = rooms.abandonRace(code, 'a')
     expect(encerrada?.outcome?.entries.map((entry) => entry.playerId).sort()).toEqual(['a', 'b'])
+  })
+})
+
+describe('easter egg do Hamilton na Mercedes no servidor', () => {
+  it('aceita a chegada mais rápida só de quem ativou o easter egg', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const { code } = rooms.create('socket-a', 'a', 'Ideau', 'hamilton-mercedes')
+    rooms.join(code, 'socket-b', 'b', 'Beto', 'hamilton-mercedes')
+    rooms.setReady(code, 'a', true)
+    rooms.setReady(code, 'b', true)
+    rooms.scheduleStart(code)
+    clock.advance(5_400)
+    rooms.beginRace(code)
+
+    const turbo = minRaceSeconds('normal', 1.5)
+    expect(turbo).toBeLessThan(minRaceSeconds('normal'))
+    clock.advance((turbo + 1) * 1_000)
+
+    const chegada = { time: turbo + 0.5, topSpeed: 450, collisions: 0 }
+    expect(rooms.recordFinish(code, 'b', chegada)).toBeNull()
+    expect(rooms.recordFinish(code, 'a', chegada)).not.toBeNull()
+  })
+
+  it('na ranqueada ele não vale: a telemetria fica no teto de todo mundo', () => {
+    const clock = createClock()
+    const rooms = new RoomStore({ now: clock.now })
+    const pilotos = [
+      { socketId: 'socket-a', playerId: 'a', nome: 'Ideau', carro: 'hamilton-mercedes' },
+      { socketId: 'socket-b', playerId: 'b', nome: 'Beto', carro: 'hamilton-mercedes' },
+    ]
+    const ranqueada = rooms.criarRanqueada(pilotos, 'dificil', () => 42)
+    const casual = rooms.create('socket-c', 'c', 'Ideau', 'hamilton-mercedes')
+    rooms.join(casual.code, 'socket-d', 'd', 'Duda')
+    rooms.setDifficulty(casual.code, 'c', 'dificil')
+    rooms.setReady(casual.code, 'c', true)
+    rooms.setReady(casual.code, 'd', true)
+    for (const code of [ranqueada.code, casual.code]) rooms.scheduleStart(code)
+    clock.advance(5_400)
+    for (const code of [ranqueada.code, casual.code]) rooms.beginRace(code)
+
+    const teto = tetoDaTelemetria('dificil')
+    const corrida = (code: string, playerId: string) => {
+      rooms.acceptTelemetry(code, playerId, { t: clock.now(), progress: 0, lateral: 0, speed: 0, state: 'racing' })
+      return (progress: number) => rooms.acceptTelemetry(code, playerId, { t: clock.now(), progress, lateral: 0, speed: progress * 3.6, state: 'racing' })
+    }
+    const naRanqueada = corrida(ranqueada.code, 'a')
+    const naCasual = corrida(casual.code, 'c')
+    clock.advance(1_000)
+    const rapido = teto * 1.4
+    expect(naRanqueada(rapido)!.progress).toBeLessThanOrEqual(teto + PROGRESS_TOLERANCE_M)
+    expect(naCasual(rapido)!.progress).toBeCloseTo(rapido)
   })
 })

@@ -24,6 +24,7 @@
  *   sol natural — o sétimo grau abaixado, que é o sotaque de toda trilha de
  *   corrida da época — antes do mi que devolve ao tema.
  */
+import { passosParaRecuperar, QUEDA_DA_TRILHA, soltarAoAcabar } from './banda'
 import { frequenciaDaNota, type HostDaTrilha } from './trilha'
 
 // ---------------------------------------------------------------------------
@@ -224,6 +225,8 @@ export class TrilhaTurbo {
   private passo = 0
   private tocando = false
   private ligada = true
+  /** Quando a música foi desligada com a faixa tocando; veja a `Banda`. */
+  private desligadaEm: number | null = null
 
   constructor(private readonly ctx: HostDaTrilha, destino: AudioNode, private readonly ruido: AudioBuffer) {
     const agora = ctx.currentTime
@@ -289,9 +292,21 @@ export class TrilhaTurbo {
     this.saida.gain.setTargetAtTime(0, this.ctx.currentTime, queda / 3)
   }
 
+  /** Desligada, segue contando os passos mas não monta as notas, como a `Banda`. */
   setEnabled(ligada: boolean) {
+    if (ligada === this.ligada) return
+    const agora = this.ctx.currentTime
+    if (ligada && this.tocando) {
+      const recuar = passosParaRecuperar(this.proximo, TURBO_DURACAO_DO_PASSO, agora, this.desligadaEm)
+      this.proximo -= recuar * TURBO_DURACAO_DO_PASSO
+      this.passo = (this.passo - recuar + TURBO_PASSOS_DA_TRILHA) % TURBO_PASSOS_DA_TRILHA
+    }
+    this.desligadaEm = !ligada && this.tocando ? agora : null
     this.ligada = ligada
-    if (this.tocando) this.saida.gain.setTargetAtTime(ligada ? VOLUME_DA_TURBO : 0, this.ctx.currentTime, 0.08)
+    if (this.tocando) {
+      this.saida.gain.setTargetAtTime(ligada ? VOLUME_DA_TURBO : 0, agora, 0.08)
+      if (ligada) this.agendar()
+    }
   }
 
   get playing() {
@@ -305,7 +320,8 @@ export class TrilhaTurbo {
     // despejar todas as notas atrasadas de uma vez.
     if (this.proximo < agora - 0.05) this.proximo = agora + 0.02
     while (this.proximo < agora + ANTECEDENCIA) {
-      this.tocarPasso(eventosTurbo(this.passo), this.proximo)
+      const soa = this.ligada || (this.desligadaEm !== null && this.proximo < this.desligadaEm + QUEDA_DA_TRILHA)
+      if (soa) this.tocarPasso(eventosTurbo(this.passo), this.proximo)
       this.proximo += TURBO_DURACAO_DO_PASSO
       this.passo = (this.passo + 1) % TURBO_PASSOS_DA_TRILHA
     }
@@ -337,6 +353,7 @@ export class TrilhaTurbo {
     const folga = Math.max(0, this.ruido.duration - duracao - 0.05)
     fonte.start(t, Math.random() * folga)
     fonte.stop(t + duracao + 0.02)
+    soltarAoAcabar(fonte, filtro, ganho)
   }
 
   private bumbo(t: number, forca: number) {
@@ -350,6 +367,7 @@ export class TrilhaTurbo {
     osc.connect(ganho).connect(this.bateria)
     osc.start(t)
     osc.stop(t + 0.24)
+    soltarAoAcabar(osc, ganho)
   }
 
   /** Caixa de sampler antigo: ruído curto e um tom agudo que dá o estalo. */
@@ -365,6 +383,7 @@ export class TrilhaTurbo {
     corpo.connect(ganho).connect(this.bateria)
     corpo.start(t)
     corpo.stop(t + 0.08)
+    soltarAoAcabar(corpo, ganho)
   }
 
   /**
@@ -388,6 +407,7 @@ export class TrilhaTurbo {
     osc.connect(filtro).connect(ganho).connect(destino)
     osc.start(t)
     osc.stop(t + duracao + 0.06)
+    soltarAoAcabar(osc, filtro, ganho)
   }
 
   private metais(notas: readonly number[], t: number, duracao: number) {
@@ -408,6 +428,7 @@ export class TrilhaTurbo {
     // voz e outra — como um naipe de verdade, que nunca ataca em uníssono
     // perfeito — já as tira de fase, e o ouvido não percebe o atraso.
     let voz = 0
+    let ultima: OscillatorNode | null = null
     for (const nota of notas) {
       for (const desafinacao of [-9, 9]) {
         const inicio = t + voz * 0.0015
@@ -419,8 +440,11 @@ export class TrilhaTurbo {
         osc.connect(filtro)
         osc.start(inicio)
         osc.stop(t + duracao + 0.12)
+        ultima = osc
       }
     }
+    // Todas as vozes param no mesmo instante.
+    if (ultima) soltarAoAcabar(ultima, filtro, ganho)
   }
 
   /** Lead de onda quadrada, com o vibrato entrando só na nota longa. */
@@ -437,6 +461,7 @@ export class TrilhaTurbo {
     profundidade.gain.setValueAtTime(0, t)
     profundidade.gain.linearRampToValueAtTime(duracao > 0.3 ? 18 : 0, t + Math.min(0.22, duracao))
     vibrato.connect(profundidade)
+    const misturas: GainNode[] = []
     for (const [tipo, desafinacao, volume] of [['square', 0, 1], ['square', 8, 0.5]] as const) {
       const osc = this.ctx.createOscillator()
       osc.type = tipo
@@ -448,9 +473,11 @@ export class TrilhaTurbo {
       osc.connect(mistura).connect(ganho)
       osc.start(t)
       osc.stop(t + duracao + 0.1)
+      misturas.push(mistura)
     }
     vibrato.start(t)
     vibrato.stop(t + duracao + 0.1)
+    soltarAoAcabar(vibrato, profundidade, ...misturas, ganho)
   }
 
   close() {

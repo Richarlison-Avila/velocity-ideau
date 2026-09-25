@@ -3,8 +3,8 @@ import { correrSemTela } from './corridaSimulada'
 import { GravadorDeVolta } from './gravador'
 import { desviando, pilotoCompleto, type Piloto } from './piloto'
 import { GravadorDeEntradas, progressoEm, quantizarPasso, refazerVolta, registroValido } from './registroDeEntradas'
-import type { RaceInput } from './simulation'
-import type { TrackLayout } from './layout'
+import { advanceRace, createRaceState, type RaceInput } from './simulation'
+import { createRaceContext, createTrackLayout, type TrackLayout } from './layout'
 
 const QUADRO = quantizarPasso(1 / 60)
 
@@ -61,6 +61,30 @@ describe('registro de comandos', () => {
     // deixou o carro dezenas de metros para trás.
     expect(queimada.terminou).toBe(false)
     expect(queimada.progresso[queimada.progresso.length - 1]).toBeLessThan(4_800 - 30)
+  })
+
+  it('o quadro longo do celular lento é refeito pelos mesmos passos', () => {
+    // O jogo entrega à física o quadro inteiro, em passos iguais de até 0,05 s:
+    // a 60 quadros por segundo, com engasgos de 0,1 e 0,2 s no meio.
+    const seed = 7
+    const layout = createTrackLayout(seed)
+    const context = createRaceContext(layout)
+    const state = createRaceState('dificil')
+    const piloto = pilotoCompleto(layout)
+    const entradas = new GravadorDeEntradas()
+    const quadros = [1 / 60, 1 / 60, 0.1, 1 / 30, 0.2, 1 / 60].map(quantizarPasso)
+    let tempo = 0
+    let chegada: number | null = null
+    for (let i = 0; chegada === null && i < 20_000; i += 1) {
+      const passo = quadros[i % quadros.length]
+      const input = { ...piloto(state) }
+      entradas.registrar(passo, input)
+      tempo += passo
+      for (const evento of advanceRace(state, input, passo, context)) if (evento.type === 'finish') chegada = tempo
+    }
+    expect(chegada).not.toBeNull()
+    const refeita = refazerVolta(entradas.terminar(), seed, 'dificil')
+    expect(refeita.chegada).toBeCloseTo(chegada!, 9)
   })
 
   it('o relógio da volta refeita inclui os saltos da aba escondida', () => {

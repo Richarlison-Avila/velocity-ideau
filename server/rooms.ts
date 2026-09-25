@@ -1,7 +1,7 @@
 // A validação da chegada precisa da mesma pista que o jogo desenha, então a
 // definição vem do módulo do jogo em vez de ser copiada para cá.
 import { toCarId, type CarId } from '../src/game/cars.js'
-import { rulesFor, toDifficulty, type Difficulty } from '../src/game/rules.js'
+import { rulesFor, toDifficulty, turboDoPiloto, type Difficulty } from '../src/game/rules.js'
 import { speedForState } from '../src/game/simulation.js'
 import { LATERAL_LIMIT, TRACK_LENGTH } from '../src/game/track.js'
 
@@ -196,8 +196,17 @@ const FOLGA_DO_TETO = 1.05
  * O teto absoluto de 120 m/s passava de todos os níveis por mais de um quarto,
  * e um cliente acelerado podia avançar o próprio fantasma nessa folga.
  */
-export function tetoDaTelemetria(difficulty: Difficulty) {
-  return Math.min(MAX_PLAUSIBLE_SPEED_MS, (speedForState(false, 0, true, rulesFor(difficulty), 1) / 3.6) * FOLGA_DO_TETO)
+export function tetoDaTelemetria(difficulty: Difficulty, turbo = 1) {
+  return Math.min(MAX_PLAUSIBLE_SPEED_MS * turbo, (speedForState(false, 0, true, rulesFor(difficulty, turbo), 1) / 3.6) * FOLGA_DO_TETO)
+}
+
+/**
+ * O multiplicador do easter egg de `turboDoPiloto` numa sala. Na ranqueada e
+ * na Copa ele não vale: onde há ponto ou troféu em jogo, o carro volta a ser
+ * só pintura, e o cliente corre sem ele também.
+ */
+function turboNaSala(room: Room, player: Player) {
+  return room.exigeTelemetria ? 1 : turboDoPiloto(player.name, player.car)
 }
 /** Folga em metros para não punir variação normal de rede. */
 export const PROGRESS_TOLERANCE_M = 8
@@ -221,8 +230,8 @@ export const CLOCK_TOLERANCE_MS = 5_000
  * que colou no adversário a prova inteira quem tem mais chance de chegar perto
  * deste piso.
  */
-export function minRaceSeconds(difficulty: Difficulty) {
-  return TRACK_LENGTH / (speedForState(false, 0, true, rulesFor(difficulty), 1) / 3.6)
+export function minRaceSeconds(difficulty: Difficulty, turbo = 1) {
+  return TRACK_LENGTH / (speedForState(false, 0, true, rulesFor(difficulty, turbo), 1) / 3.6)
 }
 
 /** Tempo mínimo do nível de referência, mantido para quem não passa a sala. */
@@ -634,7 +643,8 @@ export class RoomStore {
     // Dois envios no mesmo milissegundo — caso da chegada — não podem sumir.
     if (previous && t === previous.t) t = previous.t + 1
 
-    const teto = tetoDaTelemetria(room.difficulty)
+    // O carro do easter egg anda mais: o teto dele sobe na mesma proporção.
+    const teto = tetoDaTelemetria(room.difficulty, turboNaSala(room, player))
     let progress = Math.max(0, input.progress)
     if (previous) {
       const elapsed = Math.max(0, (t - previous.t) / 1000)
@@ -683,7 +693,7 @@ export class RoomStore {
 
     // O piso vem da dificuldade da própria sala: no profissional o carro é
     // mais rápido, e um tempo legítimo lá seria recusado pelo piso do normal.
-    const minimo = minRaceSeconds(room.difficulty)
+    const minimo = minRaceSeconds(room.difficulty, turboNaSala(room, player))
     const elapsed = (this.now() - room.startAt) / 1000
     if (elapsed < minimo) return null
     // Na ranqueada, a chegada precisa da telemetria que a sustente: o avanço
